@@ -1,0 +1,69 @@
+#previous pipeline:
+#the reason why this is done this way: hardening breaks winrm (successive updates via packer)!!
+#copy the template instance disk into the new family (unhardened family)
+#run full hardening
+
+#here: need to find a way to seed unhardened image name.
+substitutions:
+  _PAM_WV_VERS: "beta-10"
+
+steps:
+- name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail # Exit immediately if a command fails
+
+      echo "--- Updating apt and installing dependencies (jq, unzip) ---"
+      apt-get update -y
+      apt-get install -y jq unzip curl
+
+      #echo "--- Finding latest Packer version ---"
+      #PACKER_VERSION=$(curl -s https://checkpoint-api.hashicorp.com/v1/check/packer | jq -r .current_version)
+      #might solve issue to try to replicate my working cloudshell env: 1.94, packer-plugin-googlecompute_v1.1.6. did seem to, leave hardcoded for now
+
+      PACKER_VERSION=1.9.4
+      # We must escape all variables ($$) so Cloud Build ignores them
+      PACKER_ZIP="packer_$${PACKER_VERSION}_linux_amd64.zip"
+
+      echo "--- Installing latest Packer: $${PACKER_VERSION} ---"
+      curl -LO "https://releases.hashicorp.com/packer/$${PACKER_VERSION}/$${PACKER_ZIP}"
+      unzip $${PACKER_ZIP}
+      mv packer /usr/local/bin/
+      rm $${PACKER_ZIP}
+      echo "--- Packer installed successfully ---"
+
+      # --- Manually install the specific plugin version ---
+      echo "--- Installing googlecompute plugin v1.1.6 ---"
+      PLUGIN_VERSION="1.1.6"
+      PLUGIN_DIR="/root/.config/packer/plugins/github.com/hashicorp/googlecompute/$${PLUGIN_VERSION}/linux_amd64"
+      mkdir -p $${PLUGIN_DIR}
+
+      PLUGIN_ZIP="packer-plugin-googlecompute_$${PLUGIN_VERSION}_linux_amd64.zip"
+      curl -LO "https://releases.hashicorp.com/packer-plugin-googlecompute/$${PLUGIN_VERSION}/$${PLUGIN_ZIP}"
+      unzip $${PLUGIN_ZIP} -d $${PLUGIN_DIR}
+      rm $${PLUGIN_ZIP}
+      echo "--- Specific plugin v$${PLUGIN_VERSION} installed to $${PLUGIN_DIR} ---"
+
+      PACKER_PW=$(gcloud secrets versions access latest --secret="packer_user_password")
+
+      gcloud compute instances stop latest-pam-wv-template-instance --zone us-east4-c
+      gcloud compute images create "${_PAM_WV_VERS}-$(date +%s)" --source-disk latest-pam-wv-template-instance --source-disk-zone us-east4-c --      family=pam-wv-templates
+
+      SRC_IMG_NAME=$(gcloud compute images list --filter 'family=pam-wv-templates' --format 'value(name)' --sort-by~creationTimestamp --limit 1)
+
+      echo "--- this is the source image name $${SRC_IMG_NAME} ---"
+
+      # Run your Packer commands
+      export PACKER_LOG=1
+      packer init harden_wv.pkr.hcl
+      packer validate harden_wv.pkr.hcl
+      packer build harden_wv.pkr.hcl
+
+dir: 'packer'
+
+serviceAccount: "packer-builder-sa@ggn-nmfs-pamdata-prod-1.iam.gserviceaccount.com"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

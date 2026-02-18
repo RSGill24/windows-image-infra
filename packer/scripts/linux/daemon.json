@@ -1,0 +1,15 @@
+{
+  "icc": false,
+  "log-level": "info",
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 200,
+      "Soft": 100
+    }
+  },
+  "no-new-privileges": true,
+  "live-restore": true,
+  "userland-proxy": false,
+  "selinux-enabled": true
+}

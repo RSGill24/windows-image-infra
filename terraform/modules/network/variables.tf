@@ -1,0 +1,9 @@
+variable "project_id"        { type = string }
+variable "region"            { type = string }
+variable "network_name"      { type = string }
+variable "app_subnet1_cidr"  { type = string }
+variable "app_subnet2_cidr"  { type = string }
+variable "db_subnet1_cidr"   { type = string }
+variable "batch_subnet_cidr" { type = string }
+variable "iap_source_range"  { type = string }
+variable "cloud_router_asn"  { type = number }

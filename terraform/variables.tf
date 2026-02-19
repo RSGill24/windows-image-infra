@@ -309,6 +309,24 @@ variable "gcs_logs_dataset_id" {
   default     = "gcs_read_logs"
 }
 
+variable "compliance_description" {
+  type        = string
+  description = "Description for the compliance dataset"
+  default     = "Dataset for compliance logs"
+}
+
+variable "compliance_table_schema" {
+  type        = string
+  description = "Schema for the compliance table"
+  default     = "[]"
+}
+
+variable "gcs_log_sink_filter" {
+  type        = string
+  description = "Filter for GCS log sink"
+  default     = "resource.type=\"gcs_bucket\" AND protoPayload.methodName=\"storage.objects.create\""
+}
+
 # ── Storage ───────────────────────────────────────────────────────────────────
 # pam_ww_tmp_bucket name is derived in locals.tf from project_id
 # DO NOT add it here

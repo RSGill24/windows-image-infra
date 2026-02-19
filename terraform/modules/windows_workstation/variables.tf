@@ -116,11 +116,36 @@ variable "compute_user_role_id" {
   type        = string
   description = "ID of the compute_user custom IAM role from the iam module output"
 }
-variable "config" {
-  type = object({
-    patch_policy_url = string
-    labels           = map(string)
-    template_labels  = map(string)
-    gpu_labels       = map(string)
-  })
+variable "gpu_accelerator_url" {
+  type        = string
+  description = "Self-link to the accelerator type"
+}
+
+variable "pam_ww_tmp_bucket" {
+  type        = string
+  description = "Name of the temporary bucket for windows workstations"
+}
+
+variable "patch_policy_url" {
+  type        = string
+  description = "Self-link to the patch policy (resource policy) for instant snapshot/patching"
+  default     = ""
+}
+
+variable "labels" {
+  type        = map(string)
+  description = "Extra labels for the windows workstation instances"
+  default     = {}
+}
+
+variable "template_labels" {
+  type        = map(string)
+  description = "Labels specific to the template instance"
+  default     = {}
+}
+
+variable "gpu_labels" {
+  type        = map(string)
+  description = "Labels specific to the GPU instance"
+  default     = {}
 }

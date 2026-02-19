@@ -3,7 +3,7 @@ resource "google_project_iam_custom_role" "tau_kms_user_role" {
   project     = var.project_id
   title       = "tau_kms_user_role"
   description = "Custom role for using the storage transfer appliance"
-  permissions = var.config.tau_kms_user_permissions
+  permissions = var.tau_kms_user_permissions
 }
 
 resource "google_project_iam_custom_role" "compute_user" {
@@ -11,7 +11,7 @@ resource "google_project_iam_custom_role" "compute_user" {
   project     = var.project_id
   title       = "compute_user"
   description = "Custom role for scientific users to modify instance state"
-  permissions = var.config.compute_user_permissions
+  permissions = var.compute_user_permissions
 }
 
 resource "google_project_iam_custom_role" "bucket_lister" {
@@ -19,7 +19,7 @@ resource "google_project_iam_custom_role" "bucket_lister" {
   project     = var.project_id
   title       = "bucket_lister"
   description = "Custom role for listing buckets"
-  permissions = var.config.bucket_lister_permissions
+  permissions = var.bucket_lister_permissions
 }
 
 resource "google_project_iam_custom_role" "image_builder_role" {
@@ -27,7 +27,7 @@ resource "google_project_iam_custom_role" "image_builder_role" {
   project     = var.project_id
   title       = "nmfs.${var.application_id}.image.builder.role"
   description = "Custom role for packer image builders"
-  permissions = var.config.image_builder_permissions
+  permissions = var.image_builder_permissions
 }
 
 # Transfer appliance IAM

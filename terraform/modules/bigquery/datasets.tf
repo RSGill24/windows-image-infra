@@ -1,7 +1,7 @@
 resource "google_bigquery_dataset" "pam_wv_instance_controls" {
   dataset_id                 = var.compliance_dataset_id
   project                    = var.project_id
-  description                = var.config.compliance_description
+  description                = var.compliance_description
   delete_contents_on_destroy = true
 }
 
@@ -10,7 +10,7 @@ resource "google_bigquery_table" "pam_wv_instance_controls_table" {
   project    = var.project_id
   table_id   = var.compliance_table_id
 
-  schema = var.config.compliance_table_schema
+  schema = var.compliance_table_schema
 }
 
 # ── GCS Audit Logs Dataset ────────────────────────────────────────────────────
@@ -30,10 +30,10 @@ resource "google_bigquery_dataset" "logs" {
 }
 
 resource "google_logging_project_sink" "gcs_reads_to_bq" {
-  name        = "gcs-reads-to-bq"
-  project     = var.project_id
-  destination = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.logs.dataset_id}"
-  filter      = var.config.gcs_log_sink_filter
+  name                   = "gcs-reads-to-bq"
+  project                = var.project_id
+  destination            = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.logs.dataset_id}"
+  filter                 = var.gcs_log_sink_filter
   unique_writer_identity = true
   depends_on             = [google_project_iam_audit_config.gcs_data_read]
   bigquery_options {

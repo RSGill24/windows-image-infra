@@ -1,11 +1,11 @@
 resource "google_project_service" "dns_service" {
   project = var.project_id
-  service = var.config.dns_service_name
+  service = var.dns_service_name
 }
 
 resource "google_dns_policy" "dns_logging" {
   depends_on     = [google_project_service.dns_service]
-  name           = var.config.dns_policy_name
+  name           = var.dns_policy_name
   project        = var.project_id
   enable_logging = true
   networks {
@@ -20,7 +20,7 @@ resource "google_compute_network" "app_network" {
 }
 
 resource "google_compute_subnetwork" "app_subnet1" {
-  name                     = "app-subnet1"
+  name                     = var.subnet_app1
   ip_cidr_range            = var.app_subnet1_cidr
   project                  = var.project_id
   region                   = var.region
@@ -34,7 +34,7 @@ resource "google_compute_subnetwork" "app_subnet1" {
 }
 
 resource "google_compute_subnetwork" "app_subnet2" {
-  name                     = "app-subnet2"
+  name                     = var.subnet_app2
   ip_cidr_range            = var.app_subnet2_cidr
   project                  = var.project_id
   region                   = var.region
@@ -48,7 +48,7 @@ resource "google_compute_subnetwork" "app_subnet2" {
 }
 
 resource "google_compute_subnetwork" "db_subnet1" {
-  name                     = "db-subnet1"
+  name                     = var.subnet_db1
   ip_cidr_range            = var.db_subnet1_cidr
   project                  = var.project_id
   region                   = var.region
@@ -62,7 +62,7 @@ resource "google_compute_subnetwork" "db_subnet1" {
 }
 
 resource "google_compute_subnetwork" "batch_subnet" {
-  name                     = "batch-subnet"
+  name                     = var.subnet_batch
   ip_cidr_range            = var.batch_subnet_cidr
   project                  = var.project_id
   region                   = var.region
@@ -76,62 +76,62 @@ resource "google_compute_subnetwork" "batch_subnet" {
 }
 
 resource "google_compute_firewall" "iap_to_ssh" {
-  name      = "ingress-allow-iap-to-ssh"
-  network   = google_compute_network.app_network.id
-  project   = var.project_id
-  direction = "INGRESS"
-  priority  = 1000
+  name          = "ingress-allow-iap-to-ssh"
+  network       = google_compute_network.app_network.id
+  project       = var.project_id
+  direction     = "INGRESS"
+  priority      = 1000
   source_ranges = [var.iap_source_range]
   allow {
     protocol = "tcp"
-    ports    = var.config.iap_ssh_ports
+    ports    = var.iap_ssh_ports
   }
   log_config { metadata = "INCLUDE_ALL_METADATA" }
 }
 
 resource "google_compute_firewall" "iap_to_rdp" {
-  name      = "ingress-allow-iap-to-rdp"
-  network   = google_compute_network.app_network.id
-  project   = var.project_id
-  direction = "INGRESS"
-  priority  = 1000
+  name          = "ingress-allow-iap-to-rdp"
+  network       = google_compute_network.app_network.id
+  project       = var.project_id
+  direction     = "INGRESS"
+  priority      = 1000
   source_ranges = [var.iap_source_range]
   allow {
     protocol = "tcp"
-    ports    = var.config.iap_rdp_ports
+    ports    = var.iap_rdp_ports
   }
   log_config { metadata = "INCLUDE_ALL_METADATA" }
 }
 
 resource "google_compute_firewall" "iap_to_winrm_ssl" {
-  name      = "ingress-allow-iap-to-winrm-ssl"
-  network   = google_compute_network.app_network.id
-  project   = var.project_id
-  direction = "INGRESS"
-  priority  = 1000
+  name          = "ingress-allow-iap-to-winrm-ssl"
+  network       = google_compute_network.app_network.id
+  project       = var.project_id
+  direction     = "INGRESS"
+  priority      = 1000
   source_ranges = [var.iap_source_range]
   allow {
     protocol = "tcp"
-    ports    = var.config.iap_winrm_ports
+    ports    = var.iap_winrm_ports
   }
   log_config { metadata = "INCLUDE_ALL_METADATA" }
 }
 
 resource "google_compute_firewall" "user_vm_subnet1_traffic" {
-  name      = "ingress-user-vm-subnet1"
-  network   = google_compute_network.app_network.id
-  project   = var.project_id
-  direction = "INGRESS"
-  priority  = 1000
+  name          = "ingress-user-vm-subnet1"
+  network       = google_compute_network.app_network.id
+  project       = var.project_id
+  direction     = "INGRESS"
+  priority      = 1000
   source_ranges = [var.app_subnet1_cidr, var.app_subnet2_cidr]
   allow {
-    protocol = var.config.user_vm_protocols
+    protocol = var.user_vm_protocols
   }
   log_config { metadata = "INCLUDE_ALL_METADATA" }
 }
 
 resource "google_compute_router" "app_router" {
-  name    = "app-router"
+  name    = var.router_name
   region  = var.region
   network = google_compute_network.app_network.id
   project = var.project_id
@@ -141,7 +141,7 @@ resource "google_compute_router" "app_router" {
 }
 
 resource "google_compute_router_nat" "nat" {
-  name                               = "app-nat"
+  name                               = var.nat_name
   router                             = google_compute_router.app_router.name
   project                            = var.project_id
   region                             = google_compute_router.app_router.region

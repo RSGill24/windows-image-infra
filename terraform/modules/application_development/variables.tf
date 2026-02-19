@@ -59,14 +59,29 @@ variable "app_subnet1_self_link" {
   description = "Self-link of the subnet to attach the app dev server to"
 }
 
+variable "dormant_patch_boot_policy_url" {
+  type        = string
+  description = "Resource policy for dormant patch boot"
+}
+
+variable "instance_scopes" {
+  type        = list(string)
+  description = "Scopes for the instance service account"
+  default     = ["cloud-platform"]
+}
 variable "docker_repo_id" {
   type        = string
   description = "Artifact Registry repository ID for Docker images"
   default     = "pamdata-docker-repo"
 }
-variable "config" {
-  type = object({
-    resource_policies = list(string)
-    labels            = map(string)
-  })
+variable "resource_policies" {
+  type        = list(string)
+  description = "Resource policies to apply to the instance"
+  default     = []
+}
+
+variable "labels" {
+  type        = map(string)
+  description = "Extra labels for the app dev server"
+  default     = {}
 }

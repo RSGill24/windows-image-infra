@@ -2,7 +2,7 @@ resource "google_storage_bucket" "data_buckets" {
   for_each      = var.data_buckets_map
   name          = each.key
   project       = var.project_id
-  location      = var.config.bucket_location
+  location      = var.bucket_location
   force_destroy = false
 
   uniform_bucket_level_access = true
@@ -67,9 +67,9 @@ resource "google_storage_bucket_iam_member" "global_bucket_readers" {
 }
 
 resource "google_storage_bucket" "pam_ww_tmp" {
-  name          = "pam-ww-tmp-${var.project_id}"
-  project       = var.project_id
-  location      = var.config.bucket_location
-  force_destroy = false
+  name                        = "pam-ww-tmp-${var.project_id}"
+  project                     = var.project_id
+  location                    = var.bucket_location
+  force_destroy               = false
   uniform_bucket_level_access = true
 }

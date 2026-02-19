@@ -22,14 +22,14 @@ resource "google_compute_instance" "ww_template_instance" {
   project      = var.project_id
   zone         = var.zone
 
-  resource_policies = [var.config.patch_policy_url]
+  resource_policies = [var.patch_policy_url]
 
   metadata = {
     block-project-ssh-keys = "true"
     enable-osconfig        = "true"
   }
 
-  labels = merge(var.common_labels, var.config.labels, var.config.template_labels)
+  labels = merge(var.common_labels, var.labels, var.template_labels)
 
   boot_disk {
     device_name = "latest-pam-ww-template-instance"
@@ -69,14 +69,14 @@ resource "google_compute_instance" "user_pam_ww" {
   project      = var.project_id
   zone         = var.zone
 
-  resource_policies = [var.config.patch_policy_url]
+  resource_policies = [var.patch_policy_url]
 
   metadata = {
     block-project-ssh-keys = "true"
     enable-osconfig        = "true"
   }
 
-  labels = merge(var.common_labels, var.config.labels, var.config.template_labels)
+  labels = merge(var.common_labels, var.labels, var.template_labels)
 
   boot_disk {
     device_name = "${lower(replace(replace(replace(each.value, "/[^a-z0-9]+/", "-"), "user-", ""), "noaa-gov-", ""))}-pam-ww"
@@ -124,14 +124,14 @@ resource "google_compute_instance" "gpu_instance" {
     on_host_maintenance = "TERMINATE"
   }
 
-  resource_policies = [var.config.patch_policy_url]
+  resource_policies = [var.patch_policy_url]
 
   metadata = {
     block-project-ssh-keys = "true"
     enable-osconfig        = "true"
   }
 
-  labels = merge(var.common_labels, var.config.gpu_labels)
+  labels = merge(var.common_labels, var.gpu_labels)
 
   boot_disk {
     auto_delete = false
@@ -153,7 +153,7 @@ resource "google_compute_instance" "gpu_instance" {
 
   guest_accelerator {
     count = 1
-    type  = "https://www.googleapis.com/compute/v1/projects/${var.project_id}/zones/${var.zone}/acceleratorTypes/${var.gpu_accelerator_type}"
+    type  = var.gpu_accelerator_url
   }
 
   shielded_instance_config {
@@ -170,14 +170,14 @@ resource "google_compute_instance" "eric_braen_ww" {
   project      = var.project_id
   zone         = var.zone
 
-  resource_policies = [var.config.patch_policy_url]
+  resource_policies = [var.patch_policy_url]
 
   metadata = {
     block-project-ssh-keys = "true"
     enable-osconfig        = "true"
   }
 
-  labels = merge(var.common_labels, var.config.labels, var.config.template_labels)
+  labels = merge(var.common_labels, var.labels, var.template_labels)
 
   boot_disk {
     source = "projects/${var.project_id}/zones/${var.zone}/disks/${var.eric_braen_disk_name}"
@@ -205,7 +205,7 @@ resource "google_compute_instance" "eric_braen_ww" {
 
 # ── Eric Braen IAM ────────────────────────────────────────────────────────────
 resource "google_storage_bucket_iam_member" "pam_ww_tmp_eric" {
-  bucket   = "pam-ww-tmp-${var.project_id}"
+  bucket   = var.pam_ww_tmp_bucket
   role     = "roles/storage.objectUser"
   for_each = toset(var.eric_braen_users)
   member   = each.key

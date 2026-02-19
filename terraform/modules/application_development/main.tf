@@ -9,14 +9,14 @@ resource "google_compute_instance" "app_dev_server1" {
   project      = var.project_id
   zone         = var.zone
 
-  resource_policies = var.config.resource_policies
+  resource_policies = var.resource_policies
 
   metadata = {
     block-project-ssh-keys = true
     enable-osconfig        = true
   }
 
-  labels = merge(var.common_labels, var.config.labels)
+  labels = merge(var.common_labels, var.labels)
 
   boot_disk {
     device_name = "app-dev-server1"

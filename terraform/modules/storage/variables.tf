@@ -7,8 +7,12 @@ variable "data_buckets_map" {
     all_users      = list(string)
   }))
 }
-variable "config" {
-  type = object({
-    bucket_location = string
-  })
+variable "bucket_location" {
+  type    = string
+  default = "US"
+}
+
+variable "pam_ww_tmp_bucket" {
+  type        = string
+  description = "Name of the temporary bucket for windows workstations"
 }

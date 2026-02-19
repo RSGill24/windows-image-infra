@@ -3,18 +3,18 @@ data "google_project" "project" {
 }
 
 resource "google_service_account" "packer_builder_sa" {
-  account_id   = "packer-builder-sa"
+  account_id   = var.packer_sa_account_id
   display_name = "Service Account for building packer images"
   project      = var.project_id
 }
 
 resource "google_pubsub_topic" "monthly_build_trigger_topic" {
-  name    = "run-monthly-rebuilds"
+  name    = var.pubsub_topic_name
   project = var.project_id
 }
 
 resource "google_cloud_scheduler_job" "monthly_rebuild" {
-  name        = "golden-image-monthly-rebuild"
+  name        = var.scheduler_job_name
   description = "Triggers the monthly pam-wv latest image rebuild"
   schedule    = var.rebuild_schedule_cron
   time_zone   = "Etc/UTC"
@@ -23,19 +23,19 @@ resource "google_cloud_scheduler_job" "monthly_rebuild" {
 
   pubsub_target {
     topic_name = google_pubsub_topic.monthly_build_trigger_topic.id
-    data       = base64encode(var.config.scheduler_data)
+    data       = base64encode(var.scheduler_data)
   }
 }
 
 resource "google_cloudbuild_trigger" "scheduled_trigger" {
-  name            = "golden-image-build-scheduled"
+  name            = var.cloudbuild_trigger_name
   description     = "Builds the pam-wv latest image on a schedule via cloud scheduler/pubsub"
   disabled        = false
   project         = var.project_id
   service_account = google_service_account.packer_builder_sa.id
 
   source_to_build {
-    uri       = "https://source.developers.google.com/p/${var.project_id}/r/${var.source_repo_name}"
+    uri       = var.source_repo_url
     repo_type = "CLOUD_SOURCE_REPOSITORIES"
     ref       = "refs/heads/master"
   }
@@ -91,7 +91,7 @@ resource "google_project_iam_custom_role" "image_builder_role" {
   project     = var.project_id
   title       = "image.builder.role"
   description = "Custom role for packer image builders"
-  permissions = var.config.image_builder_permissions
+  permissions = var.image_builder_permissions
 }
 
 resource "google_project_iam_member" "iap_tunnel_users" {

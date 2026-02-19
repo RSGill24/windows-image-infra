@@ -18,7 +18,6 @@ terraform.rc
 google-cloud-sdk/
 .gcloud/
 .vscode/
-.idea/
 *.log
 logs/
 

@@ -116,3 +116,11 @@ variable "compute_user_role_id" {
   type        = string
   description = "ID of the compute_user custom IAM role from the iam module output"
 }
+variable "config" {
+  type = object({
+    patch_policy_url = string
+    labels           = map(string)
+    template_labels  = map(string)
+    gpu_labels       = map(string)
+  })
+}

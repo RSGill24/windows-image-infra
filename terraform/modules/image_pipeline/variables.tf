@@ -22,3 +22,9 @@ variable "windows_patch_duration"      { type = string }
 variable "dormant_patch_boot_schedule"        { type = string }
 variable "patch_boot_shutdown_start_schedule" { type = string }
 variable "patch_boot_shutdown_stop_schedule"  { type = string }
+variable "config" {
+  type = object({
+    scheduler_data            = string
+    image_builder_permissions = list(string)
+  })
+}

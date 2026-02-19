@@ -1,11 +1,11 @@
 resource "google_project_service" "dns_service" {
   project = var.project_id
-  service = "dns.googleapis.com"
+  service = var.config.dns_service_name
 }
 
 resource "google_dns_policy" "dns_logging" {
   depends_on     = [google_project_service.dns_service]
-  name           = "dns-logging"
+  name           = var.config.dns_policy_name
   project        = var.project_id
   enable_logging = true
   networks {
@@ -84,7 +84,7 @@ resource "google_compute_firewall" "iap_to_ssh" {
   source_ranges = [var.iap_source_range]
   allow {
     protocol = "tcp"
-    ports    = ["22"]
+    ports    = var.config.iap_ssh_ports
   }
   log_config { metadata = "INCLUDE_ALL_METADATA" }
 }
@@ -98,7 +98,7 @@ resource "google_compute_firewall" "iap_to_rdp" {
   source_ranges = [var.iap_source_range]
   allow {
     protocol = "tcp"
-    ports    = ["3389"]
+    ports    = var.config.iap_rdp_ports
   }
   log_config { metadata = "INCLUDE_ALL_METADATA" }
 }
@@ -112,7 +112,7 @@ resource "google_compute_firewall" "iap_to_winrm_ssl" {
   source_ranges = [var.iap_source_range]
   allow {
     protocol = "tcp"
-    ports    = ["5986"]
+    ports    = var.config.iap_winrm_ports
   }
   log_config { metadata = "INCLUDE_ALL_METADATA" }
 }
@@ -125,7 +125,7 @@ resource "google_compute_firewall" "user_vm_subnet1_traffic" {
   priority  = 1000
   source_ranges = [var.app_subnet1_cidr, var.app_subnet2_cidr]
   allow {
-    protocol = "all"
+    protocol = var.config.user_vm_protocols
   }
   log_config { metadata = "INCLUDE_ALL_METADATA" }
 }

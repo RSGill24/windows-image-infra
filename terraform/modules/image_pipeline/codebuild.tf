@@ -23,7 +23,7 @@ resource "google_cloud_scheduler_job" "monthly_rebuild" {
 
   pubsub_target {
     topic_name = google_pubsub_topic.monthly_build_trigger_topic.id
-    data       = base64encode("Run monthly build")
+    data       = base64encode(var.config.scheduler_data)
   }
 }
 
@@ -91,16 +91,7 @@ resource "google_project_iam_custom_role" "image_builder_role" {
   project     = var.project_id
   title       = "image.builder.role"
   description = "Custom role for packer image builders"
-  permissions = [
-    "compute.disks.create", "compute.disks.delete", "compute.disks.useReadOnly",
-    "compute.globalOperations.get", "compute.images.get", "compute.images.create",
-    "compute.images.list", "compute.images.getFromFamily", "compute.images.deprecate",
-    "compute.images.delete", "compute.images.useReadOnly",
-    "compute.instances.create", "compute.instances.delete", "compute.instances.get",
-    "compute.instances.setMetadata", "compute.instances.setServiceAccount",
-    "compute.instances.stop", "compute.machineTypes.get", "compute.subnetworks.use",
-    "compute.zoneOperations.get", "compute.zones.get", "compute.projects.get",
-  ]
+  permissions = var.config.image_builder_permissions
 }
 
 resource "google_project_iam_member" "iap_tunnel_users" {

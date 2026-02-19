@@ -14,10 +14,6 @@ data "google_compute_disk" "gpu_disk" {
   project = var.project_id
 }
 
-locals {
-  patch_policy_url = "https://www.googleapis.com/compute/v1/projects/${var.project_id}/regions/${var.region}/resourcePolicies/patch-boot-shutdown"
-  ww_labels        = merge(var.common_labels, { product_name = "pam-ww" })
-}
 
 # ── Template instance ─────────────────────────────────────────────────────────
 resource "google_compute_instance" "ww_template_instance" {
@@ -26,16 +22,14 @@ resource "google_compute_instance" "ww_template_instance" {
   project      = var.project_id
   zone         = var.zone
 
-  resource_policies = [local.patch_policy_url]
+  resource_policies = [var.config.patch_policy_url]
 
   metadata = {
     block-project-ssh-keys = "true"
     enable-osconfig        = "true"
   }
 
-  labels = merge(local.ww_labels, {
-    windows_force_reboot_patch_15th = "true"
-  })
+  labels = merge(var.common_labels, var.config.labels, var.config.template_labels)
 
   boot_disk {
     device_name = "latest-pam-ww-template-instance"
@@ -75,16 +69,14 @@ resource "google_compute_instance" "user_pam_ww" {
   project      = var.project_id
   zone         = var.zone
 
-  resource_policies = [local.patch_policy_url]
+  resource_policies = [var.config.patch_policy_url]
 
   metadata = {
     block-project-ssh-keys = "true"
     enable-osconfig        = "true"
   }
 
-  labels = merge(local.ww_labels, {
-    windows_force_reboot_patch_15th = "true"
-  })
+  labels = merge(var.common_labels, var.config.labels, var.config.template_labels)
 
   boot_disk {
     device_name = "${lower(replace(replace(replace(each.value, "/[^a-z0-9]+/", "-"), "user-", ""), "noaa-gov-", ""))}-pam-ww"
@@ -132,17 +124,14 @@ resource "google_compute_instance" "gpu_instance" {
     on_host_maintenance = "TERMINATE"
   }
 
-  resource_policies = [local.patch_policy_url]
+  resource_policies = [var.config.patch_policy_url]
 
   metadata = {
     block-project-ssh-keys = "true"
     enable-osconfig        = "true"
   }
 
-  labels = merge(var.common_labels, {
-    product_name                    = "pam-ww-gpu"
-    windows_force_reboot_patch_15th = "true"
-  })
+  labels = merge(var.common_labels, var.config.gpu_labels)
 
   boot_disk {
     auto_delete = false
@@ -181,16 +170,14 @@ resource "google_compute_instance" "eric_braen_ww" {
   project      = var.project_id
   zone         = var.zone
 
-  resource_policies = [local.patch_policy_url]
+  resource_policies = [var.config.patch_policy_url]
 
   metadata = {
     block-project-ssh-keys = "true"
     enable-osconfig        = "true"
   }
 
-  labels = merge(local.ww_labels, {
-    windows_force_reboot_patch_15th = "true"
-  })
+  labels = merge(var.common_labels, var.config.labels, var.config.template_labels)
 
   boot_disk {
     source = "projects/${var.project_id}/zones/${var.zone}/disks/${var.eric_braen_disk_name}"

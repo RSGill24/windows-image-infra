@@ -7,3 +7,8 @@ variable "data_buckets_map" {
     all_users      = list(string)
   }))
 }
+variable "config" {
+  type = object({
+    bucket_location = string
+  })
+}

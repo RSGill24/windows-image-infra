@@ -9,18 +9,14 @@ resource "google_compute_instance" "app_dev_server1" {
   project      = var.project_id
   zone         = var.zone
 
-  resource_policies = [
-    "https://www.googleapis.com/compute/v1/projects/${var.project_id}/regions/${var.region}/resourcePolicies/dormant-patch-boot"
-  ]
+  resource_policies = var.config.resource_policies
 
   metadata = {
     block-project-ssh-keys = true
     enable-osconfig        = true
   }
 
-  labels = merge(var.common_labels, {
-    ubuntu_force_reboot_patch_weds_7utc = true
-  })
+  labels = merge(var.common_labels, var.config.labels)
 
   boot_disk {
     device_name = "app-dev-server1"

@@ -64,3 +64,9 @@ variable "docker_repo_id" {
   description = "Artifact Registry repository ID for Docker images"
   default     = "pamdata-docker-repo"
 }
+variable "config" {
+  type = object({
+    resource_policies = list(string)
+    labels            = map(string)
+  })
+}

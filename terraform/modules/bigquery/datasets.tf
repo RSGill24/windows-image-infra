@@ -1,8 +1,7 @@
-# ── Compliance Dataset ────────────────────────────────────────────────────────
 resource "google_bigquery_dataset" "pam_wv_instance_controls" {
   dataset_id                 = var.compliance_dataset_id
   project                    = var.project_id
-  description                = "BigQuery dataset for compliance data with dynamic quarterly artifact queries"
+  description                = var.config.compliance_description
   delete_contents_on_destroy = true
 }
 
@@ -11,36 +10,7 @@ resource "google_bigquery_table" "pam_wv_instance_controls_table" {
   project    = var.project_id
   table_id   = var.compliance_table_id
 
-  schema = <<EOF
-[
-  {"name":"ConfigurationName","type":"STRING"},
-  {"name":"DependsOn","type":"STRING"},
-  {"name":"ModuleName","type":"STRING"},
-  {"name":"ModuleVersion","type":"STRING"},
-  {"name":"PsDscRunAsCredential","type":"STRING"},
-  {"name":"ResourceId","type":"STRING"},
-  {"name":"SourceInfo","type":"STRING"},
-  {"name":"DurationInSeconds","type":"FLOAT64"},
-  {"name":"Error","type":"STRING"},
-  {"name":"FinalState","type":"STRING"},
-  {"name":"InDesiredState","type":"BOOL"},
-  {"name":"InitialState","type":"STRING"},
-  {"name":"InstanceName","type":"STRING"},
-  {"name":"RebootRequested","type":"BOOL"},
-  {"name":"ResourceName","type":"STRING"},
-  {"name":"StartDate","type":"STRING"},
-  {"name":"StateChanged","type":"BOOL"},
-  {"name":"PSComputerName","type":"STRING"},
-  {"name":"CimClass","type":"STRING"},
-  {"name":"CimInstanceProperties","type":"STRING"},
-  {"name":"CimSystemProperties","type":"STRING"},
-  {"name":"Compliance","type":"BOOL"},
-  {"name":"GCPInstanceName","type":"STRING"},
-  {"name":"GCPInstanceId","type":"INT64"},
-  {"name":"GCPImageName","type":"STRING"},
-  {"name":"GCPAuditUuid","type":"STRING"}
-]
-EOF
+  schema = var.config.compliance_table_schema
 }
 
 # ── GCS Audit Logs Dataset ────────────────────────────────────────────────────
@@ -63,12 +33,7 @@ resource "google_logging_project_sink" "gcs_reads_to_bq" {
   name        = "gcs-reads-to-bq"
   project     = var.project_id
   destination = "bigquery.googleapis.com/projects/${var.project_id}/datasets/${google_bigquery_dataset.logs.dataset_id}"
-  filter      = <<-EOT
-    logName="projects/${var.project_id}/logs/cloudaudit.googleapis.com%2Fdata_access"
-    resource.type = "gcs_bucket"
-    protoPayload.serviceName="storage.googleapis.com"
-    protoPayload.methodName=("storage.objects.get|storage.objects.getRange|storage.objects.compose|storage.objects.rewrite|storage.objects.copy")
-  EOT
+  filter      = var.config.gcs_log_sink_filter
   unique_writer_identity = true
   depends_on             = [google_project_iam_audit_config.gcs_data_read]
   bigquery_options {

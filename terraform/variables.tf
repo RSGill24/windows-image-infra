@@ -1,4 +1,6 @@
-# ── Core Identity ────────────────────────────────────────────────────────────
+# ── Core Identity ─────────────────────────────────────────────────────────────
+# No defaults here — must be explicitly set per environment in tfvars
+
 variable "project_id" {
   type        = string
   description = "GCP project ID"
@@ -7,515 +9,383 @@ variable "project_id" {
 variable "region" {
   type        = string
   description = "Primary GCP region"
-  default     = "us-east4"
 }
 
 variable "zone" {
   type        = string
   description = "Primary GCP zone"
-  default     = "us-east4-c"
 }
 
 variable "environment" {
   type        = string
-  description = "Deployment environment (dev, prod)"
-  default     = "prod"
+  description = "Deployment environment label (dev, prod)"
 }
 
 variable "application_id" {
   type        = string
-  description = "Application ID for labels"
-  default     = "pamdata"
+  description = "Application ID used for labels and derived resource names"
 }
 
 variable "line_office" {
   type        = string
-  description = "NOAA line office for labels"
-  default     = "nmfs"
+  description = "NOAA line office for resource labels"
 }
 
 variable "system_id" {
   type        = string
-  description = "NOAA FISMA system ID for labels"
-  default     = "noaa4000"
+  description = "NOAA FISMA system ID for resource labels"
 }
 
 variable "task_order" {
   type        = string
-  description = "NOAA task order for labels"
-  default     = "13051420fnffk0123"
+  description = "NOAA task order number for resource labels"
 }
 
-# ── Backend ──────────────────────────────────────────────────────────────────
-variable "tf_state_bucket" {
+# ── Networking ────────────────────────────────────────────────────────────────
+# network_name, router_name, nat_name, subnet names
+# are derived in locals.tf from network_prefix + environment
+# DO NOT add network_name here
+
+variable "network_prefix" {
   type        = string
-  description = "GCS bucket for Terraform state"
-  default     = "tf-local-ggn-nmfs-pamdata-prod-1"
+  description = "Prefix for all network resource names. Combined with environment in locals.tf (e.g. app → app-network-prod)"
+  default     = "app"
 }
 
-# ── IAM / Principals ─────────────────────────────────────────────────────────
+variable "app_subnet1_cidr" {
+  type        = string
+  description = "CIDR block for app-subnet1"
+}
+
+variable "app_subnet2_cidr" {
+  type        = string
+  description = "CIDR block for app-subnet2"
+}
+
+variable "db_subnet1_cidr" {
+  type        = string
+  description = "CIDR block for db-subnet1"
+}
+
+variable "batch_subnet_cidr" {
+  type        = string
+  description = "CIDR block for batch-subnet"
+}
+
+variable "iap_source_range" {
+  type        = string
+  description = "IAP TCP forwarding source netblock"
+  default     = "35.235.240.0/20"
+}
+
+variable "cloud_router_asn" {
+  type        = number
+  description = "BGP ASN for the Cloud Router"
+  default     = 64514
+}
+
+# ── IAM / Principals ──────────────────────────────────────────────────────────
+
 variable "pamdata_admin" {
   type        = list(string)
-  description = "Project-level admins"
-  default = [
-    "user:daniel.woodrich@noaa.gov",
-    "user:jeffrey.walker@noaa.gov",
-  ]
+  description = "Project-level admin principals"
 }
 
 variable "pamdata_supervisors" {
   type        = list(string)
-  description = "Project supervisors"
-  default = [
-    "user:sofie.vanparijs@noaa.gov",
-    "user:rebecca.vanhoeck@noaa.gov",
-  ]
+  description = "Project supervisor principals"
 }
 
 variable "app_developers" {
   type        = list(string)
   description = "Application developer principals"
-  default     = ["user:daniel.woodrich@noaa.gov"]
 }
 
 variable "transfer_appliance_admins" {
   type        = list(string)
   description = "Transfer appliance admin principals"
-  default     = ["user:rebecca.vanhoeck@noaa.gov"]
 }
 
 variable "transfer_appliance_users" {
   type        = list(string)
   description = "Transfer appliance user principals"
-  default = [
-    "user:thomas.sejkora@noaa.gov",
-    "user:daniel.woodrich@noaa.gov",
-  ]
 }
 
 variable "nefsc_minke_detector_users" {
   type        = list(string)
-  description = "NEFSC minke detector operators"
-  default = [
-    "user:daniel.woodrich@noaa.gov",
-    "user:lindsey.transue@noaa.gov",
-    "serviceAccount:composer-sa1@ggn-nmfs-pamarc-dev-1.iam.gserviceaccount.com",
-  ]
+  description = "NEFSC minke detector operator principals"
 }
 
 variable "nefsc_humpback_detector_users" {
   type        = list(string)
-  description = "NEFSC humpback detector operators"
-  default = [
-    "user:daniel.woodrich@noaa.gov",
-    "user:lindsey.transue@noaa.gov",
-    "serviceAccount:composer-sa1@ggn-nmfs-pamarc-dev-1.iam.gserviceaccount.com",
-  ]
+  description = "NEFSC humpback detector operator principals"
 }
 
 variable "afsc_instinct_users" {
   type        = list(string)
-  description = "AFSC Instinct service operators"
-  default = [
-    "user:daniel.woodrich@noaa.gov",
-    "serviceAccount:composer-sa1@ggn-nmfs-pamarc-dev-1.iam.gserviceaccount.com",
-    "serviceAccount:afsc-instinct@ggn-nmfs-pamdata-prod-1.iam.gserviceaccount.com",
-  ]
+  description = "AFSC Instinct service operator principals"
 }
 
-variable "bucket_users" {
+# Replaces old hardcoded "bucket_users" variable.
+# Only pass EXTRA users here (e.g. domain:noaa.gov).
+# All project SA emails are auto-computed in locals.tf
+# and merged into local.computed_bucket_users.
+variable "extra_bucket_users" {
   type        = list(string)
-  description = "Principals that can read all data buckets"
-  default = [
-    "domain:noaa.gov",
-    "serviceAccount:app-dev-sa@ggn-nmfs-pamdata-prod-1.iam.gserviceaccount.com",
-    "serviceAccount:windows-workstation-sa@ggn-nmfs-pamdata-prod-1.iam.gserviceaccount.com",
-    "serviceAccount:nefsc-minke-detector@ggn-nmfs-pamdata-prod-1.iam.gserviceaccount.com",
-    "serviceAccount:nefsc-humpback-detector@ggn-nmfs-pamdata-prod-1.iam.gserviceaccount.com",
-    "serviceAccount:composer-sa1@ggn-nmfs-pamarc-dev-1.iam.gserviceaccount.com",
-    "serviceAccount:afsc-instinct@ggn-nmfs-pamdata-prod-1.iam.gserviceaccount.com",
-    "serviceAccount:pamarc-run-sa@ggn-nmfs-pamarc-prod-1.iam.gserviceaccount.com",
-  ]
+  description = "Additional principals for bucket read access beyond auto-computed project SAs (e.g. domain:noaa.gov)"
+  default     = []
 }
 
 variable "pam_ww_users" {
   type        = list(string)
-  description = "Windows workstation user principals"
+  description = "User principals to provision individual Windows workstation instances for"
   default     = []
 }
 
 variable "eric_braen_users" {
   type        = list(string)
-  description = "Eric Braen specific instance access principals"
+  description = "Principals granted access to Eric Braen custom instance"
   default     = ["user:eric.braen@noaa.gov"]
 }
 
-# ── Networking ───────────────────────────────────────────────────────────────
-variable "network_name" {
-  type    = string
-  default = "app-network"
+variable "transfer_appliance_service_accounts" {
+  type        = list(string)
+  description = "Service accounts granted storage.admin on the transfer appliance target bucket"
 }
 
-variable "app_subnet1_cidr" {
-  type    = string
-  default = "10.1.0.0/26"
-}
-
-variable "app_subnet2_cidr" {
-  type    = string
-  default = "10.1.0.64/26"
-}
-
-variable "db_subnet1_cidr" {
-  type    = string
-  default = "10.2.0.0/26"
-}
-
-variable "batch_subnet_cidr" {
-  type    = string
-  default = "10.3.0.0/16"
-}
-
-variable "iap_source_range" {
+variable "transfer_appliance_target_bucket" {
   type        = string
-  description = "IAP TCP forwarding netblock"
-  default     = "35.235.240.0/20"
+  description = "GCS bucket name to grant transfer appliance service accounts access to"
+  default     = "nefsc-1"
 }
 
-variable "cloud_router_asn" {
-  type    = number
-  default = 64514
-}
+# ── Image Pipeline ────────────────────────────────────────────────────────────
 
-# ── Image Pipeline ───────────────────────────────────────────────────────────
 variable "ww_image_family" {
   type        = string
-  description = "Image family for user workstations"
+  description = "Compute image family for user Windows workstation instances"
   default     = "pam-windows-workstation"
 }
 
 variable "ww_template_image_family" {
   type        = string
-  description = "Image family for workstation templates"
+  description = "Compute image family for workstation template instance"
   default     = "pam-ww-templates"
 }
 
 variable "ds_image_family" {
   type        = string
-  description = "Image family for data science / app dev server"
+  description = "Compute image family for data science / app dev server"
   default     = "pamdata-ds-gi"
 }
 
 variable "ww_machine_type" {
-  type    = string
-  default = "e2-standard-8"
+  type        = string
+  description = "Machine type for standard Windows workstation instances"
+  default     = "e2-standard-8"
 }
 
 variable "gpu_machine_type" {
-  type    = string
-  default = "n1-highmem-16"
+  type        = string
+  description = "Machine type for GPU workstation instance"
+  default     = "n1-highmem-16"
 }
 
 variable "app_dev_machine_type" {
-  type    = string
-  default = "e2-standard-4"
+  type        = string
+  description = "Machine type for the app dev / Docker server"
+  default     = "e2-standard-4"
 }
 
 variable "ww_disk_size_gb" {
-  type    = number
-  default = 250
+  type        = number
+  description = "Boot disk size in GB for Windows workstation instances"
+  default     = 250
 }
 
 variable "app_dev_disk_size_gb" {
-  type    = number
-  default = 360
+  type        = number
+  description = "Boot disk size in GB for the app dev server"
+  default     = 360
 }
 
 variable "ww_disk_type" {
-  type    = string
-  default = "pd-standard"
+  type        = string
+  description = "Boot disk type for all compute instances"
+  default     = "pd-standard"
 }
 
 variable "gpu_accelerator_type" {
   type        = string
-  description = "Accelerator type URL for GPU instance"
+  description = "Short name of GPU accelerator type. Full URL is built in locals.tf"
   default     = "nvidia-tesla-t4"
 }
 
 variable "gpu_disk_name" {
   type        = string
-  description = "Existing disk name for the GPU instance"
+  description = "Name of the existing persistent disk to attach to the GPU instance"
   default     = "dwoodrich-gpu3"
 }
 
 variable "eric_braen_disk_name" {
   type        = string
-  description = "Existing disk name for Eric Braen custom instance"
+  description = "Name of the existing disk for Eric Braen's custom instance"
   default     = "ins-copy-eb"
 }
 
 variable "source_repo_name" {
   type        = string
-  description = "Cloud Source Repository name for CloudBuild trigger"
+  description = "Cloud Source Repository name. Full URL is built in locals.tf"
   default     = "tf-repo-pamdata"
 }
 
 variable "cloudbuild_config_file" {
   type        = string
-  description = "Path to cloudbuild YAML inside the repo"
+  description = "Path to cloudbuild YAML file inside the source repo"
   default     = "packer/cloudbuild.yml"
 }
 
 variable "rebuild_schedule_cron" {
   type        = string
-  description = "Cron schedule for the monthly image rebuild"
+  description = "Cron expression for the monthly golden image rebuild"
   default     = "0 0 16 * *"
 }
 
 variable "packer_secret_id" {
   type        = string
-  description = "Secret Manager secret ID for packer user password"
+  description = "Secret Manager secret ID containing the packer user password"
   default     = "packer_user_password"
 }
 
+variable "instance_scopes" {
+  type        = list(string)
+  description = "OAuth2 scopes attached to all compute instance service accounts"
+  default     = ["https://www.googleapis.com/auth/cloud-platform"]
+}
+
 # ── Snapshot ──────────────────────────────────────────────────────────────────
+
 variable "snapshot_policy_name" {
-  type    = string
-  default = "dwoodrich-gpu-snap-policy"
+  type        = string
+  description = "Name of the GPU disk snapshot resource policy"
+  default     = "dwoodrich-gpu-snap-policy"
 }
 
 variable "snapshot_days_in_cycle" {
-  type    = number
-  default = 1
+  type        = number
+  description = "Snapshot frequency in days"
+  default     = 1
 }
 
 variable "snapshot_start_time" {
-  type    = string
-  default = "04:00"
+  type        = string
+  description = "UTC time to start daily snapshot (HH:MM format)"
+  default     = "04:00"
 }
 
 variable "snapshot_max_retention_days" {
-  type    = number
-  default = 14
+  type        = number
+  description = "Maximum number of days to retain snapshots"
+  default     = 14
 }
 
 # ── BigQuery ──────────────────────────────────────────────────────────────────
+
 variable "compliance_dataset_id" {
-  type    = string
-  default = "pam_wv_instance_controls"
+  type        = string
+  description = "BigQuery dataset ID for compliance data"
+  default     = "pam_wv_instance_controls"
 }
 
 variable "compliance_table_id" {
-  type    = string
-  default = "pam-wv-instance-controls-table"
+  type        = string
+  description = "BigQuery table ID for compliance records"
+  default     = "pam-wv-instance-controls-table"
 }
 
 variable "gcs_logs_dataset_id" {
-  type    = string
-  default = "gcs_read_logs"
+  type        = string
+  description = "BigQuery dataset ID for GCS audit read logs"
+  default     = "gcs_read_logs"
 }
 
 # ── Storage ───────────────────────────────────────────────────────────────────
+# pam_ww_tmp_bucket name is derived in locals.tf from project_id
+# DO NOT add it here
+
 variable "data_buckets_map" {
   type = map(object({
     data_authority = string
     data_admins    = list(string)
     all_users      = list(string)
   }))
-  description = "Map of data bucket names to their IAM configuration"
-  default = {
-    "omms-1" = {
-      data_authority = "user:timothy.rowell@noaa.gov"
-      data_admins = [
-        "user:timothy.rowell@noaa.gov",
-        "user:lindsey.peavey@noaa.gov",
-        "user:eden.zangl@noaa.gov",
-        "user:anastasia.kurz@noaa.gov",
-        "user:samara.m.havern@noaa.gov",
-        "user:emma.berretta@noaa.gov",
-      ]
-      all_users = []
-    }
-    "afsc-1" = {
-      data_authority = "user:catherine.berchok@noaa.gov"
-      data_admins = [
-        "user:daniel.woodrich@noaa.gov",
-        "user:catherine.berchok@noaa.gov",
-      ]
-      all_users = ["group:nmfs.afsc.nml.acoustics@noaa.gov"]
-    }
-    "nefsc-1" = {
-      data_authority = "user:sofie.vanparijs@noaa.gov"
-      data_admins = [
-        "user:julianne.wilder@noaa.gov",
-        "user:kate.choate@noaa.gov",
-        "user:xavier.mouy@noaa.gov",
-        "user:david.chevrier@noaa.gov",
-        "user:timothy.rowell@noaa.gov",
-        "user:taiki.sakai@noaa.gov",
-        "user:catherine.dodge@noaa.gov",
-      ]
-      all_users = [
-        "user:kate.choate@noaa.gov",
-        "user:lindsey.transue@noaa.gov",
-        "user:rebecca.vanhoek@noaa.gov",
-        "user:irene.brinkman@noaa.gov",
-        "user:rhett.finley@noaa.gov",
-        "user:sofie.vanparijs@noaa.gov",
-        "user:jeffrey.walker@noaa.gov",
-        "user:jessica.mccormick@noaa.gov",
-      ]
-    }
-    "sefsc-1" = {
-      data_authority = "user:melissa.soldevilla@noaa.gov"
-      data_admins = [
-        "user:melissa.soldevilla@noaa.gov",
-        "user:heloise.trouin-nouy@noaa.gov",
-      ]
-      all_users = [
-        "group:nmfs.sefsc.mmt.pam-ecology@noaa.gov",
-        "user:lia.caldwell@noaa.gov",
-      ]
-    }
-    "afsc-2" = {
-      data_authority = "user:timothy.rowell@noaa.gov"
-      data_admins = [
-        "user:timothy.rowell@noaa.gov",
-        "user:matt.grossi@noaa.gov",
-        "user:amelia.johnson@noaa.gov",
-      ]
-      all_users = []
-    }
-    "swfsc-1" = {
-      data_authority = "user:shannon.rankin@noaa.gov"
-      data_admins = [
-        "user:kourtney.burger@noaa.gov",
-        "user:shannon.rankin@noaa.gov",
-      ]
-      all_users = []
-    }
-    "nmfsc-1" = {
-      data_authority = "user:marla.holt@noaa.gov"
-      data_admins = [
-        "user:marla.holt@noaa.gov",
-        "user:candice.emmons@noaa.gov",
-        "user:arial.brewer@noaa.gov",
-      ]
-      all_users = []
-    }
-    "nmfsc-2" = {
-      data_authority = "user:candice.emmons@noaa.gov"
-      data_admins = [
-        "user:candice.emmons@noaa.gov",
-        "user:marla.holt@noaa.gov",
-        "user:arial.brewer@noaa.gov",
-      ]
-      all_users = []
-    }
-    "pifsc-1" = {
-      data_authority = "user:ann.allen@noaa.gov"
-      data_admins = [
-        "user:jennifer.mccullough@noaa.gov",
-        "user:ann.allen@noaa.gov",
-        "user:karlina.berkness@noaa.gov",
-        "user:selene.fregosi@noaa.gov",
-        "user:jenny.trickey@noaa.gov",
-      ]
-      all_users = ["user:kourtney.burger@noaa.gov"]
-    }
-    "ost-1" = {
-      data_authority = "user:jason.gedeon@noaa.gov"
-      data_admins = [
-        "user:samara.m.havern@noaa.gov",
-        "user:lauren.k.rodgers@noaa.gov",
-        "user:angela.treas@noaa.gov",
-        "user:margi.swords@noaa.gov",
-        "user:julianne.wilder@noaa.gov",
-        "user:kate.choate@noaa.gov",
-      ]
-      all_users = ["user:samara.m.havern@noaa.gov"]
-    }
-    "pffs-collaborative" = {
-      data_authority = ""
-      data_admins    = ["group:nmfs.pam-gilders@noaa.gov"]
-      all_users      = ["group:nmfs.pam-gilders@noaa.gov"]
-    }
-  }
-}
-
-variable "transfer_appliance_service_accounts" {
-  type        = list(string)
-  description = "Service accounts for the NEFSC-1 transfer appliance"
-  default = [
-    "serviceAccount:ta-c0-e326-9133@transfer-appliance-zimbru.iam.gserviceaccount.com",
-    "serviceAccount:project-804870724004@storage-transfer-service.iam.gserviceaccount.com",
-  ]
-}
-
-variable "transfer_appliance_target_bucket" {
-  type        = string
-  description = "Target bucket name for transfer appliance admin access"
-  default     = "nefsc-1"
+  description = "Map of data bucket names to their IAM configuration. Bucket names are keys."
 }
 
 # ── Patching ──────────────────────────────────────────────────────────────────
+
 variable "ubuntu_patch_hour" {
-  type    = number
-  default = 7
+  type        = number
+  description = "UTC hour to run Ubuntu patch deployment"
+  default     = 7
 }
 
 variable "ubuntu_patch_minute" {
-  type    = number
-  default = 15
+  type        = number
+  description = "UTC minute to run Ubuntu patch deployment"
+  default     = 15
 }
 
 variable "ubuntu_patch_day" {
-  type    = string
-  default = "WEDNESDAY"
+  type        = string
+  description = "Day of week for Ubuntu patch deployment"
+  default     = "WEDNESDAY"
 }
 
 variable "ubuntu_patch_duration" {
-  type    = string
-  default = "1800s"
+  type        = string
+  description = "Max duration for Ubuntu patch window (e.g. 1800s)"
+  default     = "1800s"
 }
 
 variable "windows_patch_hour" {
-  type    = number
-  default = 22
+  type        = number
+  description = "UTC hour to run Windows patch deployment"
+  default     = 22
 }
 
 variable "windows_patch_minute" {
-  type    = number
-  default = 15
+  type        = number
+  description = "UTC minute to run Windows patch deployment"
+  default     = 15
 }
 
 variable "windows_patch_month_day" {
-  type    = number
-  default = 15
+  type        = number
+  description = "Day of month for Windows monthly patch deployment"
+  default     = 15
 }
 
 variable "windows_patch_duration" {
-  type    = string
-  default = "5400s"
+  type        = string
+  description = "Max duration for Windows patch window (e.g. 5400s)"
+  default     = "5400s"
 }
 
 variable "dormant_patch_boot_schedule" {
-  type    = string
-  default = "0 7 * * 3"
+  type        = string
+  description = "Cron schedule to boot dormant Linux instances for patching"
+  default     = "0 7 * * 3"
 }
 
 variable "patch_boot_shutdown_start_schedule" {
-  type    = string
-  default = "0 22 15 * *"
+  type        = string
+  description = "Cron schedule to boot Windows instances for patch cycle"
+  default     = "0 22 15 * *"
 }
 
 variable "patch_boot_shutdown_stop_schedule" {
-  type    = string
-  default = "59 23 15 * *"
-}
-
-# ── Docker / App Dev ─────────────────────────────────────────────────────────
-variable "docker_repo_id" {
-  type    = string
-  default = "pamdata-docker-repo"
+  type        = string
+  description = "Cron schedule to shut down Windows instances after patch cycle"
+  default     = "59 23 15 * *"
 }

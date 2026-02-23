@@ -1,0 +1,99 @@
+# Monthly Windows image hardening pipeline.
+substitutions:
+  _PAM_WV_VERS: "beta-10"
+  _TEMPLATE_INSTANCE: "lastest-pam-ww-template-instance"
+  _ZONE: "us-east4-c"
+  _SOURCE_FAMILY: "pam-ww-templates"
+  _PACKER_TEMPLATE: "harden_ww.pkr.hcl"
+  _PACKER_VERSION: "1.9.4"
+  _PACKER_PLUGIN_VERSION: "1.1.6"
+
+steps:
+- name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      run_step() {
+        local label="$1"
+        shift
+        echo "--- START: ${label} ---"
+        "$@"
+        local code=$?
+        if [ $code -ne 0 ]; then
+          echo "--- FAIL: ${label} (exit ${code}) ---"
+          exit $code
+        fi
+        echo "--- PASS: ${label} ---"
+      }
+
+      require_non_empty() {
+        local name="$1"
+        local value="$2"
+        if [ -z "$value" ]; then
+          echo "Required substitution ${name} is empty"
+          exit 1
+        fi
+      }
+
+      require_non_empty "_PAM_WV_VERS" "${_PAM_WV_VERS}"
+      require_non_empty "_TEMPLATE_INSTANCE" "${_TEMPLATE_INSTANCE}"
+      require_non_empty "_ZONE" "${_ZONE}"
+      require_non_empty "_SOURCE_FAMILY" "${_SOURCE_FAMILY}"
+      require_non_empty "_PACKER_TEMPLATE" "${_PACKER_TEMPLATE}"
+      require_non_empty "_PACKER_VERSION" "${_PACKER_VERSION}"
+      require_non_empty "_PACKER_PLUGIN_VERSION" "${_PACKER_PLUGIN_VERSION}"
+
+      run_step "apt update" apt-get update -y
+      run_step "install deps" apt-get install -y jq unzip curl
+
+      PACKER_ZIP="packer_${_PACKER_VERSION}_linux_amd64.zip"
+      run_step "download packer" curl -LO "https://releases.hashicorp.com/packer/${_PACKER_VERSION}/${PACKER_ZIP}"
+      run_step "unzip packer" unzip "${PACKER_ZIP}"
+      run_step "install packer" mv packer /usr/local/bin/
+      run_step "cleanup packer zip" rm -f "${PACKER_ZIP}"
+
+      PLUGIN_DIR="/root/.config/packer/plugins/github.com/hashicorp/googlecompute/${_PACKER_PLUGIN_VERSION}/linux_amd64"
+      run_step "create plugin dir" mkdir -p "${PLUGIN_DIR}"
+
+      PLUGIN_ZIP="packer-plugin-googlecompute_${_PACKER_PLUGIN_VERSION}_linux_amd64.zip"
+      run_step "download plugin" curl -LO "https://releases.hashicorp.com/packer-plugin-googlecompute/${_PACKER_PLUGIN_VERSION}/${PLUGIN_ZIP}"
+      run_step "unzip plugin" unzip "${PLUGIN_ZIP}" -d "${PLUGIN_DIR}"
+      run_step "cleanup plugin zip" rm -f "${PLUGIN_ZIP}"
+
+      PACKER_PW=$(gcloud secrets versions access latest --secret="packer_user_password")
+      require_non_empty "PACKER_PW" "${PACKER_PW}"
+
+      run_step "stop template instance" gcloud compute instances stop "${_TEMPLATE_INSTANCE}" --zone "${_ZONE}"
+      run_step "seed source image" gcloud compute images create "${_PAM_WV_VERS}-$(date +%s)" --source-disk "${_TEMPLATE_INSTANCE}" --source-disk-zone "${_ZONE}" --family "${_SOURCE_FAMILY}"
+
+      SRC_IMG_NAME=$(gcloud compute images list --filter "family=${_SOURCE_FAMILY}" --format 'value(name)' --sort-by~creationTimestamp --limit 1)
+      require_non_empty "SRC_IMG_NAME" "${SRC_IMG_NAME}"
+
+      export PACKER_LOG=1
+      export PACKER_PW="${PACKER_PW}"
+      export SRC_IMG_NAME="${SRC_IMG_NAME}"
+
+      run_step "packer init" packer init "${_PACKER_TEMPLATE}"
+      run_step "packer validate" packer validate "${_PACKER_TEMPLATE}"
+      run_step "packer build" packer build \
+        -var "project_id=${PROJECT_ID}" \
+        -var "source_image_project_id=[\"${PROJECT_ID}\"]" \
+        -var "source_image_family=${_SOURCE_FAMILY}" \
+        -var "service_account_email=packer-builder-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+        -var "image_family=pam-windows-workstation" \
+        -var "machine_type=e2-standard-8" \
+        -var "zone=${_ZONE}" \
+        -var "hardening_source_dir=./scripts/windows" \
+        -var "hardening_target_dir=C:/Users/packer_user/hardening" \
+        -var "hardening_entry_script=run_all.ps1" \
+        "${_PACKER_TEMPLATE}"
+
+dir: 'packer'
+
+serviceAccount: "packer-builder-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

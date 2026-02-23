@@ -1,0 +1,30 @@
+variable "project_id" { type = string }
+variable "region1" { type = string }
+
+variable "dns_policy_name" { type = string }
+variable "app_network_name" { type = string }
+variable "iap_ssh_firewall_name" { type = string }
+variable "iap_rdp_firewall_name" { type = string }
+variable "iap_winrm_firewall_name" { type = string }
+variable "iap_source_ranges" { type = list(string) }
+variable "router_name" { type = string }
+variable "nat_name" { type = string }
+variable "app_subnet1_name" { type = string }
+variable "app_subnet1_cidr" { type = string }
+variable "app_subnet2_name" { type = string }
+variable "app_subnet2_cidr" { type = string }
+variable "east_west_firewall_name" { type = string }
+variable "db_subnet1_name" { type = string }
+variable "db_subnet1_cidr" { type = string }
+variable "batch_subnet_name" { type = string }
+variable "batch_subnet_cidr" { type = string }
+
+variable "linux_patch_schedule" { type = string }
+variable "windows_patch_schedule" { type = string }
+variable "windows_patch_stop_schedule" { type = string }
+variable "ubuntu_patch_day_of_week" { type = string }
+variable "ubuntu_patch_hour" { type = number }
+variable "ubuntu_patch_minute" { type = number }
+variable "windows_patch_month_day" { type = number }
+variable "windows_patch_hour" { type = number }
+variable "windows_patch_minute" { type = number }

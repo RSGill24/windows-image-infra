@@ -1,0 +1,18 @@
+I've been given a high level IAM role: roles/resourcemanager.projectIamAdmin
+What permissions do I need to simply set up terraform?
+
+create bucket: storage object admin
+create repo: source repo admin
+create repo (switch on source repo api): service usage admin
+added both roles in console
+
+also, needed: turn on apis, listed here:
+sourcerepo.googleapis.com
+
+
+This is an example of what is necessary to build the terraform state bucket.
+In the GCP shell (or other appropriately configured computer) run:
+
+gsutil mb -b on -l us-east4 gs://tflocal-ggn-nmfs-pamdata-prod-1
+gsutil versioning set on gs://tflocal-ggn-nmfs-pamdata-prod-1
+gsutil label set bucketlabels.json gs://tflocal-ggn-nmfs-pamdata-prod-1

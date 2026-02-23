@@ -1,0 +1,8 @@
+{
+  "noaa_fismaid": "noaa4000",
+  "noaa_lineoffice": "nmfs",
+  "noaa_taskorder": "",
+  "noaa_environment": "prod",
+  "noaa_applicationid": "pamdata",
+  "noaa_project_id": "ggn-nmfs-pamdata-prod-1"
+}

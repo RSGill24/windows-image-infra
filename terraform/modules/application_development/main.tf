@@ -2,10 +2,6 @@
 #
 #docker server
 
-data "google_compute_image" "latest_ds_gi_image" {
-  family = var.ds_image_family
-}
-
 #create instance
 #
 #post provision steps:
@@ -43,7 +39,7 @@ resource "google_compute_instance" "app_dev_server1" {
     device_name = var.app_dev_instance_name
 
     initialize_params {
-      image = data.google_compute_image.latest_ds_gi_image.self_link
+      image = "projects/${var.ds_image_project_id}/global/images/family/${var.ds_image_family}"
       size  = var.app_dev_boot_disk_size_gb
       type  = var.app_dev_boot_disk_type
     }

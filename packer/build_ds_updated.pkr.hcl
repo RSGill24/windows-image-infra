@@ -46,8 +46,7 @@ variable "image_family" {
 }
 
 variable "image_name" {
-  type = string
-  default
+  type = string  
 }
 
 #this time, specify oslogin and iap for ssh

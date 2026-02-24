@@ -5,6 +5,7 @@
 #point where it worked.
 
 resource "google_compute_resource_policy" "dwoodrich_gpu_snap_sched" {
+  count  = var.enable_snapshot_disk_attachment ? 1 : 0
   name   = var.snapshot_policy_name
   region = var.region1
 
@@ -24,8 +25,9 @@ resource "google_compute_resource_policy" "dwoodrich_gpu_snap_sched" {
 }
 
 resource "google_compute_disk_resource_policy_attachment" "win_fs_boot_disk_snap_attachment" {
+  count   = var.enable_snapshot_disk_attachment ? 1 : 0
   project = var.project_id
-  name    = google_compute_resource_policy.dwoodrich_gpu_snap_sched.name
+  name    = google_compute_resource_policy.dwoodrich_gpu_snap_sched[0].name
   disk    = var.snapshot_target_disk_name
   zone    = var.zone1
 }

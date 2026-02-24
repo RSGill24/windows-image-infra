@@ -38,6 +38,16 @@ variable "taskorder" {
   description = "Task order label"
 }
 
+variable "bucket_prefix" {
+  type        = string
+  description = "Prefix used for bucket naming pattern"
+}
+
+variable "artifact_bucket" {
+  type        = string
+  description = "Artifact bucket used for generated metadata objects"
+}
+
 variable "auto_shutdown" {
   type        = bool
   description = "Enable auto shutdown behavior where applicable"
@@ -155,11 +165,61 @@ variable "data_buckets_map" {
 variable "windows_gpu_type" {
   type        = string
   description = "GPU accelerator type URI"
+  default     = ""
 }
 
 variable "windows_custom_boot_disk_source" {
   type        = string
   description = "Custom boot disk source for special workstation"
+  default     = ""
+}
+
+variable "ds_image_project_id" {
+  type        = string
+  description = "Project that hosts the Linux golden image family"
+  default     = ""
+}
+
+variable "windows_workstation_image_project_id" {
+  type        = string
+  description = "Project that hosts the Windows workstation image family"
+  default     = ""
+}
+
+variable "windows_template_image_project_id" {
+  type        = string
+  description = "Project that hosts the Windows template image family"
+  default     = ""
+}
+
+variable "enable_gpu_workstation" {
+  type        = bool
+  description = "Enable the custom GPU workstation instance that boots from an existing disk"
+  default     = false
+}
+
+variable "gpu_boot_disk_name" {
+  type        = string
+  description = "Existing disk name used as the boot disk when GPU workstation is enabled"
+  default     = ""
+}
+
+variable "gpu_boot_disk_project_id" {
+  type        = string
+  description = "Project that hosts the existing GPU boot disk"
+  default     = ""
+}
+
+variable "enable_custom_boot_disk_instance" {
+  type        = bool
+  description = "Enable the custom workstation instance that boots from windows_custom_boot_disk_source"
+  default     = false
+}
+
+variable "enable_snapshot_disk_attachment" {
+  type        = bool
+  description = "Enable attaching the snapshot policy to snapshot_target_disk_name"
+  default     = false
 }
 
 variable "windows_template_instance_name" {

@@ -37,13 +37,21 @@ module "network" {
 }
 
 module "storage" {
-  source                    = "./modules/storage"
-  project_id                = local.cfg.project_id
-  region1                   = local.cfg.region1
-  zone1                     = local.cfg.zone1
-  data_buckets_map          = var.data_buckets_map
-  snapshot_policy_name      = local.storage_defaults.snapshot_policy_name
-  snapshot_target_disk_name = local.storage_defaults.snapshot_target_disk_name
+  source                          = "./modules/storage"
+  project_id                      = local.cfg.project_id
+  region1                         = local.cfg.region1
+  zone1                           = local.cfg.zone1
+  environment                     = var.environment
+  application_id                  = local.cfg.application_id
+  lineoffice                      = local.cfg.lineoffice
+  system_id                       = local.cfg.system_id
+  taskorder                       = local.cfg.taskorder
+  bucket_prefix                   = var.bucket_prefix
+  artifact_bucket                 = var.artifact_bucket
+  data_buckets_map                = var.data_buckets_map
+  enable_snapshot_disk_attachment = var.enable_snapshot_disk_attachment
+  snapshot_policy_name            = local.storage_defaults.snapshot_policy_name
+  snapshot_target_disk_name       = local.storage_defaults.snapshot_target_disk_name
 }
 
 module "bigquery" {
@@ -87,6 +95,7 @@ module "iam" {
   transfer_appliance_target_bucket        = local.iam_defaults.transfer_appliance_target_bucket
   transfer_appliance_member_1             = local.iam_defaults.transfer_appliance_member_1
   transfer_appliance_member_2             = local.iam_defaults.transfer_appliance_member_2
+  named_bucket_names                      = module.storage.named_bucket_names
 }
 
 module "application_development" {
@@ -100,6 +109,7 @@ module "application_development" {
   system_id                     = local.cfg.system_id
   taskorder                     = local.cfg.taskorder
   ds_image_family               = local.application_development_defaults.ds_image_family
+  ds_image_project_id           = var.ds_image_project_id != "" ? var.ds_image_project_id : local.cfg.project_id
   app_dev_instance_name         = local.application_development_defaults.app_dev_instance_name
   app_dev_machine_type          = local.application_development_defaults.app_dev_machine_type
   app_dev_boot_disk_size_gb     = local.application_development_defaults.app_dev_boot_disk_size_gb
@@ -111,24 +121,30 @@ module "application_development" {
 }
 
 module "windows_workstation" {
-  source                           = "./modules/windows_workstation"
-  project_id                       = local.cfg.project_id
-  region1                          = local.cfg.region1
-  zone1                            = local.cfg.zone1
-  environment                      = var.environment
-  application_id                   = local.cfg.application_id
-  lineoffice                       = local.cfg.lineoffice
-  system_id                        = local.cfg.system_id
-  taskorder                        = local.cfg.taskorder
-  pam_ww_users1                    = var.pam_ww_users1
-  windows_workstation_image_family = local.windows_defaults.windows_workstation_image_family
-  windows_template_image_family    = local.windows_defaults.windows_template_image_family
-  windows_machine_type             = local.windows_defaults.windows_machine_type
-  windows_gpu_machine_type         = local.windows_defaults.windows_gpu_machine_type
-  app_subnet2_self_link            = module.network.app_subnet2_self_link
-  windows_workstation_sa_email     = module.iam.windows_workstation_sa_email
-  windows_gpu_type                 = var.windows_gpu_type
-  windows_custom_boot_disk_source  = var.windows_custom_boot_disk_source
+  source                               = "./modules/windows_workstation"
+  project_id                           = local.cfg.project_id
+  region1                              = local.cfg.region1
+  zone1                                = local.cfg.zone1
+  environment                          = var.environment
+  application_id                       = local.cfg.application_id
+  lineoffice                           = local.cfg.lineoffice
+  system_id                            = local.cfg.system_id
+  taskorder                            = local.cfg.taskorder
+  pam_ww_users1                        = var.pam_ww_users1
+  windows_workstation_image_family     = local.windows_defaults.windows_workstation_image_family
+  windows_template_image_family        = local.windows_defaults.windows_template_image_family
+  windows_workstation_image_project_id = var.windows_workstation_image_project_id != "" ? var.windows_workstation_image_project_id : local.cfg.project_id
+  windows_template_image_project_id    = var.windows_template_image_project_id != "" ? var.windows_template_image_project_id : local.cfg.project_id
+  windows_machine_type                 = local.windows_defaults.windows_machine_type
+  windows_gpu_machine_type             = local.windows_defaults.windows_gpu_machine_type
+  app_subnet2_self_link                = module.network.app_subnet2_self_link
+  windows_workstation_sa_email         = module.iam.windows_workstation_sa_email
+  enable_gpu_workstation               = var.enable_gpu_workstation
+  gpu_boot_disk_name                   = var.gpu_boot_disk_name
+  gpu_boot_disk_project_id             = var.gpu_boot_disk_project_id != "" ? var.gpu_boot_disk_project_id : local.cfg.project_id
+  windows_gpu_type                     = var.windows_gpu_type
+  enable_custom_boot_disk_instance     = var.enable_custom_boot_disk_instance
+  windows_custom_boot_disk_source      = var.windows_custom_boot_disk_source
 }
 
 module "sql" {

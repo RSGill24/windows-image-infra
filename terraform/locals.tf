@@ -158,6 +158,7 @@ locals {
     transfer_appliance_member_1             = "serviceAccount:ta-c0-e326-9133@transfer-appliance-zimbru.iam.gserviceaccount.com"
     transfer_appliance_member_2             = "serviceAccount:project-804870724004@storage-transfer-service.iam.gserviceaccount.com"
   }
+   
 
   storage_defaults = {
     snapshot_policy_name      = "dwoodrich-gpu-snap-policy"

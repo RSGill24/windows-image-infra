@@ -18,6 +18,7 @@ variable "bucket_users" { type = list(string) }
 variable "pam_ww_users1" { type = list(string) }
 variable "additional_source_readers" { type = list(string) }
 variable "standard_bucket_names" { type = list(string) }
+variable "named_bucket_names" { type = map(string) }
 
 variable "data_buckets_map" {
   type = map(object({
@@ -44,6 +45,7 @@ variable "enable_transfer_appliance_bindings" { type = bool }
 variable "transfer_appliance_target_bucket" { type = string }
 variable "transfer_appliance_member_1" { type = string }
 variable "transfer_appliance_member_2" { type = string }
+# this is roles.tf file variable extra
 variable "additional_source_repo_readers" {
   type    = list(string)
   default = []

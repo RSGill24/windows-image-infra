@@ -63,48 +63,96 @@ source "googlecompute" "update_pam_ww" {
   use_iap                 = true
   source_image_project_id = [var.source_image_project_id]
   source_image_family     = var.source_image_family
-  communicator            = "winrm"
-  winrm_username          = "packer_user"
-  winrm_password          = var.packer_user_password
-  winrm_use_ssl           = true
-  winrm_insecure          = true
-  service_account_email   = var.service_account_email
-  zone                    = var.zone
+
+  communicator      = "winrm"
+  winrm_username    = "packer_user"
+  winrm_password    = var.packer_user_password
+  winrm_use_ssl     = true
+  winrm_insecure    = true
+  winrm_port        = 5986
+  winrm_timeout     = "40m"
+
+  service_account_email       = var.service_account_email
+  zone                        = var.zone
   enable_secure_boot          = false
   enable_integrity_monitoring = false
   enable_vtpm                 = false
   disk_size                   = 250
+  network                     = "app-network"
+  subnetwork                  = "app-subnet1"
+  tags                        = ["winrm"]
 
   image_family = var.image_family
   image_name   = "pww-disa-${var.source_image}-hardened-patched-{{timestamp}}"
   machine_type = var.machine_type
+
+  metadata = {
+    windows-startup-script-ps1 = <<EOF
+# Step 1: Create packer_user FIRST with the correct password
+net user packer_user ${var.packer_user_password} /add /y
+net localgroup Administrators packer_user /add
+
+# Step 2: Configure WinRM
+winrm quickconfig -q
+Enable-PSRemoting -Force
+
+# Step 3: Create self-signed cert and configure HTTPS listener
+$cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
+$thumb = $cert.Thumbprint
+
+# Remove existing HTTPS listener if any, then create new one
+Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
+New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
+
+# Step 4: Auth settings
+Set-Item -Path WSMan:\localhost\Service\Auth\Basic -Value $true
+Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
+Set-Item -Path WSMan:\localhost\MaxTimeoutms -Value 1800000
+
+# Step 5: Firewall rule — open port LAST so Packer only connects when ready
+netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
+
+Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM setup complete" -EntryType Information
+EOF
+  }
 }
 
 build {
   sources = ["sources.googlecompute.update_pam_ww"]
 
+  # Step 1: Confirm connection and ensure packer_user password is correct.
   provisioner "powershell" {
     inline = [
-      "Get-WindowsUpdate -Install -AcceptAll"
+      "Write-Host 'Connected as:' $env:USERNAME",
+      "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop } catch {}",
+      "Write-Host 'Setup verified.'"
     ]
+  }
 
+  # Step 2: Install PSWindowsUpdate and apply Windows Updates.
+  provisioner "powershell" {
+    inline = [
+      "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force",
+      "Install-Module -Name PSWindowsUpdate -Force -SkipPublisherCheck",
+      "Get-WindowsUpdate -Install -AcceptAll -AutoReboot:$false"
+    ]
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password
   }
 
+  # Step 3: Copy hardening scripts to the instance.
   provisioner "file" {
     source      = var.hardening_source_dir
     destination = var.hardening_target_dir
   }
 
+  # Step 4: Run the hardening entry script.
   provisioner "powershell" {
     inline = [
       "cd ${var.hardening_target_dir}",
       "./${var.hardening_entry_script}"
     ]
-
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password
   }
 }
-

@@ -8,6 +8,7 @@ variable "system_id" { type = string }
 variable "taskorder" { type = string }
 
 variable "ds_image_family" { type = string }
+variable "ds_image_project_id" { type = string }
 variable "app_dev_instance_name" { type = string }
 variable "app_dev_machine_type" { type = string }
 variable "app_dev_boot_disk_size_gb" { type = number }

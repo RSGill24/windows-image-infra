@@ -1,9 +1,11 @@
 data "google_compute_image" "latest_pam_windows_workstation" {
-  family = var.windows_workstation_image_family
+  family  = var.windows_workstation_image_family
+  project = var.windows_workstation_image_project_id
 }
 
 data "google_compute_image" "lastest_pam_ww_template" {
-  family = var.windows_template_image_family
+  family  = var.windows_template_image_family
+  project = var.windows_template_image_project_id
 }
 
 ##instance representing latest workstation template in family
@@ -126,12 +128,15 @@ resource "google_compute_instance" "user_pam_windows_workstation_instance" {
 }
 
 data "google_compute_disk" "gpu_env_disk3" {
-  name = "dwoodrich-gpu3"
-  zone = var.zone1
+  count   = var.enable_gpu_workstation ? 1 : 0
+  name    = var.gpu_boot_disk_name
+  project = var.gpu_boot_disk_project_id
+  zone    = var.zone1
 }
 
 ##custom instance
 resource "google_compute_instance" "dwoodrich_pam_ww_gpu2" {
+  count        = var.enable_gpu_workstation ? 1 : 0
   name         = "dwoodrich-pam-ww-gpu2"
   machine_type = var.windows_gpu_machine_type
   project      = var.project_id
@@ -162,7 +167,7 @@ resource "google_compute_instance" "dwoodrich_pam_ww_gpu2" {
 
   boot_disk {
     auto_delete = false
-    source      = data.google_compute_disk.gpu_env_disk3.self_link
+    source      = data.google_compute_disk.gpu_env_disk3[0].self_link
   }
 
   #allow for updates to the image family to happen without needing replacement on instance.
@@ -194,6 +199,7 @@ resource "google_compute_instance" "dwoodrich_pam_ww_gpu2" {
 ##custom instance: eric braen to use a dependency included instant image
 ##note: this disk comes loaded with some of my user creds- don't hand to end user until these are scrubbed. Not a tight workflow at the moment.
 resource "google_compute_instance" "eric_braen_pam_ww_ins" {
+  count        = var.enable_custom_boot_disk_instance ? 1 : 0
   name         = "eric-braen-pam-ww-ins"
   machine_type = var.windows_machine_type
   project      = var.project_id

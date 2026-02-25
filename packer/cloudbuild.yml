@@ -70,7 +70,9 @@ steps:
   - |
       set -euo pipefail
 
-      apt install unzip -y 
+      # Install required tools first
+      apt-get update -y
+      apt-get install -y unzip curl
 
       # Fetch PACKER_PW from Secret Manager
       PACKER_PW=$$(gcloud secrets versions access latest \

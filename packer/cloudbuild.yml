@@ -70,6 +70,8 @@ steps:
   - |
       set -euo pipefail
 
+      apt install unzip -y 
+
       # Fetch PACKER_PW from Secret Manager
       PACKER_PW=$$(gcloud secrets versions access latest \
         --project "${_PROJECT_ID}" \

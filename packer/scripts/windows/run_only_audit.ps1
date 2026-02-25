@@ -1,2 +1,2 @@
-&"C:/Users/packer_user/hardening/audit.ps1"
-&"C:/Users/packer_user/hardening/audit_to_bq.bat"
+& (Join-Path $PSScriptRoot 'audit.ps1')
+& (Join-Path $PSScriptRoot 'audit_to_bq.bat')

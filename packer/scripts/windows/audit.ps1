@@ -5,10 +5,12 @@ $gcpImageNameLong = Invoke-RestMethod -Uri "http://169.254.169.254/computeMetada
 $gcpImageName = $gcpImageNameLong.Split("/")[-1]
 $auditUuid = [guid]::NewGuid()
 
-$outputPath = "C:/Users/packer_user/hardening/DSC_Audit_Results.csv"
+$scriptDir = $PSScriptRoot
+$outputPath = Join-Path $scriptDir 'DSC_Audit_Results.csv'
+$referenceMofPath = Join-Path $scriptDir 'ApplyWindowsServerStig\localhost.mof'
 
 # Run DSC Test
-$results = Test-DscConfiguration -ReferenceConfiguration C:\Users\packer_user\hardening\ApplyWindowsServerStig\localhost.mof
+$results = Test-DscConfiguration -ReferenceConfiguration $referenceMofPath
 
 # Initialize an array to hold formatted results
 $formattedResults = @()

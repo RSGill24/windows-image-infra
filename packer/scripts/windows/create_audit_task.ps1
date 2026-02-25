@@ -1,8 +1,10 @@
-# Define the path to your .bat file
-$Ps1FilePath = "C:/Users/packer_user/hardening/run_only_audit.ps1"
+# Determine the script directory so task keeps working with any hardening_target_dir
+$scriptDir = $PSScriptRoot
+$ps1FilePath = Join-Path $scriptDir 'run_only_audit.ps1'
 
-# Define the action to run the .bat file
-$Action = New-ScheduledTaskAction -Execute "Powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File $Ps1FilePath"
+# Quote the file path for Scheduled Task argument safety
+$actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$ps1FilePath`""
+$Action = New-ScheduledTaskAction -Execute "Powershell.exe" -Argument $actionArgs
 
 # Define the trigger for every 2 weeks
 $BiWeeklyTrigger = New-ScheduledTaskTrigger -Weekly -WeeksInterval 2 -DaysOfWeek Wednesday -At 9am

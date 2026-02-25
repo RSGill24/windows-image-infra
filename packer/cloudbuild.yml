@@ -1,15 +1,45 @@
 # Monthly Windows image hardening pipeline.
 substitutions:
-  _PAM_WV_VERS: "beta-10"
-  _TEMPLATE_INSTANCE: "lastest-pam-ww-template-instance"
+  _PROJECT_ID: "big-mender-473219-r2"
   _ZONE: "us-east4-c"
-  _SOURCE_FAMILY: "pam-ww-templates"
+  _IMAGE_FAMILY: "pww-windows-2022-hardened"
+  _SOURCE_IMAGE: "ws2022"
+  _WINRM_SECRET: "packer-winrm-password"
   _PACKER_TEMPLATE: "harden_ww.pkr.hcl"
   _PACKER_VERSION: "1.9.4"
   _PACKER_PLUGIN_VERSION: "1.1.6"
+  _HARDENING_SOURCE_DIR: "./scripts/windows/"
+  _HARDENING_TARGET_DIR: "C:/hardening"
 
 steps:
-- name: 'gcr.io/cloud-builders/gcloud'
+- id: 'llm-cost-estimation'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      echo "LLM cost estimation: not-provided"
+  dir: 'packer'
+
+- id: 'trivy-fs-scan'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+      apt-get update -y
+      apt-get install -y wget gnupg lsb-release
+      wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+      echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" > /etc/apt/sources.list.d/trivy.list
+      apt-get update -y
+      apt-get install -y trivy
+      trivy --version
+      trivy fs --no-progress --severity HIGH,CRITICAL --exit-code 1 .
+  dir: 'packer'
+
+- id: 'packer-build'
+  name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
   args:
   - -c
@@ -38,62 +68,69 @@ steps:
         fi
       }
 
-      require_non_empty "_PAM_WV_VERS" "${_PAM_WV_VERS}"
-      require_non_empty "_TEMPLATE_INSTANCE" "${_TEMPLATE_INSTANCE}"
-      require_non_empty "_ZONE" "${_ZONE}"
-      require_non_empty "_SOURCE_FAMILY" "${_SOURCE_FAMILY}"
-      require_non_empty "_PACKER_TEMPLATE" "${_PACKER_TEMPLATE}"
-      require_non_empty "_PACKER_VERSION" "${_PACKER_VERSION}"
+      # Validate required substitutions
+      require_non_empty "_PROJECT_ID"            "${_PROJECT_ID}"
+      require_non_empty "_ZONE"                  "${_ZONE}"
+      require_non_empty "_IMAGE_FAMILY"          "${_IMAGE_FAMILY}"
+      require_non_empty "_SOURCE_IMAGE"          "${_SOURCE_IMAGE}"
+      require_non_empty "_WINRM_SECRET"          "${_WINRM_SECRET}"
+      require_non_empty "_PACKER_TEMPLATE"       "${_PACKER_TEMPLATE}"
+      require_non_empty "_PACKER_VERSION"        "${_PACKER_VERSION}"
       require_non_empty "_PACKER_PLUGIN_VERSION" "${_PACKER_PLUGIN_VERSION}"
+      require_non_empty "_HARDENING_SOURCE_DIR"  "${_HARDENING_SOURCE_DIR}"
+      require_non_empty "_HARDENING_TARGET_DIR"  "${_HARDENING_TARGET_DIR}"
 
-      run_step "apt update" apt-get update -y
-      run_step "install deps" apt-get install -y jq unzip curl
+      # Install dependencies
+      run_step "apt update"    apt-get update -y
+      run_step "install deps"  apt-get install -y jq unzip curl
 
+      # Install Packer
       PACKER_ZIP="packer_${_PACKER_VERSION}_linux_amd64.zip"
       run_step "download packer" curl -LO "https://releases.hashicorp.com/packer/${_PACKER_VERSION}/${PACKER_ZIP}"
-      run_step "unzip packer" unzip "${PACKER_ZIP}"
-      run_step "install packer" mv packer /usr/local/bin/
-      run_step "cleanup packer zip" rm -f "${PACKER_ZIP}"
+      run_step "unzip packer"    unzip "${PACKER_ZIP}"
+      run_step "install packer"  mv packer /usr/local/bin/
+      run_step "cleanup packer"  rm -f "${PACKER_ZIP}"
 
-      PLUGIN_DIR="/root/.config/packer/plugins/github.com/hashicorp/googlecompute/${_PACKER_PLUGIN_VERSION}/linux_amd64"
+      # Install googlecompute plugin
+      PLUGIN_DIR="/root/.config/packer/plugins/github.com/hashicorp/googlecompute"
       run_step "create plugin dir" mkdir -p "${PLUGIN_DIR}"
-
-      PLUGIN_ZIP="packer-plugin-googlecompute_${_PACKER_PLUGIN_VERSION}_linux_amd64.zip"
+      PLUGIN_ZIP="packer-plugin-googlecompute_v${_PACKER_PLUGIN_VERSION}_x5.0_linux_amd64.zip"
       run_step "download plugin" curl -LO "https://releases.hashicorp.com/packer-plugin-googlecompute/${_PACKER_PLUGIN_VERSION}/${PLUGIN_ZIP}"
-      run_step "unzip plugin" unzip "${PLUGIN_ZIP}" -d "${PLUGIN_DIR}"
-      run_step "cleanup plugin zip" rm -f "${PLUGIN_ZIP}"
+      run_step "unzip plugin"    unzip "${PLUGIN_ZIP}" -d "${PLUGIN_DIR}"
+      run_step "cleanup plugin"  rm -f "${PLUGIN_ZIP}"
 
-      PACKER_PW=$(gcloud secrets versions access latest --secret="packer_user_password")
+      # Fetch PACKER_PW from Secret Manager
+      PACKER_PW=$(gcloud secrets versions access latest \
+        --project "${_PROJECT_ID}" \
+        --secret  "${_WINRM_SECRET}")
       require_non_empty "PACKER_PW" "${PACKER_PW}"
 
-      run_step "stop template instance" gcloud compute instances stop "${_TEMPLATE_INSTANCE}" --zone "${_ZONE}"
-      run_step "seed source image" gcloud compute images create "${_PAM_WV_VERS}-$(date +%s)" --source-disk "${_TEMPLATE_INSTANCE}" --source-disk-zone "${_ZONE}" --family "${_SOURCE_FAMILY}"
-
-      SRC_IMG_NAME=$(gcloud compute images list --filter "family=${_SOURCE_FAMILY}" --format 'value(name)' --sort-by~creationTimestamp --limit 1)
-      require_non_empty "SRC_IMG_NAME" "${SRC_IMG_NAME}"
-
+      # Set env vars for Packer
       export PACKER_LOG=1
       export PACKER_PW="${PACKER_PW}"
-      export SRC_IMG_NAME="${SRC_IMG_NAME}"
+      export SRC_IMG_NAME="${_SOURCE_IMAGE}"
 
-      run_step "packer init" packer init "${_PACKER_TEMPLATE}"
-      run_step "packer validate" packer validate "${_PACKER_TEMPLATE}"
-      run_step "packer build" packer build \
-        -var "project_id=${PROJECT_ID}" \
-        -var "source_image_project_id=[\"${PROJECT_ID}\"]" \
-        -var "source_image_family=${_SOURCE_FAMILY}" \
-        -var "service_account_email=packer-builder-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
-        -var "image_family=pam-windows-workstation" \
-        -var "machine_type=e2-standard-8" \
-        -var "zone=${_ZONE}" \
-        -var "hardening_source_dir=./scripts/windows" \
-        -var "hardening_target_dir=C:/Users/packer_user/hardening" \
-        -var "hardening_entry_script=run_all.ps1" \
-        "${_PACKER_TEMPLATE}"
+      # Common -var flags
+      PACKER_VARS=(
+        -var "project_id=${_PROJECT_ID}"
+        -var "source_image_project_id=windows-cloud"
+        -var "source_image_family=windows-2022"
+        -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
+        -var "image_family=${_IMAGE_FAMILY}"
+        -var "machine_type=e2-standard-8"
+        -var "zone=${_ZONE}"
+        -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}"
+        -var "hardening_target_dir=${_HARDENING_TARGET_DIR}"
+        -var "hardening_entry_script=run_all.ps1"
+      )
 
-dir: 'packer'
+      run_step "packer init"     packer init "${_PACKER_TEMPLATE}"
+      run_step "packer validate" packer validate "${PACKER_VARS[@]}" "${_PACKER_TEMPLATE}"
+      run_step "packer build"    packer build    "${PACKER_VARS[@]}" "${_PACKER_TEMPLATE}"
 
-serviceAccount: "packer-builder-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+  dir: 'packer'
+
+serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 
 options:
   logging: CLOUD_LOGGING_ONLY

@@ -9,6 +9,7 @@ substitutions:
   _PACKER_VERSION: "1.9.4"
   _HARDENING_SOURCE_DIR: "./scripts/windows/"
   _HARDENING_TARGET_DIR: "C:/hardening"
+  _MACHINE_TYPE: "e2-standard-4"
 
 steps:
 - id: 'llm-cost-estimation'
@@ -72,7 +73,7 @@ steps:
         -var "source_image_family=windows-2022" \
         -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
         -var "image_family=${_IMAGE_FAMILY}" \
-        -var "machine_type=e2-standard-8" \
+        -var "machine_type=${_MACHINE_TYPE}" \
         -var "zone=${_ZONE}" \
         -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
         -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \

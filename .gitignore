@@ -32,3 +32,4 @@ packer.log
 *.pfx
 *.key
 packer/packer-key.json
+packer-key.json

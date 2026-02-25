@@ -31,103 +31,69 @@ steps:
       apt-get update -y
       apt-get install -y wget gnupg lsb-release
       wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-      echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" > /etc/apt/sources.list.d/trivy.list
+      echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $$(lsb_release -sc) main" > /etc/apt/sources.list.d/trivy.list
       apt-get update -y
       apt-get install -y trivy
       trivy --version
       trivy fs --no-progress --severity HIGH,CRITICAL --exit-code 1 .
   dir: 'packer'
 
-- id: 'packer-build'
-  name: 'gcr.io/cloud-builders/gcloud'
-  entrypoint: bash
+- id: 'packer-init'
+  name: 'hashicorp/packer:${_PACKER_VERSION}'
+  entrypoint: sh
   args:
   - -c
   - |
-      set -euo pipefail
+      packer init ${_PACKER_TEMPLATE}
+  dir: 'packer'
 
-      run_step() {
-        local label="$1"
-        shift
-        echo "--- START: ${label} ---"
-        "$@"
-        local code=$?
-        if [ $code -ne 0 ]; then
-          echo "--- FAIL: ${label} (exit ${code}) ---"
-          exit $code
-        fi
-        echo "--- PASS: ${label} ---"
-      }
+- id: 'packer-validate'
+  name: 'hashicorp/packer:${_PACKER_VERSION}'
+  entrypoint: sh
+  args:
+  - -c
+  - |
+      packer validate \
+        -var "project_id=${_PROJECT_ID}" \
+        -var "source_image_project_id=windows-cloud" \
+        -var "source_image_family=windows-2022" \
+        -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+        -var "image_family=${_IMAGE_FAMILY}" \
+        -var "machine_type=e2-standard-8" \
+        -var "zone=${_ZONE}" \
+        -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
+        -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
+        -var "hardening_entry_script=run_all.ps1" \
+        ${_PACKER_TEMPLATE}
+  dir: 'packer'
 
-      require_non_empty() {
-        local name="$1"
-        local value="$2"
-        if [ -z "$value" ]; then
-          echo "Required substitution ${name} is empty"
-          exit 1
-        fi
-      }
-
-      # Validate required substitutions
-      require_non_empty "_PROJECT_ID"            "${_PROJECT_ID}"
-      require_non_empty "_ZONE"                  "${_ZONE}"
-      require_non_empty "_IMAGE_FAMILY"          "${_IMAGE_FAMILY}"
-      require_non_empty "_SOURCE_IMAGE"          "${_SOURCE_IMAGE}"
-      require_non_empty "_WINRM_SECRET"          "${_WINRM_SECRET}"
-      require_non_empty "_PACKER_TEMPLATE"       "${_PACKER_TEMPLATE}"
-      require_non_empty "_PACKER_VERSION"        "${_PACKER_VERSION}"
-      require_non_empty "_PACKER_PLUGIN_VERSION" "${_PACKER_PLUGIN_VERSION}"
-      require_non_empty "_HARDENING_SOURCE_DIR"  "${_HARDENING_SOURCE_DIR}"
-      require_non_empty "_HARDENING_TARGET_DIR"  "${_HARDENING_TARGET_DIR}"
-
-      # Install dependencies
-      run_step "apt update"    apt-get update -y
-      run_step "install deps"  apt-get install -y jq unzip curl
-
-      # Install Packer
-      PACKER_ZIP="packer_${_PACKER_VERSION}_linux_amd64.zip"
-      run_step "download packer" curl -LO "https://releases.hashicorp.com/packer/${_PACKER_VERSION}/${PACKER_ZIP}"
-      run_step "unzip packer"    unzip "${PACKER_ZIP}"
-      run_step "install packer"  mv packer /usr/local/bin/
-      run_step "cleanup packer"  rm -f "${PACKER_ZIP}"
-
-      # Install googlecompute plugin
-      PLUGIN_DIR="/root/.config/packer/plugins/github.com/hashicorp/googlecompute"
-      run_step "create plugin dir" mkdir -p "${PLUGIN_DIR}"
-      PLUGIN_ZIP="packer-plugin-googlecompute_v${_PACKER_PLUGIN_VERSION}_x5.0_linux_amd64.zip"
-      run_step "download plugin" curl -LO "https://releases.hashicorp.com/packer-plugin-googlecompute/${_PACKER_PLUGIN_VERSION}/${PLUGIN_ZIP}"
-      run_step "unzip plugin"    unzip "${PLUGIN_ZIP}" -d "${PLUGIN_DIR}"
-      run_step "cleanup plugin"  rm -f "${PLUGIN_ZIP}"
-
+- id: 'packer-build'
+  name: 'hashicorp/packer:${_PACKER_VERSION}'
+  entrypoint: sh
+  args:
+  - -c
+  - |
       # Fetch PACKER_PW from Secret Manager
-      PACKER_PW=$(gcloud secrets versions access latest \
+      PACKER_PW=$$(gcloud secrets versions access latest \
         --project "${_PROJECT_ID}" \
         --secret  "${_WINRM_SECRET}")
-      require_non_empty "PACKER_PW" "${PACKER_PW}"
 
-      # Set env vars for Packer
       export PACKER_LOG=1
-      export PACKER_PW="${PACKER_PW}"
+      export PACKER_PW="$${PACKER_PW}"
       export SRC_IMG_NAME="${_SOURCE_IMAGE}"
 
-      # Common -var flags
-      PACKER_VARS=(
-        -var "project_id=${_PROJECT_ID}"
-        -var "source_image_project_id=windows-cloud"
-        -var "source_image_family=windows-2022"
-        -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
-        -var "image_family=${_IMAGE_FAMILY}"
-        -var "machine_type=e2-standard-8"
-        -var "zone=${_ZONE}"
-        -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}"
-        -var "hardening_target_dir=${_HARDENING_TARGET_DIR}"
-        -var "hardening_entry_script=run_all.ps1"
-      )
-
-      run_step "packer init"     packer init "${_PACKER_TEMPLATE}"
-      run_step "packer validate" packer validate "${PACKER_VARS[@]}" "${_PACKER_TEMPLATE}"
-      run_step "packer build"    packer build    "${PACKER_VARS[@]}" "${_PACKER_TEMPLATE}"
-
+      packer build \
+        -var "project_id=${_PROJECT_ID}" \
+        -var "source_image_project_id=windows-cloud" \
+        -var "source_image_family=windows-2022" \
+        -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+        -var "image_family=${_IMAGE_FAMILY}" \
+        -var "machine_type=e2-standard-8" \
+        -var "zone=${_ZONE}" \
+        -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
+        -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
+        -var "hardening_entry_script=run_all.ps1" \
+        ${_PACKER_TEMPLATE}
   dir: 'packer'
 
 serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"

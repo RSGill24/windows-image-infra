@@ -86,7 +86,7 @@ steps:
         -var "source_image_family=windows-2022" \
         -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
         -var "image_family=${_IMAGE_FAMILY}" \
-        -var "machine_type={_MACHINE_TYPE}" \
+        -var "machine_type=${_MACHINE_TYPE}" \
         -var "zone=${_ZONE}" \
         -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
         -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \

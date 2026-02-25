@@ -8,7 +8,7 @@ substitutions:
   _PACKER_TEMPLATE: "harden_ww.pkr.hcl"
   _PACKER_VERSION: "1.9.4"
   _HARDENING_SOURCE_DIR: "./scripts/windows/"
-  _HARDENING_TARGET_DIR: "C:/hardening"
+  _HARDENING_TARGET_DIR: "C:/Users/packer_user/hardening/"
   _MACHINE_TYPE: "e2-standard-8"
 
 steps:

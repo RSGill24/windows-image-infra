@@ -22,20 +22,15 @@ steps:
   dir: 'packer'
 
 - id: 'trivy-fs-scan'
-  name: 'gcr.io/cloud-builders/gcloud'
-  entrypoint: bash
+  name: 'aquasec/trivy:latest'
   args:
-  - -c
-  - |
-      set -euo pipefail
-      apt-get update -y
-      apt-get install -y wget gnupg lsb-release
-      wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-      echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $$(lsb_release -sc) main" > /etc/apt/sources.list.d/trivy.list
-      apt-get update -y
-      apt-get install -y trivy
-      trivy --version
-      trivy fs --no-progress --severity HIGH,CRITICAL --exit-code 1 .
+  - fs
+  - --no-progress
+  - --severity
+  - HIGH,CRITICAL
+  - --exit-code
+  - '1'
+  - .
   dir: 'packer'
 
 - id: 'packer-init'
@@ -68,15 +63,31 @@ steps:
   dir: 'packer'
 
 - id: 'packer-build'
-  name: 'hashicorp/packer:${_PACKER_VERSION}'
-  entrypoint: sh
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
   args:
   - -c
   - |
+      set -euo pipefail
+
       # Fetch PACKER_PW from Secret Manager
       PACKER_PW=$$(gcloud secrets versions access latest \
         --project "${_PROJECT_ID}" \
         --secret  "${_WINRM_SECRET}")
+
+      # Install Packer
+      curl -LO "https://releases.hashicorp.com/packer/${_PACKER_VERSION}/packer_${_PACKER_VERSION}_linux_amd64.zip"
+      unzip "packer_${_PACKER_VERSION}_linux_amd64.zip"
+      mv packer /usr/local/bin/
+      rm -f "packer_${_PACKER_VERSION}_linux_amd64.zip"
+
+      # Install googlecompute plugin
+      PLUGIN_DIR="/root/.config/packer/plugins/github.com/hashicorp/googlecompute"
+      mkdir -p "$${PLUGIN_DIR}"
+      PLUGIN_ZIP="packer-plugin-googlecompute_v${_PACKER_PLUGIN_VERSION}_x5.0_linux_amd64.zip"
+      curl -LO "https://releases.hashicorp.com/packer-plugin-googlecompute/${_PACKER_PLUGIN_VERSION}/$${PLUGIN_ZIP}"
+      unzip "$${PLUGIN_ZIP}" -d "$${PLUGIN_DIR}"
+      rm -f "$${PLUGIN_ZIP}"
 
       export PACKER_LOG=1
       export PACKER_PW="$${PACKER_PW}"

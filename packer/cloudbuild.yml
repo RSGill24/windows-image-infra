@@ -70,7 +70,7 @@ steps:
   - |
       set -euo pipefail
 
-      # Install required tools first
+      # Install required tools
       apt-get update -y
       apt-get install -y unzip curl
 
@@ -79,19 +79,27 @@ steps:
         --project "${_PROJECT_ID}" \
         --secret  "${_WINRM_SECRET}")
 
-      # Install Packer
-      curl -LO "https://releases.hashicorp.com/packer/${_PACKER_VERSION}/packer_${_PACKER_VERSION}_linux_amd64.zip"
-      unzip "packer_${_PACKER_VERSION}_linux_amd64.zip"
+      # Install Packer — URL uses Cloud Build substitution (single $), resolved before bash runs
+      PACKER_URL="https://releases.hashicorp.com/packer/${_PACKER_VERSION}/packer_${_PACKER_VERSION}_linux_amd64.zip"
+      echo "Downloading Packer from: $${PACKER_URL}"
+      curl -fSL "$${PACKER_URL}" -o packer.zip
+      unzip packer.zip
       mv packer /usr/local/bin/
-      rm -f "packer_${_PACKER_VERSION}_linux_amd64.zip"
+      rm -f packer.zip
+      packer version
 
-      # Install googlecompute plugin
+      # Install googlecompute plugin — full URL hardcoded using Cloud Build substitutions
+      PLUGIN_URL="https://releases.hashicorp.com/packer-plugin-googlecompute/${_PACKER_PLUGIN_VERSION}/packer-plugin-googlecompute_v${_PACKER_PLUGIN_VERSION}_x5.0_linux_amd64.zip"
+      echo "Downloading plugin from: $${PLUGIN_URL}"
+      curl -fSL "$${PLUGIN_URL}" -o plugin.zip
+      echo "Downloaded $$(wc -c < plugin.zip) bytes"
+      file plugin.zip
+
       PLUGIN_DIR="/root/.config/packer/plugins/github.com/hashicorp/googlecompute"
       mkdir -p "$${PLUGIN_DIR}"
-      PLUGIN_ZIP="packer-plugin-googlecompute_v${_PACKER_PLUGIN_VERSION}_x5.0_linux_amd64.zip"
-      curl -LO "https://releases.hashicorp.com/packer-plugin-googlecompute/${_PACKER_PLUGIN_VERSION}/$${PLUGIN_ZIP}"
-      unzip "$${PLUGIN_ZIP}" -d "$${PLUGIN_DIR}"
-      rm -f "$${PLUGIN_ZIP}"
+      unzip plugin.zip -d "$${PLUGIN_DIR}"
+      rm -f plugin.zip
+      ls -la "$${PLUGIN_DIR}"
 
       export PACKER_LOG=1
       export PACKER_PW="$${PACKER_PW}"

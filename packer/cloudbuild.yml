@@ -7,7 +7,6 @@ substitutions:
   _WINRM_SECRET: "packer-winrm-password"
   _PACKER_TEMPLATE: "harden_ww.pkr.hcl"
   _PACKER_VERSION: "1.9.4"
-  _PACKER_PLUGIN_VERSION: "1.1.6"
   _HARDENING_SOURCE_DIR: "./scripts/windows/"
   _HARDENING_TARGET_DIR: "C:/hardening"
 
@@ -33,35 +32,6 @@ steps:
   - .
   dir: 'packer'
 
-- id: 'packer-init'
-  name: 'hashicorp/packer:${_PACKER_VERSION}'
-  entrypoint: sh
-  args:
-  - -c
-  - |
-      packer init ${_PACKER_TEMPLATE}
-  dir: 'packer'
-
-- id: 'packer-validate'
-  name: 'hashicorp/packer:${_PACKER_VERSION}'
-  entrypoint: sh
-  args:
-  - -c
-  - |
-      packer validate \
-        -var "project_id=${_PROJECT_ID}" \
-        -var "source_image_project_id=windows-cloud" \
-        -var "source_image_family=windows-2022" \
-        -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
-        -var "image_family=${_IMAGE_FAMILY}" \
-        -var "machine_type=e2-standard-8" \
-        -var "zone=${_ZONE}" \
-        -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
-        -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
-        -var "hardening_entry_script=run_all.ps1" \
-        ${_PACKER_TEMPLATE}
-  dir: 'packer'
-
 - id: 'packer-build'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -74,36 +44,40 @@ steps:
       apt-get update -y
       apt-get install -y unzip curl
 
-      # Fetch PACKER_PW from Secret Manager
-      PACKER_PW=$$(gcloud secrets versions access latest \
-        --project "${_PROJECT_ID}" \
-        --secret  "${_WINRM_SECRET}")
-
-      # Install Packer — URL uses Cloud Build substitution (single $), resolved before bash runs
-      PACKER_URL="https://releases.hashicorp.com/packer/${_PACKER_VERSION}/packer_${_PACKER_VERSION}_linux_amd64.zip"
-      echo "Downloading Packer from: $${PACKER_URL}"
-      curl -fSL "$${PACKER_URL}" -o packer.zip
+      # Install Packer
+      curl -fSL \
+        "https://releases.hashicorp.com/packer/${_PACKER_VERSION}/packer_${_PACKER_VERSION}_linux_amd64.zip" \
+        -o packer.zip
       unzip packer.zip
       mv packer /usr/local/bin/
       rm -f packer.zip
       packer version
 
-      # Install googlecompute plugin — full URL hardcoded using Cloud Build substitutions
-      PLUGIN_URL="https://releases.hashicorp.com/packer-plugin-googlecompute/${_PACKER_PLUGIN_VERSION}/packer-plugin-googlecompute_v${_PACKER_PLUGIN_VERSION}_x5.0_linux_amd64.zip"
-      echo "Downloading plugin from: $${PLUGIN_URL}"
-      curl -fSL "$${PLUGIN_URL}" -o plugin.zip
-      echo "Downloaded $$(wc -c < plugin.zip) bytes"
-      file plugin.zip
-
-      PLUGIN_DIR="/root/.config/packer/plugins/github.com/hashicorp/googlecompute"
-      mkdir -p "$${PLUGIN_DIR}"
-      unzip plugin.zip -d "$${PLUGIN_DIR}"
-      rm -f plugin.zip
-      ls -la "$${PLUGIN_DIR}"
+      # Fetch PACKER_PW from Secret Manager
+      PACKER_PW=$$(gcloud secrets versions access latest \
+        --project "${_PROJECT_ID}" \
+        --secret  "${_WINRM_SECRET}")
 
       export PACKER_LOG=1
       export PACKER_PW="$${PACKER_PW}"
       export SRC_IMG_NAME="${_SOURCE_IMAGE}"
+
+      # packer init downloads and installs the plugin automatically
+      # using the required_plugins block in the HCL template
+      packer init "${_PACKER_TEMPLATE}"
+
+      packer validate \
+        -var "project_id=${_PROJECT_ID}" \
+        -var "source_image_project_id=windows-cloud" \
+        -var "source_image_family=windows-2022" \
+        -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+        -var "image_family=${_IMAGE_FAMILY}" \
+        -var "machine_type=e2-standard-8" \
+        -var "zone=${_ZONE}" \
+        -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
+        -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
+        -var "hardening_entry_script=run_all.ps1" \
+        "${_PACKER_TEMPLATE}"
 
       packer build \
         -var "project_id=${_PROJECT_ID}" \
@@ -116,7 +90,7 @@ steps:
         -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
         -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
         -var "hardening_entry_script=run_all.ps1" \
-        ${_PACKER_TEMPLATE}
+        "${_PACKER_TEMPLATE}"
   dir: 'packer'
 
 serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"

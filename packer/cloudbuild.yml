@@ -1,7 +1,7 @@
 # Monthly Windows image hardening pipeline.
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
-  _ZONE: "us-east4-c"
+  _ZONE: "us-east4-b"
   _IMAGE_FAMILY: "pww-windows-2022-hardened"
   _SOURCE_IMAGE: "ws2022"
   _WINRM_SECRET: "packer-winrm-password"

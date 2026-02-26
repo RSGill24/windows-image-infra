@@ -1,6 +1,6 @@
 # create_mof.ps1
 # Compiles a DSC MOF and applies it via Start-DscConfiguration.
-# Automatically applies STIG 2.1 on Windows Server 2022 VM
+# Uses local STIG 2.1 XML for Windows Server 2022 MS
 
 Write-Host "=== create_mof.ps1 starting ==="
 
@@ -27,7 +27,7 @@ Import-Module PowerSTIG -Force
 $HardeningDir = $PSScriptRoot
 $OutputPath   = Join-Path $HardeningDir "MOF"
 
-# Use the STIG 2.1 org XML you already have
+# Use your existing STIG 2.1 XML
 $OrgSettings  = Join-Path $HardeningDir "packer/scripts/windows/WindowsServer-2022-MS-2.1.org.pamdata.xml"
 
 Write-Host "Hardening directory : $HardeningDir"
@@ -44,7 +44,7 @@ if (!(Test-Path $OutputPath)) {
 # Validate the org settings XML
 if (!(Test-Path $OrgSettings)) {
     Write-Error "Org settings XML not found at: $OrgSettings"
-    Write-Error "Ensure the STIG 2.1 org XML exists in the specified path."
+    Write-Error "Ensure the STIG 2.1 XML exists in the specified path."
     exit 1
 }
 
@@ -104,7 +104,6 @@ Configuration ApplyWindowsServerStig {
 # -----------------------------------------------------------------------
 Write-Host "=== Generating and applying MOF... ==="
 
-# Compile the MOF
 ApplyWindowsServerStig -OutputPath $OutputPath -OrgSettingsPath $OrgSettings
 
 $mofFile = Join-Path $OutputPath "localhost.mof"
@@ -114,8 +113,8 @@ if (!(Test-Path $mofFile)) {
 }
 Write-Host "MOF generated: $mofFile"
 
-# # Apply DSC configuration automatically
-# Write-Host "=== Applying DSC configuration... ==="
-# Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose
+# Apply DSC configuration automatically
+Write-Host "=== Applying DSC configuration... ==="
+Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose
 
 Write-Host "=== DSC configuration applied successfully ==="

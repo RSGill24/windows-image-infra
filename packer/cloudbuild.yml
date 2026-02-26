@@ -24,13 +24,14 @@ steps:
 - id: 'trivy-fs-scan'
   name: 'aquasec/trivy:latest'
   args:
-  - fs
-  - --no-progress
-  - --severity
-  - HIGH,CRITICAL
-  - --exit-code
-  - '1'
-  - .
+    - fs
+    - --severity
+    - HIGH,CRITICAL
+    - --format
+    - table
+    - --exit-code
+    - '1'
+    - .
   dir: 'packer'
 
 - id: 'packer-build'

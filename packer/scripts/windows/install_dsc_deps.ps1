@@ -1,18 +1,19 @@
 # install_dsc_deps.ps1
-# Installs all PowerShell DSC resource dependencies for PowerSTIG
-# Copies modules to DSC system path and generates STIG 2.1 XML for Packer
+# Installs PowerSTIG dependencies, copies modules to DSC LCM path,
+# generates org settings XML with PAM overrides.
+# Safe for GCP Cloud Build / Packer pipelines.
 
 param (
-    [string]$HardeningDir = "C:\Users\packer_user\hardening"
+    [string]$HardeningDir = $PSScriptRoot
 )
 
 Write-Host "=== Installing PowerSTIG dependencies ==="
 
-Import-Module PowerSTIG -Force
-
+# -----------------------------------------------------------------------
+# Step 0: Import PowerSTIG and detect latest module
+# -----------------------------------------------------------------------
 $module = Get-Module PowerSTIG -ListAvailable |
-          Sort-Object Version -Descending |
-          Select-Object -First 1
+          Sort-Object Version -Descending | Select-Object -First 1
 
 if (-not $module) {
     Write-Error "PowerSTIG module not found. Run install_PowerSTIG.ps1 first."
@@ -24,7 +25,7 @@ $systemModulePath = "C:\Program Files\WindowsPowerShell\Modules"
 $dscSystemPath    = "C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 
 # -----------------------------------------------------------------------
-# Step 1: Install dependencies
+# Step 1: Install each dependency and copy to DSC LCM system32 path
 # -----------------------------------------------------------------------
 foreach ($dep in $module.RequiredModules) {
     Write-Host "--- Installing: $($dep.Name) $($dep.Version)"
@@ -48,88 +49,76 @@ foreach ($dep in $module.RequiredModules) {
 }
 
 # -----------------------------------------------------------------------
-# Step 2: Copy PowerSTIG itself into DSC system path
+# Step 2: Copy PowerSTIG itself into the DSC LCM system32 path
 # -----------------------------------------------------------------------
-Write-Host "--- Copying PowerSTIG to DSC system path..."
 $pstigSrc    = $module.ModuleBase
 $pstigDstDir = Join-Path $dscSystemPath "PowerSTIG"
 $pstigDst    = Join-Path $pstigDstDir   $module.Version
 if (!(Test-Path $pstigDstDir)) { New-Item -Path $pstigDstDir -ItemType Directory -Force | Out-Null }
 Copy-Item -Path $pstigSrc -Destination $pstigDst -Recurse -Force
-Write-Host "    Copied to: $pstigDst"
+Write-Host "Copied PowerSTIG module to DSC path: $pstigDst"
 
 # -----------------------------------------------------------------------
-# Step 3: Locate default STIG 2.1 XML
+# Step 3: Find the .org.default.xml inside the installed module
 # -----------------------------------------------------------------------
 $stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
+Write-Host "--- Searching for org.default.xml in: $stigDataPath"
+
 $defaultOrgFile = Get-ChildItem -Path $stigDataPath `
-                    -Filter "WindowsServer-2022-MS-2.1.org.default.xml" `
+                    -Filter "WindowsServer-2022-MS-*.org.default.xml" `
                     -ErrorAction SilentlyContinue |
+                  Sort-Object Name -Descending |
                   Select-Object -First 1
 
 if (-not $defaultOrgFile) {
-    Write-Error "No STIG 2.1 default XML found in $stigDataPath"
+    Write-Error "No WindowsServer-2022-MS-*.org.default.xml found in $stigDataPath"
     exit 1
 }
-
-Write-Host "Found default XML: $($defaultOrgFile.FullName)"
+Write-Host "Found org.default.xml: $($defaultOrgFile.FullName)"
 
 # -----------------------------------------------------------------------
-# Step 4: Copy to fixed path for Packer and apply PAM overrides
+# Step 4: Copy the default XML to the hardening dir and apply PAM overrides
 # -----------------------------------------------------------------------
 $outputOrgXml = Join-Path $HardeningDir "WindowsServer-2022-MS-2.1.org.pamdata.xml"
-Write-Host "Copying to fixed path: $outputOrgXml"
 Copy-Item -Path $defaultOrgFile.FullName -Destination $outputOrgXml -Force
+Write-Host "Copied XML to: $outputOrgXml"
 
 [xml]$orgXml = Get-Content -Path $outputOrgXml -Encoding UTF8
 
-Write-Host "--- Applying PAM org setting overrides ---"
+Write-Host "--- Applying PAM org setting overrides..."
 
-# Define PAM overrides in a hash table
-$PamOverrides = @{
-    "V-254248" = @{ "ServiceName"="WinDefend"; "StartupType"="Automatic" }
-    "V-254265" = @{ "ServiceName"="MpsSvc"; "StartupType"="Automatic" }
-    "V-254287" = @{ "PolicyValue"="15" }
-    "V-254288" = @{ "PolicyValue"="24" }
-    "V-254285" = @{ "PolicyValue"="15" }
-    "V-254286" = @{ "PolicyValue"="3" }
-    "V-254358" = @{ "ValueData"="32768" }
-    "V-254359" = @{ "ValueData"="196608" }
-    "V-254360" = @{ "ValueData"="32768" }
-    "V-254432" = @{ "ValueData"="4" }
-    "V-254456" = @{ "ValueData"="900" }
-    "V-254454" = @{ "ValueData"="30" }
-    "V-254357" = @{ "ValueData"="100" }
-    "V-254343.b" = @{ "ValueData"="1" }
-    "V-254344" = @{ "ValueData"="8" }
-    "V-254459" = @{ "ValueData"="1" }
-    "V-254484" = @{ "ValueData"="1" }
-    "V-254458" = @{ "ValueData"="DoD Notice and Consent Banner" }
-    "V-254457" = @{ "ValueData"="You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only. By using this IS (which includes any device attached to this IS), you consent to the following conditions: -The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network operations, and known threat detection. -At any time, the USG may inspect and seize data stored on this IS. -Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any USG-authorized purpose. -This IS includes security measures (e.g., authentication and access controls) to protect USG interests--not for your personal benefit or privacy." }
+# Example PAM overrides (can expand for all V-IDs you need)
+$overrides = @{
+    "V-254248"  = @{ ServiceName="WinDefend"; StartupType="Automatic" }
+    "V-254265"  = @{ ServiceName="MpsSvc"; StartupType="Automatic" }
+    "V-254287"  = @{ PolicyValue="15" }
+    "V-254288"  = @{ PolicyValue="24" }
+    "V-254285"  = @{ PolicyValue="15" }
+    "V-254286"  = @{ PolicyValue="3" }
 }
 
-foreach ($id in $PamOverrides.Keys) {
-    $node = $orgXml.OrganizationalSettings.OrganizationalSetting | Where-Object { $_.id -eq $id }
+foreach ($vid in $overrides.Keys) {
+    $node = $orgXml.OrganizationalSettings.OrganizationalSetting | Where-Object { $_.id -eq $vid }
     if ($node) {
-        foreach ($attr in $PamOverrides[$id].Keys) {
-            $node.SetAttribute($attr, $PamOverrides[$id][$attr])
+        foreach ($attr in $overrides[$vid].Keys) {
+            $node.SetAttribute($attr, $overrides[$vid][$attr])
         }
-        Write-Host "  Set $id overrides"
+        Write-Host "  Set $vid overrides: $($overrides[$vid] | Out-String)"
     } else {
-        Write-Warning "  $id not found in XML"
+        Write-Warning "  $vid not found in XML"
     }
 }
 
-# Save XML
+# Save the final XML
 $orgXml.Save($outputOrgXml)
 Write-Host "Org settings XML saved to: $outputOrgXml"
 
 # -----------------------------------------------------------------------
-# Step 5: Verify DSC resources are resolvable
+# Step 5: Verify DSC resources
 # -----------------------------------------------------------------------
 Write-Host "--- Verifying DSC resources..."
 Get-DscResource -Module PowerSTIG | Select-Object -First 5 | ForEach-Object {
     Write-Host "  DSC resource OK: $($_.Name)"
 }
 
-Write-Host "=== Dependencies installed successfully ==="
+Write-Host "=== Dependencies installed successfully. ==="

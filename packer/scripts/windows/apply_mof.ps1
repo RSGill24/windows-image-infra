@@ -1,6 +1,8 @@
-Write-Host "Applying DSC configuration..."
+Write-Host "=== Applying DSC configuration..."
 Start-DscConfiguration `
-    -Path $OutputPath `
+    -Path    $OutputPath `
     -Wait `
     -Verbose `
     -Force
+
+Write-Host "=== STIG applied successfully. ==="

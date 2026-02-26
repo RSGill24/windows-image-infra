@@ -114,8 +114,8 @@ if (!(Test-Path $mofFile)) {
 }
 Write-Host "MOF generated: $mofFile"
 
-# Apply DSC configuration automatically
-Write-Host "=== Applying DSC configuration... ==="
-Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose
+# # Apply DSC configuration automatically
+# Write-Host "=== Applying DSC configuration... ==="
+# Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose
 
 Write-Host "=== DSC configuration applied successfully ==="

@@ -30,6 +30,11 @@ if (-not $module) {
 }
 Write-Host "Found PowerSTIG module $($module.Version) at: $($module.ModuleBase)"
 
+# Pin the exact version string -- required to resolve ambiguity when multiple
+# versions of PowerSTIG exist across module paths on the system
+$pstigVersion = $module.Version.ToString()
+Write-Host "Pinned PowerSTIG version: $pstigVersion"
+
 $stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
 $stigXml = Get-ChildItem -Path $stigDataPath -Filter "WindowsServer-2022-MS-*.org.default.xml" |
            Sort-Object Name -Descending | Select-Object -First 1
@@ -42,9 +47,7 @@ Write-Host "Detected STIG XML: $($stigXml.FullName)"
 # -----------------------------------------------------------------------
 # Parse STIG version dynamically from filename (e.g. 2.7, 2.1, 3.0 etc.)
 # -----------------------------------------------------------------------
-$stigVersionString = ($stigXml.Name `
-    -replace 'WindowsServer-2022-MS-', '' `
-    -replace '\.org\.default\.xml', '')
+$stigVersionString = ($stigXml.Name -replace 'WindowsServer-2022-MS-', '' -replace '\.org\.default\.xml', '')
 Write-Host "Detected STIG version: $stigVersionString"
 
 # -----------------------------------------------------------------------
@@ -65,9 +68,9 @@ if (!(Test-Path $OutputPath)) {
 }
 
 # -----------------------------------------------------------------------
-# Verify DSC resource
+# Verify DSC resource -- use RequiredVersion to avoid ambiguity
 # -----------------------------------------------------------------------
-Import-Module PowerSTIG -Force
+Import-Module -Name PowerSTIG -RequiredVersion $pstigVersion -Force
 try {
     $dscCheck = Get-DscResource -Name WindowsServer -Module PowerSTIG -ErrorAction Stop
     Write-Host "DSC resource confirmed: $($dscCheck.Name) from $($dscCheck.Module)"
@@ -78,15 +81,18 @@ try {
 
 # -----------------------------------------------------------------------
 # DSC Configuration block
+# IMPORTANT: Import-DscResource uses -ModuleVersion to pin the exact
+# PowerSTIG version and avoid "Multiple versions found" parse errors.
 # -----------------------------------------------------------------------
 Configuration ApplyWindowsServerStig {
     param (
         [string]$NodeName        = 'localhost',
         [string]$OrgSettingsPath,
-        [string]$StigVer
+        [string]$StigVer,
+        [string]$ModuleVersion
     )
 
-    Import-DscResource -ModuleName PowerSTIG
+    Import-DscResource -ModuleName PowerSTIG -ModuleVersion $ModuleVersion
 
     Node $NodeName {
         WindowsServer 'ConfigureServer' {
@@ -117,13 +123,12 @@ Configuration ApplyWindowsServerStig {
 }
 
 # -----------------------------------------------------------------------
-# Compile and Apply MOF
+# Compile MOF
+# Single-line call avoids backtick line-continuation parse issues that
+# occur when PowerShell parser is still inside a Configuration block context
 # -----------------------------------------------------------------------
 Write-Host "=== Generating MOF... ==="
-ApplyWindowsServerStig `
-    -OutputPath      $OutputPath `
-    -OrgSettingsPath $OrgSettings `
-    -StigVer         $stigVersionString
+ApplyWindowsServerStig -OutputPath $OutputPath -OrgSettingsPath $OrgSettings -StigVer $stigVersionString -ModuleVersion $pstigVersion
 
 $mofFile = Join-Path $OutputPath "localhost.mof"
 if (!(Test-Path $mofFile)) {
@@ -132,8 +137,4 @@ if (!(Test-Path $mofFile)) {
 }
 Write-Host "MOF generated: $mofFile"
 
-# Apply DSC configuration automatically
-# Write-Host "=== Applying DSC configuration... ==="
-# Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose
-
-Write-Host "=== DSC configuration applied successfully ==="
+Write-Host "=== DSC configuration compiled successfully ==="

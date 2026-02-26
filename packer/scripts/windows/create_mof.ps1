@@ -1,6 +1,6 @@
 # create_mof.ps1
 # Compiles a DSC MOF and applies it via Start-DscConfiguration.
-# Updated for STIG 2.3 (Windows Server 2022 MS)
+# Automatically applies STIG 2.1 on Windows Server 2022 VM
 
 Write-Host "=== create_mof.ps1 starting ==="
 
@@ -22,11 +22,13 @@ foreach ($p in $requiredPaths) {
 Import-Module PowerSTIG -Force
 
 # -----------------------------------------------------------------------
-# Resolve paths — all from $PSScriptRoot
+# Paths
 # -----------------------------------------------------------------------
 $HardeningDir = $PSScriptRoot
 $OutputPath   = Join-Path $HardeningDir "MOF"
-$OrgSettings  = Join-Path $HardeningDir "WindowsServer-2022-MS-2.3.org.pamdata.xml"
+
+# Use the STIG 2.1 org XML you already have
+$OrgSettings  = Join-Path $HardeningDir "packer/scripts/windows/WindowsServer-2022-MS-2.1.org.pamdata.xml"
 
 Write-Host "Hardening directory : $HardeningDir"
 Write-Host "MOF output path     : $OutputPath"
@@ -42,11 +44,13 @@ if (!(Test-Path $OutputPath)) {
 # Validate the org settings XML
 if (!(Test-Path $OrgSettings)) {
     Write-Error "Org settings XML not found at: $OrgSettings"
-    Write-Error "Please run install_dsc_deps.ps1 or regenerate the org XML with STIG 2.3."
+    Write-Error "Ensure the STIG 2.1 org XML exists in the specified path."
     exit 1
 }
 
-# Pre-flight: verify DSC resource is resolvable
+# -----------------------------------------------------------------------
+# Verify DSC resource
+# -----------------------------------------------------------------------
 Write-Host "--- Verifying DSC resources..."
 try {
     $dscCheck = Get-DscResource -Name WindowsServer -Module PowerSTIG -ErrorAction Stop
@@ -61,8 +65,8 @@ try {
 # -----------------------------------------------------------------------
 Configuration ApplyWindowsServerStig {
     param (
-        [string]$NodeName   = 'localhost',
-        [string]$OrgSettingsPath = ''      # Pass $OrgSettings explicitly
+        [string]$NodeName        = 'localhost',
+        [string]$OrgSettingsPath
     )
 
     Import-DscResource -ModuleName PowerSTIG
@@ -72,9 +76,8 @@ Configuration ApplyWindowsServerStig {
 
             OsVersion   = '2022'
             OsRole      = 'MS'
-            StigVersion = '2.3'
+            StigVersion = '2.1'
 
-            # Use the STIG 2.3 org settings XML
             OrgSettings = $OrgSettingsPath
 
             Exception = @{
@@ -97,9 +100,11 @@ Configuration ApplyWindowsServerStig {
 }
 
 # -----------------------------------------------------------------------
-# Compile MOF
+# Compile and Apply MOF
 # -----------------------------------------------------------------------
-Write-Host "=== Generating MOF..."
+Write-Host "=== Generating and applying MOF... ==="
+
+# Compile the MOF
 ApplyWindowsServerStig -OutputPath $OutputPath -OrgSettingsPath $OrgSettings
 
 $mofFile = Join-Path $OutputPath "localhost.mof"
@@ -109,7 +114,8 @@ if (!(Test-Path $mofFile)) {
 }
 Write-Host "MOF generated: $mofFile"
 
-# -----------------------------------------------------------------------
-# Apply MOF (optional in pipeline)
-# -----------------------------------------------------------------------
-# Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose
+# Apply DSC configuration automatically
+Write-Host "=== Applying DSC configuration... ==="
+Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose
+
+Write-Host "=== DSC configuration applied successfully ==="

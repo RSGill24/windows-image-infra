@@ -1,5 +1,5 @@
 # Monthly Windows image hardening pipeline.
- 
+
 substitutions:
   _PROJECT_ID: "ggn-nmfs-pamdata-prod-1"
   _ZONE: "us-east4-c"
@@ -10,13 +10,13 @@ substitutions:
   _PACKER_VERSION: "1.9.4"
   _HARDENING_SOURCE_DIR: "./scripts/windows/"
   _HARDENING_TARGET_DIR: "C:/Users/packer_user/hardening/"
-  _MACHINE_TYPE: "e2-standard-4"
- 
+  _MACHINE_TYPE: "e2-standard-8"
+
 steps:
- 
- 
+
+# --------------------------------------------------------
 # Cost Estimation (Placeholder)
- 
+# --------------------------------------------------------
 - id: 'llm-cost-estimation'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -25,10 +25,11 @@ steps:
   - |
       echo "LLM cost estimation: not-provided"
   dir: 'packer'
- 
- 
+
+
+# --------------------------------------------------------
 # Trivy Filesystem Scan
- 
+# --------------------------------------------------------
 - id: 'trivy-fs-scan'
   name: 'aquasec/trivy:latest'
   args:
@@ -40,11 +41,11 @@ steps:
   - '1'
   - .
   dir: 'packer'
- 
- 
- 
+
+
+# --------------------------------------------------------
 # Packer Build
- 
+# --------------------------------------------------------
 - id: 'packer-build'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -52,11 +53,11 @@ steps:
   - -c
   - |
       set -euo pipefail
- 
+
       echo "Installing dependencies..."
       apt-get update -y
       apt-get install -y unzip curl jq
- 
+
       echo "Installing Packer ${_PACKER_VERSION}..."
       curl -fSL \
         "https://releases.hashicorp.com/packer/${_PACKER_VERSION}/packer_${_PACKER_VERSION}_linux_amd64.zip" \
@@ -65,18 +66,18 @@ steps:
       mv packer /usr/local/bin/
       rm -f packer.zip
       packer version
- 
+
       echo "Fetching WinRM password from Secret Manager..."
       PACKER_PW=$$(gcloud secrets versions access latest \
         --project "${_PROJECT_ID}" \
         --secret "${_WINRM_SECRET}")
- 
+
       export PACKER_LOG=1
-      export PACKER_PW="$${PACKER_PW}"
- 
+      export PACKER_PW="$$PACKER_PW"
+
       echo "Initializing Packer..."
       packer init "${_PACKER_TEMPLATE}"
- 
+
       echo "Validating Packer template..."
       packer validate \
         -var "project_id=${_PROJECT_ID}" \
@@ -90,7 +91,7 @@ steps:
         -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
         -var "hardening_entry_script=run_all.ps1" \
         "${_PACKER_TEMPLATE}"
- 
+
       echo "Building hardened image..."
       packer build \
         -var "project_id=${_PROJECT_ID}" \
@@ -104,14 +105,14 @@ steps:
         -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
         -var "hardening_entry_script=run_all.ps1" \
         "${_PACKER_TEMPLATE}"
- 
+
       echo "Packer build completed successfully."
   dir: 'packer'
- 
- 
- 
+
+
+# --------------------------------------------------------
 # Deprecate Older Images (Keep Latest Active)
- 
+# --------------------------------------------------------
 - id: 'deprecate-old-images'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -119,51 +120,50 @@ steps:
   - -c
   - |
       set -euo pipefail
- 
+
       echo "Retrieving newest image in family ${_IMAGE_FAMILY}..."
- 
-      LATEST_IMAGE=$(gcloud compute images list \
+
+      LATEST_IMAGE=$$(gcloud compute images list \
         --project="${_PROJECT_ID}" \
         --filter="family=${_IMAGE_FAMILY}" \
         --sort-by="~creationTimestamp" \
         --format="value(name)" \
         --limit=1)
- 
-      if [ -z "$LATEST_IMAGE" ]; then
+
+      if [ -z "$$LATEST_IMAGE" ]; then
         echo "No images found in family."
         exit 0
       fi
- 
-      echo "Latest image is: $LATEST_IMAGE"
+
+      echo "Latest image is: $$LATEST_IMAGE"
       echo "Finding older images to deprecate..."
- 
-      OLD_IMAGES=$(gcloud compute images list \
+
+      OLD_IMAGES=$$(gcloud compute images list \
         --project="${_PROJECT_ID}" \
-        --filter="family=${_IMAGE_FAMILY} AND name!=${LATEST_IMAGE}" \
+        --filter="family=${_IMAGE_FAMILY} AND name!=$$LATEST_IMAGE" \
         --format="value(name)")
- 
-      if [ -z "$OLD_IMAGES" ]; then
+
+      if [ -z "$$OLD_IMAGES" ]; then
         echo "No older images to deprecate."
         exit 0
       fi
- 
-      for IMAGE in $OLD_IMAGES; do
-        echo "Deprecating image: $IMAGE"
- 
-        gcloud compute images deprecate $IMAGE \
+
+      for IMAGE in $$OLD_IMAGES; do
+        echo "Deprecating image: $$IMAGE"
+
+        gcloud compute images deprecate $$IMAGE \
           --project="${_PROJECT_ID}" \
           --state=DEPRECATED \
-          --replacement=${LATEST_IMAGE}
+          --replacement=$$LATEST_IMAGE
       done
- 
+
       echo "Old images deprecated successfully."
- 
- 
- 
+
+
+# --------------------------------------------------------
 # Service Account
- 
+# --------------------------------------------------------
 serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
- 
+
 options:
   logging: CLOUD_LOGGING_ONLY
- 

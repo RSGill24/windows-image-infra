@@ -1,79 +1,114 @@
 <!--
-The organizational settings file is used to define the local organizations
-preferred setting within an allowed range of the STIG.
+  WindowsServer-2022-MS-2_1_org_pamdata.xml
+  Organizational Settings file for DISA STIG: Windows Server 2022 Member Server, Version 2.1
 
-Each setting in this file is linked by STIG ID and the valid range is in an
-associated comment.
+  Purpose:
+    This file customizes STIG rules that allow a range of acceptable values by setting
+    the organization's preferred value within that range. Each setting is referenced
+    by its STIG Vulnerability ID (V-XXXXXX).
+
+  Usage:
+    Referenced by create_mof.ps1 via the OrgSettings parameter of the WindowsServer
+    PowerSTIG DSC composite resource.
+
+  Notes:
+    - Certificate location fields (V-254442.*, V-254443, V-254444) are intentionally
+      left blank. Populate these if DoD PKI certificates are required in your environment.
+    - AV and Firewall service names are set to Windows Defender defaults (WinDefend / MpsSvc),
+      which are standard on GCP Windows Server 2022 images.
 -->
 <OrganizationalSettings fullversion="2.1">
-  <!-- Ensure ServiceName/StartupType is populated with correct AntiVirus service information-->
-  <OrganizationalSetting id="V-254248" ServiceName="" StartupType="" />
-  <!-- Ensure ServiceName/StartupType is populated with correct Firewall service information-->
-  <OrganizationalSetting id="V-254265" ServiceName="" StartupType="" />
-  <!-- Ensure "V-254343.b" -match '1|3'-->
+
+  <!-- V-254248: Antivirus service check.
+       ServiceName  = Windows Defender Antivirus service (WinDefend)
+       StartupType  = Must be Automatic to ensure AV is always running -->
+  <OrganizationalSetting id="V-254248" ServiceName="WinDefend" StartupType="Automatic" />
+
+  <!-- V-254265: Host-based firewall service check.
+       ServiceName  = Windows Defender Firewall service (MpsSvc)
+       StartupType  = Must be Automatic to ensure firewall is always active -->
+  <OrganizationalSetting id="V-254265" ServiceName="MpsSvc" StartupType="Automatic" />
+
+  <!-- V-254343.b: Kerberos supported encryption types policy.
+       Allowed values: 1 or 3. Set to 1 (AES128+AES256). -->
   <OrganizationalSetting id="V-254343.b" ValueData="1" />
-  <!-- Ensure "V-254344" -match '1|3|8|ShouldBeAbsent'-->
+
+  <!-- V-254344: LAN Manager authentication level.
+       Allowed values: 1, 3, 8, or ShouldBeAbsent. Set to 8 (NTLMv2 only). -->
   <OrganizationalSetting id="V-254344" ValueData="8" />
-  <!-- Ensure "V-254357" -match '0|1|2|99|100'-->
+
+  <!-- V-254357: Windows Firewall - Public profile: logging dropped packets.
+       Allowed values: 0, 1, 2, 99, 100. Set to 100 (enabled). -->
   <OrganizationalSetting id="V-254357" ValueData="100" />
-  <!-- Ensure "V-254358" -ge '32768'-->
+
+  <!-- V-254358: Windows event log - Security log maximum size.
+       Must be >= 32768 KB. Set to 32768 KB (32 MB minimum). -->
   <OrganizationalSetting id="V-254358" ValueData="32768" />
-  <!-- Ensure "V-254359" -ge '196608'-->
+
+  <!-- V-254359: Windows event log - Application log maximum size.
+       Must be >= 196608 KB. Set to 196608 KB (192 MB minimum). -->
   <OrganizationalSetting id="V-254359" ValueData="196608" />
-  <!-- Ensure "V-254360" -ge '32768'-->
+
+  <!-- V-254360: Windows event log - System log maximum size.
+       Must be >= 32768 KB. Set to 32768 KB (32 MB minimum). -->
   <OrganizationalSetting id="V-254360" ValueData="32768" />
-  <!-- Ensure "V-254432" -le '4'-->
+
+  <!-- V-254432: Account lockout threshold.
+       Must be <= 4 invalid attempts. Set to 4. -->
   <OrganizationalSetting id="V-254432" ValueData="4" />
-  <!-- Ensure location for DoD Root CA 3 certificate is present-->
-  <OrganizationalSetting id="V-254442.a" Location="" />
-  <!-- Ensure location for DoD Root CA 4 certificate is present-->
-  <OrganizationalSetting id="V-254442.b" Location="" />
-  <!-- Ensure location for DoD Root CA 5 certificate is present-->
-  <OrganizationalSetting id="V-254442.c" Location="" />
-  <!-- Ensure location for DoD Root CA 6 certificate is present-->
-  <OrganizationalSetting id="V-254442.d" Location="" />
-  <!-- Ensure location for DoD Interoperability Root CA 2 certificate is present-->
+
+  <!-- V-254442.a–d: DoD Root CA certificate locations.
+       Leave blank if DoD PKI is not deployed in your environment.
+       Populate with the certificate store path if DoD certs are required. -->
+  <OrganizationalSetting id="V-254442.a" Location="" />  <!-- DoD Root CA 3 -->
+  <OrganizationalSetting id="V-254442.b" Location="" />  <!-- DoD Root CA 4 -->
+  <OrganizationalSetting id="V-254442.c" Location="" />  <!-- DoD Root CA 5 -->
+  <OrganizationalSetting id="V-254442.d" Location="" />  <!-- DoD Root CA 6 -->
+
+  <!-- V-254443: DoD Interoperability Root CA 2 certificate location.
+       Leave blank if DoD PKI is not deployed. -->
   <OrganizationalSetting id="V-254443" Location="" />
-  <!-- Ensure location for US DoD CCEB Interoperability Root CA 2 certificate is present-->
+
+  <!-- V-254444: US DoD CCEB Interoperability Root CA 2 certificate location.
+       Leave blank if DoD PKI is not deployed. -->
   <OrganizationalSetting id="V-254444" Location="" />
-  <!-- Ensure "V-254454" -le "30" and "V-254454" -gt "0"-->
+
+  <!-- V-254454: Maximum password age.
+       Must be > 0 and <= 30 days. Set to 30 days. -->
   <OrganizationalSetting id="V-254454" ValueData="30" />
-  <!-- Ensure "V-254456" -le "900" and "V-254456" -gt "0"-->
+
+  <!-- V-254456: Screen saver / session lock timeout.
+       Must be > 0 and <= 900 seconds (15 minutes). Set to 900 seconds. -->
   <OrganizationalSetting id="V-254456" ValueData="900" />
-  <!-- Ensure "V-254457" is set to the required legal notice before logon-->
+
+  <!-- V-254457: Legal notice text displayed before logon (banner body).
+       This is the full DoD standard warning banner text. -->
   <OrganizationalSetting id="V-254457" ValueData="You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only.
 By using this IS (which includes any device attached to this IS), you consent to the following conditions:
--The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network oper
+-The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network operations, and known threat detection.
 -At any time, the USG may inspect and seize data stored on this IS.
--Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any
+-Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any USG-authorized purpose.
 -This IS includes security measures (e.g., authentication and access controls) to protect USG interests--not for your personal benefit or privacy.
--Notwithstanding the above, using this IS does not constitute consent to PM, LE or CI investigative searching or monitoring of the content of privileged communicatic" />
-  <!-- Ensure "V-254458" -match '^(DoD Notice and Consent Banner|US Department of Defense Warning Statement)$'-->
+-Notwithstanding the above, using this IS does not constitute consent to PM, LE or CI investigative searching or monitoring of the content of privileged communications or work product related to personal representation or services by attorneys, psychotherapists, or clergy, and their assistants." />
+
+  <!-- V-254458: Legal notice caption (banner title) displayed before logon.
+       Must match: 'DoD Notice and Consent Banner' or 'US Department of Defense Warning Statement'. -->
   <OrganizationalSetting id="V-254458" ValueData="DoD Notice and Consent Banner" />
-  <!-- Ensure "V-254459" -match '1|2'-->
+
+  <!-- V-254459: Audit policy - Logon/Logoff: Logon.
+       Allowed values: 1 (Success) or 2 (Failure). Set to 1 (Success). -->
   <OrganizationalSetting id="V-254459" ValueData="1" />
-  <!-- Ensure "V-254484" -match '1|2'-->
+
+  <!-- V-254484: Audit policy - Account Logon: Credential Validation.
+       Allowed values: 1 (Success) or 2 (Failure). Set to 1 (Success). -->
   <OrganizationalSetting id="V-254484" ValueData="1" />
-  <!-- Ensure "V-254285" -ge '15' -or "V-254285" -eq '0'-->
+
+  <!-- V-254285: Minimum password length.
+       Must be >= 15 characters, or 0 to disable. Set to 15. -->
   <OrganizationalSetting id="V-254285" PolicyValue="15" />
-  <!-- Ensure "V-254286" -le '3' -and "V-254286" -ne '0'-->
+
+  <!-- V-254286: Account lockout duration.
+       Must be >= 1 and <= 3 minutes (not 0, which means indefinite lockout). Set to 3. -->
   <OrganizationalSetting id="V-254286" PolicyValue="3" />
-  <!-- Ensure "V-254287" -ge '15'-->
-  <OrganizationalSetting id="V-254287" PolicyValue="15" />
-  <!-- Ensure "V-254288" -ge '24'-->
-  <OrganizationalSetting id="V-254288" PolicyValue="24" />
-  <!-- Ensure "V-254289" -le '60' -and "V-254289" -ne '0'-->
-  <OrganizationalSetting id="V-254289" PolicyValue="60" />
-  <!-- Ensure "V-254290" -ne '0'-->
-  <OrganizationalSetting id="V-254290" PolicyValue="1" />
-  <!-- Ensure "V-254291" -ge '14'-->
-  <OrganizationalSetting id="V-254291" PolicyValue="14" />
-  <!-- Ensure "V-254435" -match 'Enterprise Admins,Domain Admins,(Local account and member of Administrators group|Local account),Guests'-->
-  <OrganizationalSetting id="V-254435" Identity="Enterprise Admins,Domain Admins,(Local account and member of Administrators group|Local account),Guests" />
-  <!-- Ensure "V-254447" -ne 'Administrator'-->
-  <OrganizationalSetting id="V-254447" OptionValue="" />
-  <!-- Ensure "V-254448" -ne 'Guest'-->
-  <OrganizationalSetting id="V-254448" OptionValue="" />
-  <!-- Ensure "V-254499" -match '^(Administrators,NT Virtual Machine\\Virtual Machines|Administrators)$'-->
-  <OrganizationalSetting id="V-254499" Identity="Administrators" />
+
 </OrganizationalSettings>

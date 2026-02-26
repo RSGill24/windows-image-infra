@@ -1,6 +1,6 @@
 # apply_mof.ps1
-# Applies the compiled DSC MOF to enforce STIG settings on the local machine.
-# Must be run after create_mof.ps1 has successfully generated the MOF.
+
+
 
 Write-Host "=== Applying DSC configuration ==="
 

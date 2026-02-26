@@ -1,21 +1,15 @@
-# create_mof.ps1
-# Compiles a DSC MOF configuration file encoding all DISA STIG settings for
-# Windows Server 2022 (Member Server role) using PowerSTIG, then immediately
-# applies it to the local machine via Start-DscConfiguration.
-#
-# All paths are derived from $PSScriptRoot, which resolves to the hardening
-# target directory supplied by the CloudBuild pipeline:
-#   _HARDENING_TARGET_DIR = C:/Users/packer_user/hardening/
-#
-# File layout expected in that directory:
-#   run_all.ps1                              <- entry point called by Packer
-#   create_mof.ps1                           <- this file
-#   WindowsServer-2022-MS-2.1.org.pamdata.xml
-#
-# MOF output path: <hardening_target_dir>\MOF\localhost.mof
-#
-# Must be run as Administrator.
-# Requires PowerSTIG and all DSC dependencies to be installed first.
+$requiredPaths = @(
+    "C:\Program Files\WindowsPowerShell\Modules",           # AllUsers install location
+    "C:\Windows\system32\WindowsPowerShell\v1.0\Modules",  # DSC LCM system path
+    "C:\Program Files (x86)\WindowsPowerShell\Modules"     # 32-bit fallback
+)
+
+foreach ($p in $requiredPaths) {
+    if ($p -and ($env:PSModulePath -split ';') -notcontains $p) {
+        Write-Host "Adding to PSModulePath: $p"
+        $env:PSModulePath = "$p;$env:PSModulePath"
+    }
+}
 
 Import-Module PowerSTIG -Force
 
@@ -28,6 +22,7 @@ $OrgSettings  = Join-Path $HardeningDir "WindowsServer-2022-MS-2.1.org.pamdata.x
 Write-Host "Hardening directory : $HardeningDir"
 Write-Host "MOF output path     : $OutputPath"
 Write-Host "Org settings file   : $OrgSettings"
+Write-Host "PSModulePath        : $env:PSModulePath"
 
 # Create the MOF output folder if it does not already exist
 if (!(Test-Path $OutputPath)) {
@@ -38,6 +33,16 @@ if (!(Test-Path $OutputPath)) {
 # Validate that the org settings XML is present before attempting MOF compilation
 if (!(Test-Path $OrgSettings)) {
     Write-Error "Org settings file not found at: $OrgSettings"
+    exit 1
+}
+
+# Verify DSC resources are resolvable before attempting compilation
+Write-Host "Verifying DSC resources are available..."
+try {
+    $dscCheck = Get-DscResource -Name WindowsServer -Module PowerSTIG -ErrorAction Stop
+    Write-Host "DSC resource confirmed: $($dscCheck.Name) from $($dscCheck.Module)"
+} catch {
+    Write-Error "WindowsServer DSC resource not found. Ensure install_dsc_deps.ps1 ran successfully. Error: $_"
     exit 1
 }
 
@@ -59,7 +64,7 @@ Configuration ApplyWindowsServerStig {
             # StigVersion omitted to automatically use the latest available version.
             # Version 2.1 was removed from PowerSTIG as of 3/3/25.
 
-            # Org settings XML path resolved dynamically from $PSScriptRoot /
+            # Org settings XML resolved dynamically from $PSScriptRoot /
             # CloudBuild _HARDENING_TARGET_DIR
             OrgSettings = $OrgSettings
 
@@ -114,5 +119,23 @@ Configuration ApplyWindowsServerStig {
 Write-Host "Generating MOF..."
 ApplyWindowsServerStig -OutputPath $OutputPath
 
+# Confirm the MOF was actually created before attempting to apply it
+$mofFile = Join-Path $OutputPath "localhost.mof"
+if (!(Test-Path $mofFile)) {
+    Write-Error "MOF file was not generated at: $mofFile"
+    exit 1
+}
+Write-Host "MOF generated successfully: $mofFile"
+
+# Apply the compiled MOF to enforce STIG settings on the local machine
+# -Wait    : Block until the DSC job completes (synchronous execution)
+# -Verbose : Stream detailed progress output to the console
+# -Force   : Apply even if a DSC job is already running
+Write-Host "Applying DSC configuration..."
+Start-DscConfiguration `
+    -Path $OutputPath `
+    -Wait `
+    -Verbose `
+    -Force
 
 Write-Host "STIG applied successfully."

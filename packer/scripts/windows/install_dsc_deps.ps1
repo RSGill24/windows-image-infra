@@ -44,7 +44,7 @@ foreach ($dep in $module.RequiredModules) {
         Write-Host "    Copying to DSC path: $dstPath"
         Copy-Item -Path $srcPath -Destination $dstPath -Recurse -Force
     } else {
-        Write-Warning "    Source not found at $srcPath — skipping copy"
+        Write-Warning "    Source not found at $srcPath -- skipping copy"
     }
 }
 
@@ -78,8 +78,9 @@ Write-Host "Found org.default.xml: $($defaultOrgFile.FullName)"
 
 # -----------------------------------------------------------------------
 # Step 4: Copy the default XML to the hardening dir and apply PAM overrides
+# Dynamic filename -- picks up whatever version is installed (2.7, 3.0, etc.)
 # -----------------------------------------------------------------------
-$outputOrgXml = Join-Path $HardeningDir "WindowsServer-2022-MS-2.1.org.pamdata.xml"
+$outputOrgXml = Join-Path $HardeningDir ($defaultOrgFile.Name -replace '\.org\.default\.xml', '.org.pamdata.xml')
 Copy-Item -Path $defaultOrgFile.FullName -Destination $outputOrgXml -Force
 Write-Host "Copied XML to: $outputOrgXml"
 

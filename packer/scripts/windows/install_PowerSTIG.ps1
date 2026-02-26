@@ -1,23 +1,9 @@
 # install_PowerSTIG.ps1
+# Installs the PowerSTIG module from the PowerShell Gallery.
+# PowerSTIG is a PowerShell DSC composite resource that automates the application
+# of DISA Security Technical Implementation Guides (STIGs) to Windows systems.
+#
+# -Scope CurrentUser  : Installs for the current user only (no system-wide admin rights needed for the install itself)
+# -Force              : Skips confirmation prompts and overwrites any existing version
 
-Write-Host "Installing PowerSTIG..."
-
-# Ensure TLS 1.2
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-# Trust PSGallery
-if ((Get-PSRepository -Name PSGallery).InstallationPolicy -ne 'Trusted') {
-    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-}
-
-# Install NuGet if missing
-if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
-    Install-PackageProvider -Name NuGet -Force
-}
-
-# Install PowerSTIG
-Install-Module -Name PowerSTIG -Scope AllUsers -Force -AllowClobber
-
-Import-Module PowerSTIG -Force
-
-Write-Host "PowerSTIG installed successfully."
+Install-Module -Name PowerStig -Scope CurrentUser -Force

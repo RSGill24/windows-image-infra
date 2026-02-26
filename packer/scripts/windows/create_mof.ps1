@@ -84,6 +84,7 @@ Configuration ApplyWindowsServerStig {
 
             OsVersion   = '2022'
             OsRole      = 'MS'
+            StigVersion = '2.1'
 
             # Org settings path passed in as parameter — not referenced from script scope
             OrgSettings = $OrgSettingsPath

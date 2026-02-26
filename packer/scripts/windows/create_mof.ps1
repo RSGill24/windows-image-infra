@@ -131,11 +131,4 @@ Write-Host "MOF generated: $mofFile"
 # -----------------------------------------------------------------------
 # Apply
 # -----------------------------------------------------------------------
-Write-Host "=== Applying DSC configuration..."
-Start-DscConfiguration `
-    -Path    $OutputPath `
-    -Wait `
-    -Verbose `
-    -Force
 
-Write-Host "=== STIG applied successfully. ==="

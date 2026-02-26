@@ -1,5 +1,6 @@
+Write-Host "Applying DSC configuration..."
 Start-DscConfiguration `
-    -Path $MofOutputPath `
+    -Path $OutputPath `
     -Wait `
     -Verbose `
     -Force

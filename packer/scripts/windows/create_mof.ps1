@@ -40,6 +40,14 @@ if (-not $stigXml) {
 Write-Host "Detected STIG XML: $($stigXml.FullName)"
 
 # -----------------------------------------------------------------------
+# Parse STIG version dynamically from filename (e.g. 2.7, 2.1, 3.0 etc.)
+# -----------------------------------------------------------------------
+$stigVersionString = ($stigXml.Name `
+    -replace 'WindowsServer-2022-MS-', '' `
+    -replace '\.org\.default\.xml', '')
+Write-Host "Detected STIG version: $stigVersionString"
+
+# -----------------------------------------------------------------------
 # Paths
 # -----------------------------------------------------------------------
 $HardeningDir = $PSScriptRoot
@@ -74,7 +82,8 @@ try {
 Configuration ApplyWindowsServerStig {
     param (
         [string]$NodeName        = 'localhost',
-        [string]$OrgSettingsPath
+        [string]$OrgSettingsPath,
+        [string]$StigVer
     )
 
     Import-DscResource -ModuleName PowerSTIG
@@ -84,7 +93,7 @@ Configuration ApplyWindowsServerStig {
 
             OsVersion   = '2022'
             OsRole      = 'MS'
-            StigVersion = '2.1'
+            StigVersion = $StigVer
 
             OrgSettings = $OrgSettingsPath
 
@@ -111,7 +120,10 @@ Configuration ApplyWindowsServerStig {
 # Compile and Apply MOF
 # -----------------------------------------------------------------------
 Write-Host "=== Generating MOF... ==="
-ApplyWindowsServerStig -OutputPath $OutputPath -OrgSettingsPath $OrgSettings
+ApplyWindowsServerStig `
+    -OutputPath      $OutputPath `
+    -OrgSettingsPath $OrgSettings `
+    -StigVer         $stigVersionString
 
 $mofFile = Join-Path $OutputPath "localhost.mof"
 if (!(Test-Path $mofFile)) {

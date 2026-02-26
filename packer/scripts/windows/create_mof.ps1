@@ -1,13 +1,12 @@
 # create_mof.ps1
 # Compiles a DSC MOF using PowerSTIG.
-# Generates a temporary configuration script with version literals baked in,
-# because DSC's Import-DscResource -ModuleVersion requires a constant string.
+
 
 Write-Host "=== create_mof.ps1 starting ==="
 
-# -----------------------------------------------------------------------
-# Ensure all module paths are in PSModulePath
-# -----------------------------------------------------------------------
+
+# Ensuring all module paths are in PSModulePath
+
 $requiredPaths = @(
     "C:\Program Files\WindowsPowerShell\Modules",
     "C:\Windows\system32\WindowsPowerShell\v1.0\Modules",
@@ -20,9 +19,9 @@ foreach ($p in $requiredPaths) {
     }
 }
 
-# -----------------------------------------------------------------------
-# Detect latest PowerSTIG module
-# -----------------------------------------------------------------------
+
+# Detecting latest PowerSTIG module
+
 $module = Get-Module PowerSTIG -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
 if (-not $module) {
     Write-Error "PowerSTIG module not found. Ensure install_PowerSTIG.ps1 ran successfully."
@@ -31,9 +30,9 @@ if (-not $module) {
 $pstigVersion = $module.Version.ToString()
 Write-Host "Found PowerSTIG module $pstigVersion at: $($module.ModuleBase)"
 
-# -----------------------------------------------------------------------
-# Detect STIG XML and parse version
-# -----------------------------------------------------------------------
+
+# Detecting STIG XML and parse version
+
 $stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
 $stigXml = Get-ChildItem -Path $stigDataPath -Filter "WindowsServer-2022-MS-*.org.default.xml" |
            Sort-Object Name -Descending | Select-Object -First 1
@@ -45,9 +44,9 @@ $stigVersionString = ($stigXml.Name -replace 'WindowsServer-2022-MS-', '' -repla
 Write-Host "Detected STIG XML: $($stigXml.FullName)"
 Write-Host "Detected STIG version: $stigVersionString"
 
-# -----------------------------------------------------------------------
+
 # Paths
-# -----------------------------------------------------------------------
+
 $HardeningDir = $PSScriptRoot
 $OutputPath   = Join-Path $HardeningDir "MOF"
 $OrgSettings  = Join-Path $HardeningDir ($stigXml.Name -replace '\.org\.default\.xml', '.org.pamdata.xml')
@@ -63,9 +62,9 @@ if (!(Test-Path $OutputPath)) {
     Write-Host "Created MOF output directory: $OutputPath"
 }
 
-# -----------------------------------------------------------------------
+
 # Verify DSC resource
-# -----------------------------------------------------------------------
+
 Import-Module -Name PowerSTIG -RequiredVersion $pstigVersion -Force
 try {
     $dscCheck = Get-DscResource -Name WindowsServer -Module PowerSTIG -ErrorAction Stop
@@ -75,13 +74,9 @@ try {
     exit 1
 }
 
-# -----------------------------------------------------------------------
+
 # Generate temporary DSC configuration script.
-# Version values are baked in as string literals (not variables) because
-# DSC's Import-DscResource parser requires constants at parse time.
-# PSModulePath is NOT set here -- the child process inherits it cleanly
-# from the current process environment to avoid duplicate key errors.
-# -----------------------------------------------------------------------
+
 $tempScript = Join-Path $env:TEMP "dsc_config_generated.ps1"
 
 # Escape single quotes in paths for embedding in single-quoted PS strings
@@ -124,10 +119,10 @@ ApplyWindowsServerStig -OutputPath '$safeOutputPath'
 Set-Content -Path $tempScript -Value $scriptContent -Encoding UTF8
 Write-Host "Generated temporary DSC config script: $tempScript"
 
-# -----------------------------------------------------------------------
+
 # Spawn a fresh PowerShell process to compile the MOF.
 # The child process inherits $env:PSModulePath from this process.
-# -----------------------------------------------------------------------
+
 Write-Host "=== Generating MOF... ==="
 $result = Start-Process powershell `
     -ArgumentList "-ExecutionPolicy Bypass -NonInteractive -File `"$tempScript`"" `
@@ -140,9 +135,9 @@ if ($result.ExitCode -ne 0) {
     exit $result.ExitCode
 }
 
-# -----------------------------------------------------------------------
+
 # Verify MOF was created
-# -----------------------------------------------------------------------
+
 $mofFile = Join-Path $OutputPath "localhost.mof"
 if (!(Test-Path $mofFile)) {
     Write-Error "MOF file was not generated at: $mofFile"

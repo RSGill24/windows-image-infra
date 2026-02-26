@@ -31,7 +31,7 @@ steps:
     - table
     - --exit-code
     - '1'
-    - .
+    - ../terraform
   dir: 'packer'
 
 - id: 'packer-build'

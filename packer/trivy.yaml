@@ -1,15 +1,26 @@
+# Standalone Trivy image scan pipeline.
+# Use this trigger to test Trivy scanning against a pre-existing
+# hardened image and push results to GCS.
+#
+# To run manually:
+#   gcloud builds submit --no-source \
+#     --project="big-mender-473219-r2" \
+#     --config="packer/trivy.yaml" \
+#     --substitutions="_IMAGE_NAME=pww-disa--hardened-patched-1772180770"
 
+# Top-level timeout: export (15-25 min) + download + scan (~5 min) = ~35 min
+# Set to 60 min to be safe
 timeout: 3600s
 
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
   _ZONE: "us-east4-b"
   _TRIVY_VERSION: "0.50.1"
-  _TRIVY_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
+  _TRIVY_BUCKET: "trivy-scan-results-big-mender-473219-r2"
   _IMAGE_FAMILY: "pww-windows-2022-hardened"
   # Override with a specific image name when triggering manually.
   # If left empty, the latest image in _IMAGE_FAMILY is used.
-  _IMAGE_NAME: "pww-disa--hardened-patched-1772125065"
+  _IMAGE_NAME: ""
 
 steps:
 

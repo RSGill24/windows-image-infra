@@ -51,7 +51,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        . || true
+        ./packer || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Secrets ==="
@@ -61,7 +61,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        . || true
+        ./packer || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
@@ -71,7 +71,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        . || true
+        ./packer || true
 
       echo ""
       echo "=== Trivy scan complete ==="

@@ -53,7 +53,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        /workspace/packer/harden_ww.pkr.hcl || true
+        ./packer || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Secrets in scripts/ ==="
@@ -63,7 +63,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        /workspace/packer/scripts || true
+        ./packer/scripts || true
 
       echo ""
       echo "=== Trivy scan complete ==="
@@ -198,4 +198,5 @@ steps:
 serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 
 options:
+
   logging: CLOUD_LOGGING_ONLY

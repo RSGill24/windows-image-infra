@@ -1,3 +1,11 @@
+# Prerequisites (run once in CLI before first pipeline execution):
+#   gcloud services enable osconfig.googleapis.com containeranalysis.googleapis.com
+#   gsutil mb -p big-mender-473219-r2 -l us-east4 -b on gs://osconfig-scan-results-big-mender-473219-r2
+#   gsutil iam ch serviceAccount:packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com:roles/storage.objectAdmin gs://osconfig-scan-results-big-mender-473219-r2
+#   gcloud projects add-iam-policy-binding big-mender-473219-r2 --member=serviceAccount:packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com --role=roles/osconfig.vulnerabilityReportViewer
+#   gcloud projects add-iam-policy-binding big-mender-473219-r2 --member=serviceAccount:packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com --role=roles/compute.instanceAdmin.v1
+#   gcloud iam service-accounts add-iam-policy-binding packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com --member=serviceAccount:packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com --role=roles/iam.serviceAccountUser
+
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
   _SOURCE_IMAGE_PROJECT_ID: "windows-cloud"
@@ -12,13 +20,15 @@ substitutions:
   _HARDENING_TARGET_DIR: "C:/Users/packer_user/hardening/"
   _MACHINE_TYPE: "e2-standard-8"
   _SCAN_MACHINE_TYPE: "e2-medium"
+  # NOTE: Cloud Build cannot expand substitutions within the substitutions
+  # block. Bucket name must be fully hardcoded — no ${_PROJECT_ID} here.
   _SCAN_RESULTS_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
 
 steps:
 
-
+# --------------------------------------------------------
 # Cost Estimation (Placeholder)
-
+# --------------------------------------------------------
 - id: 'llm-cost-estimation'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -28,8 +38,10 @@ steps:
       echo "LLM cost estimation: not-provided"
   dir: 'packer'
 
-# Packer Build
 
+# --------------------------------------------------------
+# Packer Build
+# --------------------------------------------------------
 - id: 'packer-build'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -92,7 +104,6 @@ steps:
 
       echo "Packer build completed successfully."
 
-      # Save newly built image name for subsequent steps
       LATEST_IMAGE=$$(gcloud compute images list \
         --project="${_PROJECT_ID}" \
         --filter="family=${_IMAGE_FAMILY}" \
@@ -109,27 +120,18 @@ steps:
 #
 # HOW IT WORKS:
 #   1. Boot a temporary e2-medium VM from the newly built image.
-#      The GCP OS Config agent starts automatically on boot —
-#      it is pre-installed on all Google-provided Windows images
-#      and persists through the Packer hardening process.
-#   2. Wait for the agent to phone home and register its
-#      vulnerability report with the OS Config API (5-10 min).
-#   3. Fetch the report via:
-#        gcloud compute os-config vulnerability-reports describe
-#   4. Parse the report for HIGH/CRITICAL CVEs.
-#   5. Upload the full JSON report to GCS for audit records.
-#   6. Delete the scan VM.
-#   7. Fail the build if any HIGH/CRITICAL CVEs are present —
-#      the image will NOT be promoted as the active family image.
+#      OS Config agent starts automatically — it is pre-installed
+#      on all GCP Windows Server 2022 images and survives hardening.
+#   2. Poll the OS Config API every 30s until the vulnerability
+#      report is available (typically 5-10 minutes after boot).
+#   3. Fetch the report, upload to GCS for 90-day audit retention.
+#   4. Parse for HIGH/CRITICAL CVEs — fail build if any found.
+#   5. Delete the scan VM.
 #
-# WHY OS CONFIG OVER TRIVY COMMUNITY:
-#   - Enterprise-grade: backed by Google + NVD CVE feeds
-#   - Free: no license cost, included with Compute Engine
-#   - Most accurate for Windows: uses Windows Update Agent
-#     and registry — the same data source Microsoft uses
-#   - GCP-native: no external endpoints, no firewall rules,
-#     no SaaS dependencies, results in Cloud Logging
-#   - Audit-friendly: satisfies FedRAMP, SOC2, ISO 27001
+# NOTE: No heredocs are used in this step intentionally.
+# Heredocs (<<EOF) inside YAML multi-line strings cause YAML
+# parse errors due to quote and colon conflicts. All multi-line
+# content is written using printf or echo -e instead.
 # --------------------------------------------------------
 - id: 'osconfig-vulnerability-scan'
   name: 'gcr.io/cloud-builders/gcloud'
@@ -145,18 +147,14 @@ steps:
 
       echo "=== Ensuring GCS audit results bucket exists ==="
       gsutil ls gs://${_SCAN_RESULTS_BUCKET} 2>/dev/null || \
-        gsutil mb -p ${_PROJECT_ID} -l us-east4 gs://${_SCAN_RESULTS_BUCKET}
+        gsutil mb -p ${_PROJECT_ID} -l us-east4 -b on gs://${_SCAN_RESULTS_BUCKET}
 
-      # Retain scan reports for 90 days for audit purposes
-      cat > /tmp/lifecycle.json <<'EOF'
-{"rule":[{"action":{"type":"Delete"},"condition":{"age":90}}]}
-EOF
+      echo "=== Setting 90-day lifecycle on bucket ==="
+      printf '{"rule":[{"action":{"type":"Delete"},"condition":{"age":90}}]}' \
+        > /tmp/lifecycle.json
       gsutil lifecycle set /tmp/lifecycle.json gs://${_SCAN_RESULTS_BUCKET}
 
       echo "=== Booting scan VM from image: $$LATEST_IMAGE ==="
-      # --metadata=enable-osconfig=TRUE ensures the OS Config agent
-      # is active even if it was disabled during STIG hardening.
-      # osconfig-log-level=debug helps diagnose agent startup issues.
       gcloud compute instances create "$$SCAN_VM" \
         --project="${_PROJECT_ID}" \
         --zone="${_ZONE}" \
@@ -170,11 +168,8 @@ EOF
         --boot-disk-type=pd-balanced \
         --metadata="enable-osconfig=TRUE,osconfig-log-level=debug"
 
-      echo "=== Waiting for OS Config agent to submit vulnerability report ==="
-      echo "    The agent scans on first boot and reports within 5-10 minutes."
-
+      echo "=== Polling OS Config API for vulnerability report (max 15 min) ==="
       REPORT_FOUND=false
-      # Poll every 30s for up to 15 minutes (30 attempts)
       for i in $$(seq 1 30); do
         echo "  [$$i/30] Checking for vulnerability report..."
 
@@ -183,19 +178,17 @@ EOF
           --zone="${_ZONE}" \
           --format=json 2>/dev/null || echo "")
 
-        if [ -n "$$REPORT" ] && [ "$$REPORT" != "null" ]; then
-          echo "  Vulnerability report received."
+        if [ -n "$$REPORT" ] && [ "$$REPORT" != "null" ] && [ "$$REPORT" != "" ]; then
+          echo "  Report received."
           echo "$$REPORT" > /workspace/vulnerability-report.json
           REPORT_FOUND=true
           break
         fi
 
         if [ "$$i" -eq 30 ]; then
-          echo "ERROR: OS Config vulnerability report not received within 15 minutes."
-          echo "       Possible causes:"
-          echo "         - OS Config API not enabled (gcloud services enable osconfig.googleapis.com)"
-          echo "         - OS Config agent disabled by STIG hardening policy"
-          echo "         - VM has no internet access to reach metadata server"
+          echo "ERROR: No vulnerability report within 15 minutes."
+          echo "  Check: osconfig.googleapis.com API is enabled"
+          echo "  Check: OS Config agent not disabled by STIG policy"
           gcloud compute instances delete "$$SCAN_VM" \
             --project="${_PROJECT_ID}" --zone="${_ZONE}" --quiet || true
           exit 1
@@ -210,36 +203,40 @@ EOF
         --zone="${_ZONE}" \
         --quiet
 
-      echo "=== Uploading vulnerability report to GCS for audit records ==="
+      echo "=== Uploading report to GCS for audit records ==="
       gsutil cp /workspace/vulnerability-report.json "$$REPORT_PATH"
       echo "Report saved: $$REPORT_PATH"
 
       echo ""
-      echo "=== Vulnerability Summary (HIGH/CRITICAL only) ==="
-      python3 -c "
-import json, sys
+      echo "=== Parsing vulnerability report ==="
 
-with open('/workspace/vulnerability-report.json') as f:
-    report = json.load(f)
+      # Write Python parser to file using printf to avoid YAML heredoc conflicts.
+      # Heredocs (<<EOF) inside YAML multi-line strings break the YAML parser
+      # when the heredoc body contains colons or quotes — so we use printf instead.
+      printf '%s\n' \
+        'import json, sys' \
+        'with open("/workspace/vulnerability-report.json") as f:' \
+        '    report = json.load(f)' \
+        'vulnerabilities = report.get("vulnerabilities", {})' \
+        'high_critical = []' \
+        'for cve_id, details in vulnerabilities.items():' \
+        '    detail_list = details.get("details", [])' \
+        '    severity = detail_list[0].get("severity", "UNKNOWN") if detail_list else "UNKNOWN"' \
+        '    if severity in ("HIGH", "CRITICAL"):' \
+        '        pkg = details.get("installedInventoryItemIds", ["unknown"])[0]' \
+        '        high_critical.append((severity, cve_id, pkg))' \
+        'if not high_critical:' \
+        '    print("No HIGH/CRITICAL vulnerabilities found. Image is clean.")' \
+        '    sys.exit(0)' \
+        'else:' \
+        '    print(f"Found {len(high_critical)} HIGH/CRITICAL vulnerabilities:")' \
+        '    print()' \
+        '    for severity, cve_id, pkg in sorted(high_critical, key=lambda x: x[0]):' \
+        '        print(f"  [{severity}] {cve_id}  package: {pkg}")' \
+        '    sys.exit(1)' \
+        > /tmp/parse_report.py
 
-vulnerabilities = report.get('vulnerabilities', {})
-high_critical = []
-
-for cve_id, details in vulnerabilities.items():
-    severity = details.get('details', [{}])[0].get('severity', 'UNKNOWN')
-    if severity in ('HIGH', 'CRITICAL'):
-        pkg = details.get('installedInventoryItemIds', ['unknown'])[0]
-        high_critical.append((severity, cve_id, pkg))
-
-if not high_critical:
-    print('No HIGH/CRITICAL vulnerabilities found. Image is clean.')
-else:
-    print(f'Found {len(high_critical)} HIGH/CRITICAL vulnerabilities:')
-    print()
-    for severity, cve_id, pkg in sorted(high_critical, key=lambda x: x[0]):
-        print(f'  [{severity}] {cve_id}  —  package: {pkg}')
-    sys.exit(1)
-"
+      python3 /tmp/parse_report.py
 
       echo ""
       echo "=== OS Config scan PASSED. Image is clean and ready for promotion. ==="

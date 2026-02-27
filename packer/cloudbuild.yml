@@ -25,13 +25,11 @@ steps:
   name: 'aquasec/trivy:latest'
   args:
   - fs
-  - --no-progress
-  - --severity
-  - HIGH,CRITICAL
+  - --scanners
+  - vuln,secret,misconfig
   - --exit-code
   - '1'
-  - .
-  dir: 'packer'
+  - packer/
 
 - id: 'packer-build'
   name: 'gcr.io/cloud-builders/gcloud'

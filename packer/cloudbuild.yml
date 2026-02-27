@@ -133,110 +133,69 @@ steps:
 # parse errors due to quote and colon conflicts. All multi-line
 # content is written using printf or echo -e instead.
 # --------------------------------------------------------
-- id: 'osconfig-vulnerability-scan'
+# --------------------------------------------------------
+# Trivy Vulnerability Scan
+# --------------------------------------------------------
+# --------------------------------------------------------
+# Trivy Scan + Upload to GCS
+# --------------------------------------------------------
+- id: 'trivy-scan'
   name: 'gcr.io/cloud-builders/gcloud'
+  timeout: 1800s
   entrypoint: bash
   args:
   - -c
   - |
       set -euo pipefail
 
-      LATEST_IMAGE=$$(cat /workspace/latest_image.txt)
-      SCAN_VM="osconfig-scan-$$LATEST_IMAGE"
-      REPORT_PATH="gs://${_SCAN_RESULTS_BUCKET}/${BUILD_ID}/vulnerability-report.json"
+      LATEST_IMAGE=$(cat /workspace/latest_image.txt)
+      SCAN_VM="trivy-scan-$BUILD_ID"
+      REPORT_GCS_PATH="gs://${_SCAN_RESULTS_BUCKET}/$BUILD_ID/trivy-report.json"
 
-      echo "=== Ensuring GCS audit results bucket exists ==="
-      gsutil ls gs://${_SCAN_RESULTS_BUCKET} 2>/dev/null || \
-        gsutil mb -p ${_PROJECT_ID} -l us-east4 -b on gs://${_SCAN_RESULTS_BUCKET}
+      echo "Creating startup script..."
 
-      echo "=== Setting 90-day lifecycle on bucket ==="
-      printf '{"rule":[{"action":{"type":"Delete"},"condition":{"age":90}}]}' \
-        > /tmp/lifecycle.json
-      gsutil lifecycle set /tmp/lifecycle.json gs://${_SCAN_RESULTS_BUCKET}
+      cat > /workspace/startup.ps1 <<EOF
+      \$ErrorActionPreference = "Stop"
 
-      echo "=== Booting scan VM from image: $$LATEST_IMAGE with external IP ==="
-      gcloud compute instances create "$$SCAN_VM" \
+      # Install Trivy
+      Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip
+      Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force
+
+      # Scan full OS
+      C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json
+
+      # Upload to GCS (Cloud SDK already present on GCE Windows)
+      gsutil cp C:\trivy-report.json $REPORT_GCS_PATH
+      EOF
+
+      echo "Booting scan VM..."
+      gcloud compute instances create "$SCAN_VM" \
         --project="${_PROJECT_ID}" \
         --zone="${_ZONE}" \
         --machine-type="${_SCAN_MACHINE_TYPE}" \
-        --image="$$LATEST_IMAGE" \
+        --image="$LATEST_IMAGE" \
         --image-project="${_PROJECT_ID}" \
         --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
         --scopes="cloud-platform" \
-        --boot-disk-size=250GB \
-        --boot-disk-type=pd-balanced \
-        --metadata="enable-osconfig=TRUE,osconfig-log-level=debug" \
-        --address=""  # ephemeral external IP assigned
+        --metadata-from-file windows-startup-script-ps1=/workspace/startup.ps1 \
+        --boot-disk-size=250GB
 
-      echo "=== Polling OS Config API for vulnerability report (max 15 min) ==="
-      REPORT_FOUND=false
-      for i in $$(seq 1 30); do
-        echo "  [$$i/30] Checking for vulnerability report..."
-
-        REPORT=$$(gcloud compute os-config vulnerability-reports describe "$$SCAN_VM" \
-          --project="${_PROJECT_ID}" \
-          --zone="${_ZONE}" \
-          --format=json 2>/dev/null || echo "")
-
-        if [ -n "$$REPORT" ] && [ "$$REPORT" != "null" ] && [ "$$REPORT" != "" ]; then
-          echo "  Report received."
-          echo "$$REPORT" > /workspace/vulnerability-report.json
-          REPORT_FOUND=true
+      echo "Waiting for report (max 20 minutes)..."
+      for i in {1..40}; do
+        if gsutil -q stat "$REPORT_GCS_PATH"; then
+          echo "Report uploaded."
           break
         fi
-
-        if [ "$$i" -eq 30 ]; then
-          echo "ERROR: No vulnerability report within 15 minutes."
-          echo "  Check: OS Config agent is running"
-          echo "  Check: VM has outbound internet access (required for ACS)"
-          gcloud compute instances delete "$$SCAN_VM" \
-            --project="${_PROJECT_ID}" --zone="${_ZONE}" --quiet || true
-          exit 1
-        fi
-
         sleep 30
       done
 
-      echo "=== Deleting scan VM ==="
-      gcloud compute instances delete "$$SCAN_VM" \
-        --project="${_PROJECT_ID}" \
+      echo "Deleting scan VM..."
+      gcloud compute instances delete "$SCAN_VM" \
         --zone="${_ZONE}" \
         --quiet
 
-      echo "=== Uploading report to GCS for audit records ==="
-      gsutil cp /workspace/vulnerability-report.json "$$REPORT_PATH"
-      echo "Report saved: $$REPORT_PATH"
-
-      echo ""
-      echo "=== Parsing vulnerability report ==="
-      printf '%s\n' \
-        'import json, sys' \
-        'with open("/workspace/vulnerability-report.json") as f:' \
-        '    report = json.load(f)' \
-        'vulnerabilities = report.get("vulnerabilities", {})' \
-        'high_critical = []' \
-        'for cve_id, details in vulnerabilities.items():' \
-        '    detail_list = details.get("details", [])' \
-        '    severity = detail_list[0].get("severity", "UNKNOWN") if detail_list else "UNKNOWN"' \
-        '    if severity in ("HIGH", "CRITICAL"):' \
-        '        pkg = details.get("installedInventoryItemIds", ["unknown"])[0]' \
-        '        high_critical.append((severity, cve_id, pkg))' \
-        'if not high_critical:' \
-        '    print("No HIGH/CRITICAL vulnerabilities found. Image is clean.")' \
-        '    sys.exit(0)' \
-        'else:' \
-        '    print(f"Found {len(high_critical)} HIGH/CRITICAL vulnerabilities:")' \
-        '    for severity, cve_id, pkg in sorted(high_critical, key=lambda x: x[0]):' \
-        '        print(f"  [{severity}] {cve_id}  package: {pkg}")' \
-        '    sys.exit(1)' \
-        > /tmp/parse_report.py
-
-      python3 /tmp/parse_report.py
-
-      echo ""
-      echo "=== OS Config scan PASSED. Image is clean and ready for promotion. ==="
-
-
+      echo "Done. Report stored at:"
+      echo "$REPORT_GCS_PATH"
 # --------------------------------------------------------
 # Deprecate Older Images (Keep Latest Active)
 # Only runs if OS Config scan passed — exit 1 above

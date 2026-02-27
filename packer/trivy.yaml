@@ -4,7 +4,7 @@ substitutions:
   _IMAGE_NAME: "pww-disa--hardened-patched-1772125065"
   _SCAN_MACHINE_TYPE: "e2-medium"
   _SCAN_RESULTS_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
- 
+
 steps:
 - id: 'trivy-scan-only'
   name: 'gcr.io/cloud-builders/gcloud'
@@ -14,25 +14,23 @@ steps:
   - -c
   - |
       set -euo pipefail
- 
+
       SCAN_VM="trivy-scan-$BUILD_ID"
       REPORT_GCS_PATH="gs://${_SCAN_RESULTS_BUCKET}/$BUILD_ID/trivy-report.json"
- 
+
       echo "Creating startup script..."
- 
-      cat > /workspace/startup.ps1 <<'POWERSHELL'
-$ErrorActionPreference = "Stop"
- 
-Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip
-Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force
- 
-C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json
- 
-gsutil cp C:\trivy-report.json REPORT_GCS_PATH_PLACEHOLDER
-POWERSHELL
- 
-      sed -i "s|REPORT_GCS_PATH_PLACEHOLDER|${REPORT_GCS_PATH}|g" /workspace/startup.ps1
- 
+
+      printf '%s\n' \
+        '$ErrorActionPreference = "Stop"' \
+        '' \
+        'Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip' \
+        'Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force' \
+        '' \
+        'C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json' \
+        '' \
+        "gsutil cp C:\\trivy-report.json ${REPORT_GCS_PATH}" \
+        > /workspace/startup.ps1
+
       echo "Booting scan VM..."
       gcloud compute instances create "$SCAN_VM" \
         --project="${_PROJECT_ID}" \
@@ -44,7 +42,7 @@ POWERSHELL
         --scopes="cloud-platform" \
         --metadata-from-file windows-startup-script-ps1=/workspace/startup.ps1 \
         --boot-disk-size=250GB
- 
+
       echo "Waiting for report (max 20 min)..."
       SUCCESS=false
       for i in {1..40}; do
@@ -54,22 +52,21 @@ POWERSHELL
         fi
         sleep 30
       done
- 
+
       echo "Deleting VM..."
       gcloud compute instances delete "$SCAN_VM" \
         --zone="${_ZONE}" \
         --quiet || true
- 
+
       if [ "$SUCCESS" != "true" ]; then
         echo "Scan failed — report not found."
         exit 1
       fi
- 
+
       echo "Scan completed."
-      echo "Report stored at:"
-      echo "$REPORT_GCS_PATH"
- 
-serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
- 
+      echo "Report stored at: $REPORT_GCS_PATH"
+
+serviceAccount: "projects/big-mender-473219-r2/serviceAccounts/packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
+
 options:
   logging: CLOUD_LOGGING_ONLY

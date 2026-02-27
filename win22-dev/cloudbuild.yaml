@@ -27,7 +27,6 @@ steps:
       echo "LLM cost estimation: not-provided"
 
 # trivy scan
-# Optimized Trivy scan
 - id: 'trivy-config-scan'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -50,7 +49,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        ./packer || true
+        ./win2022-dev/packer || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Secrets ==="
@@ -60,7 +59,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        ./scripts || true
+        ./win2022-dev/scripts || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
@@ -70,7 +69,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        ./scripts || true
+        ./win2022-dev/scripts || true
 
       echo ""
       echo "=== Trivy scan complete ==="
@@ -205,6 +204,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

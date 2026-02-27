@@ -125,36 +125,25 @@ steps:
   - -c
   - |
       set -euo pipefail
-
-      LATEST_IMAGE=$(cat /workspace/latest_image.txt)
-      SCAN_VM="trivy-scan-$BUILD_ID"
-      REPORT_GCS_PATH="gs://${_SCAN_RESULTS_BUCKET}/$BUILD_ID/trivy-report.json"
+      LATEST_IMAGE=$$(cat /workspace/latest_image.txt)
+      SCAN_VM="trivy-scan-$$BUILD_ID"
+      REPORT_GCS_PATH="gs://${_SCAN_RESULTS_BUCKET}/$$BUILD_ID/trivy-report.json"
 
       echo "Creating startup script..."
-
-      cat > /workspace/startup.ps1 <<'POWERSHELL'
-$ErrorActionPreference = "Stop"
-
-# Install Trivy
-Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip
-Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force
-
-# Run full OS scan
-C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json
-
-# Upload report (GCS path injected later)
-gsutil cp C:\trivy-report.json REPORT_GCS_PATH_PLACEHOLDER
-POWERSHELL
-
-      # Inject GCS path AFTER file creation (avoids $ parsing issues)
-      sed -i "s|REPORT_GCS_PATH_PLACEHOLDER|${REPORT_GCS_PATH}|g" /workspace/startup.ps1
+      printf '%s\n' \
+        'Set-Variable -Name ErrorActionPreference -Value Stop' \
+        'Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip' \
+        'Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force' \
+        'C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json' \
+        "gsutil cp C:\\trivy-report.json $$REPORT_GCS_PATH" \
+        > /workspace/startup.ps1
 
       echo "Booting scan VM..."
-      gcloud compute instances create "$SCAN_VM" \
+      gcloud compute instances create "$$SCAN_VM" \
         --project="${_PROJECT_ID}" \
         --zone="${_ZONE}" \
         --machine-type="${_SCAN_MACHINE_TYPE}" \
-        --image="$LATEST_IMAGE" \
+        --image="$$LATEST_IMAGE" \
         --image-project="${_PROJECT_ID}" \
         --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
         --scopes="cloud-platform" \
@@ -162,10 +151,9 @@ POWERSHELL
         --boot-disk-size=250GB
 
       echo "Waiting for report (max 20 minutes)..."
-
       SUCCESS=false
       for i in {1..40}; do
-        if gsutil -q stat "$REPORT_GCS_PATH"; then
+        if gsutil -q stat "$$REPORT_GCS_PATH"; then
           echo "Report uploaded."
           SUCCESS=true
           break
@@ -174,17 +162,16 @@ POWERSHELL
       done
 
       echo "Deleting scan VM..."
-      gcloud compute instances delete "$SCAN_VM" \
+      gcloud compute instances delete "$$SCAN_VM" \
         --zone="${_ZONE}" \
         --quiet || true
 
-      if [ "$SUCCESS" != "true" ]; then
+      if [ "$$SUCCESS" != "true" ]; then
         echo "ERROR: Trivy report was not uploaded."
         exit 1
       fi
 
-      echo "Done. Report stored at:"
-      echo "$REPORT_GCS_PATH"
+      echo "Done. Report stored at: $$REPORT_GCS_PATH"
 # --------------------------------------------------------
 # Deprecate Older Images (Keep Latest Active)
 # Only runs if OS Config scan passed — exit 1 above

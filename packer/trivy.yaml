@@ -15,11 +15,11 @@ steps:
   - |
       set -euo pipefail
 
-      VM_NAME="trivy-scan-$BUILD_ID"
-      REPORT_PATH="gs://${_SCAN_RESULTS_BUCKET}/$BUILD_ID/trivy-report.json"
+      VM_NAME="trivy-scan-$$BUILD_ID"
+      REPORT_PATH="gs://${_SCAN_RESULTS_BUCKET}/$$BUILD_ID/trivy-report.json"
 
       echo "Creating VM from existing image..."
-      gcloud compute instances create "$VM_NAME" \
+      gcloud compute instances create "$$VM_NAME" \
         --project="${_PROJECT_ID}" \
         --zone="${_ZONE}" \
         --machine-type="${_SCAN_MACHINE_TYPE}" \
@@ -33,32 +33,32 @@ steps:
       sleep 120
 
       echo "Downloading Trivy..."
-      gcloud compute ssh "$VM_NAME" \
+      gcloud compute ssh "$$VM_NAME" \
         --zone="${_ZONE}" \
         --command='powershell -Command "Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip"'
 
       echo "Extracting Trivy..."
-      gcloud compute ssh "$VM_NAME" \
+      gcloud compute ssh "$$VM_NAME" \
         --zone="${_ZONE}" \
         --command='powershell -Command "Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force"'
 
       echo "Running Trivy scan..."
-      gcloud compute ssh "$VM_NAME" \
+      gcloud compute ssh "$$VM_NAME" \
         --zone="${_ZONE}" \
         --command='powershell -Command "C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json"'
 
-      echo "Uploading report to GCS..."
-      gcloud compute ssh "$VM_NAME" \
+      echo "Uploading report..."
+      gcloud compute ssh "$$VM_NAME" \
         --zone="${_ZONE}" \
-        --command="powershell -Command \"gsutil cp C:\trivy-report.json ${REPORT_PATH}\""
+        --command="powershell -Command \"gsutil cp C:\trivy-report.json $$REPORT_PATH\""
 
       echo "Deleting scan VM..."
-      gcloud compute instances delete "$VM_NAME" \
+      gcloud compute instances delete "$$VM_NAME" \
         --zone="${_ZONE}" \
         --quiet
 
       echo "Scan completed."
-      echo "Report stored at: ${REPORT_PATH}"
+      echo "Report stored at: $$REPORT_PATH"
 
 serviceAccount: "packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
 

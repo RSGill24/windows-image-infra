@@ -154,7 +154,7 @@ steps:
         > /tmp/lifecycle.json
       gsutil lifecycle set /tmp/lifecycle.json gs://${_SCAN_RESULTS_BUCKET}
 
-      echo "=== Booting scan VM from image: $$LATEST_IMAGE ==="
+      echo "=== Booting scan VM from image: $$LATEST_IMAGE with external IP ==="
       gcloud compute instances create "$$SCAN_VM" \
         --project="${_PROJECT_ID}" \
         --zone="${_ZONE}" \
@@ -163,10 +163,10 @@ steps:
         --image-project="${_PROJECT_ID}" \
         --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
         --scopes="cloud-platform" \
-        --no-address \
         --boot-disk-size=250GB \
         --boot-disk-type=pd-balanced \
-        --metadata="enable-osconfig=TRUE,osconfig-log-level=debug"
+        --metadata="enable-osconfig=TRUE,osconfig-log-level=debug" \
+        --address=""  # ephemeral external IP assigned
 
       echo "=== Polling OS Config API for vulnerability report (max 15 min) ==="
       REPORT_FOUND=false
@@ -187,8 +187,8 @@ steps:
 
         if [ "$$i" -eq 30 ]; then
           echo "ERROR: No vulnerability report within 15 minutes."
-          echo "  Check: osconfig.googleapis.com API is enabled"
-          echo "  Check: OS Config agent not disabled by STIG policy"
+          echo "  Check: OS Config agent is running"
+          echo "  Check: VM has outbound internet access (required for ACS)"
           gcloud compute instances delete "$$SCAN_VM" \
             --project="${_PROJECT_ID}" --zone="${_ZONE}" --quiet || true
           exit 1
@@ -209,10 +209,6 @@ steps:
 
       echo ""
       echo "=== Parsing vulnerability report ==="
-
-      # Write Python parser to file using printf to avoid YAML heredoc conflicts.
-      # Heredocs (<<EOF) inside YAML multi-line strings break the YAML parser
-      # when the heredoc body contains colons or quotes — so we use printf instead.
       printf '%s\n' \
         'import json, sys' \
         'with open("/workspace/vulnerability-report.json") as f:' \
@@ -230,7 +226,6 @@ steps:
         '    sys.exit(0)' \
         'else:' \
         '    print(f"Found {len(high_critical)} HIGH/CRITICAL vulnerabilities:")' \
-        '    print()' \
         '    for severity, cve_id, pkg in sorted(high_critical, key=lambda x: x[0]):' \
         '        print(f"  [{severity}] {cve_id}  package: {pkg}")' \
         '    sys.exit(1)' \

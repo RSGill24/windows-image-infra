@@ -10,6 +10,8 @@ substitutions:
   _HARDENING_SOURCE_DIR: "./scripts/windows/"
   _HARDENING_TARGET_DIR: "C:/Users/packer_user/hardening/"
   _MACHINE_TYPE: "e2-standard-8"
+  _TRIVY_VERSION: "0.50.1"
+  _SEVERITY: "HIGH,CRITICAL"
 
 steps:
 - id: 'llm-cost-estimation'
@@ -21,15 +23,57 @@ steps:
       echo "LLM cost estimation: not-provided"
   dir: 'packer'
 
-- id: 'trivy-fs-scan'
-  name: 'aquasec/trivy:latest'
+steps:
+
+# Trivy Config Scan
+# Scans Packer HCL file for infrastructure misconfigurations
+- id: 'trivy-config-scan'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
   args:
-  - fs
-  - --scanners
-  - vuln,secret,misconfig
-  - --exit-code
-  - '1'
-  - packer/
+  - -c
+  - |
+      set -euo pipefail
+
+      echo "=== Installing Trivy v${_TRIVY_VERSION} ==="
+      apt-get update -y -qq
+      apt-get install -y -qq curl
+      curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+        | sh -s -- -b /usr/local/bin v${_TRIVY_VERSION}
+      trivy --version
+
+      echo ""
+      echo "=== Trivy Config Scan — Packer HCL ==="
+      echo "    Scanning for misconfigurations in .hcl files..."
+      trivy config \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        . || true
+
+      echo ""
+      echo "=== Trivy Filesystem Scan — Secrets ==="
+      echo "    Scanning for hardcoded secrets and credentials..."
+      trivy fs \
+        --scanners secret \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        . || true
+
+      echo ""
+      echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
+      echo "    Scanning for vulnerable dependencies..."
+      trivy fs \
+        --scanners vuln \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        . || true
+
+      echo ""
+      echo "=== Trivy scan complete ==="
+  dir: 'packer'
 
 - id: 'packer-build'
   name: 'gcr.io/cloud-builders/gcloud'

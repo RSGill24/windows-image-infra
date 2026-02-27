@@ -6,67 +6,61 @@ substitutions:
   _SCAN_RESULTS_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
 
 steps:
-- id: 'trivy-scan-only'
-  name: 'gcr.io/cloud-builders/gcloud'
+- id: "trivy-scan-existing-image"
+  name: "gcr.io/cloud-builders/gcloud"
   timeout: 1800s
   entrypoint: bash
   args:
-  - -euo
-  - pipefail
   - -c
   - |
-      SCAN_VM="trivy-scan-${BUILD_ID}"
-      REPORT_GCS_PATH="gs://${_SCAN_RESULTS_BUCKET}/${BUILD_ID}/trivy-report.json"
+      set -euo pipefail
 
-      echo "Creating startup script..."
+      VM_NAME="trivy-scan-$BUILD_ID"
+      REPORT_PATH="gs://${_SCAN_RESULTS_BUCKET}/$BUILD_ID/trivy-report.json"
 
-      printf '%s\n' \
-        '$$ErrorActionPreference = "Stop"' \
-        '' \
-        'Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip' \
-        'Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force' \
-        '' \
-        'C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json' \
-        '' \
-        "gsutil cp C:\\trivy-report.json $${REPORT_GCS_PATH}" \
-        > /workspace/startup.ps1
-
-      echo "Booting scan VM..."
-      gcloud compute instances create "$${SCAN_VM}" \
+      echo "Creating VM from existing image..."
+      gcloud compute instances create "$VM_NAME" \
         --project="${_PROJECT_ID}" \
         --zone="${_ZONE}" \
         --machine-type="${_SCAN_MACHINE_TYPE}" \
         --image="${_IMAGE_NAME}" \
         --image-project="${_PROJECT_ID}" \
         --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
-        --scopes="cloud-platform" \
-        --metadata-from-file windows-startup-script-ps1=/workspace/startup.ps1 \
-        --boot-disk-size=250GB
+        --scopes=cloud-platform \
+        --boot-disk-size=200GB
 
-      echo "Waiting for report (max 20 min)..."
-      SUCCESS=false
-      for i in {1..40}; do
-        if gsutil -q stat "$${REPORT_GCS_PATH}"; then
-          SUCCESS=true
-          break
-        fi
-        sleep 30
-      done
+      echo "Waiting 2 minutes for Windows to boot..."
+      sleep 120
 
-      echo "Deleting VM..."
-      gcloud compute instances delete "$${SCAN_VM}" \
+      echo "Downloading Trivy..."
+      gcloud compute ssh "$VM_NAME" \
         --zone="${_ZONE}" \
-        --quiet || true
+        --command='powershell -Command "Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip"'
 
-      if [ "$${SUCCESS}" != "true" ]; then
-        echo "Scan failed — report not found."
-        exit 1
-      fi
+      echo "Extracting Trivy..."
+      gcloud compute ssh "$VM_NAME" \
+        --zone="${_ZONE}" \
+        --command='powershell -Command "Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force"'
+
+      echo "Running Trivy scan..."
+      gcloud compute ssh "$VM_NAME" \
+        --zone="${_ZONE}" \
+        --command='powershell -Command "C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json"'
+
+      echo "Uploading report to GCS..."
+      gcloud compute ssh "$VM_NAME" \
+        --zone="${_ZONE}" \
+        --command="powershell -Command \"gsutil cp C:\trivy-report.json ${REPORT_PATH}\""
+
+      echo "Deleting scan VM..."
+      gcloud compute instances delete "$VM_NAME" \
+        --zone="${_ZONE}" \
+        --quiet
 
       echo "Scan completed."
-      echo "Report stored at: $${REPORT_GCS_PATH}"
+      echo "Report stored at: ${REPORT_PATH}"
 
-serviceAccount: "projects/big-mender-473219-r2/serviceAccounts/packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
+serviceAccount: "packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
 
 options:
   logging: CLOUD_LOGGING_ONLY

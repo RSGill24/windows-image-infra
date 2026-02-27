@@ -1,0 +1,5 @@
+&"$PSScriptRoot\install_PowerSTIG.ps1"
+&"$PSScriptRoot\create_mof.ps1"
+&"$PSScriptRoot\install_dsc_deps.ps1"
+&"$PSScriptRoot\apply_mof.ps1"
+&"$PSScriptRoot\create_audit_task.ps1"

@@ -1,0 +1,201 @@
+substitutions:
+  _PROJECT_ID: "ggn-nmfs-dev-1"
+  _SOURCE_IMAGE_PROJECT_ID: "windows-cloud"
+  _SOURCE_IMAGE_FAMILY: "windows-2022"
+  _ZONE: "us-east4-b"
+  _IMAGE_FAMILY: "pww-windows-2022-hardened"
+  _SOURCE_IMAGE: "ws2022"
+  _WINRM_SECRET: "packer-winrm-password"
+  _PACKER_TEMPLATE: "harden_ww.pkr.hcl"
+  _PACKER_VERSION: "1.9.4"
+  _HARDENING_SOURCE_DIR: "./scripts/"
+  _HARDENING_TARGET_DIR: "C:/Users/packer_user/hardening/"
+  _MACHINE_TYPE: "e2-standard-8"
+  _TRIVY_VERSION: "0.50.1"
+  _SEVERITY: "HIGH,CRITICAL"
+
+steps:
+
+# Cost Estimation (Placeholder)
+
+- id: 'llm-cost-estimation'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      echo "LLM cost estimation: not-provided"
+
+# trivy scan
+- id: 'trivy-scan'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      echo "=== Installing Trivy v${_TRIVY_VERSION} ==="
+      apt-get update -y -qq
+      apt-get install -y -qq curl
+      curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+        | sh -s -- -b /usr/local/bin v${_TRIVY_VERSION}
+      trivy --version
+
+      echo ""
+      echo "=== Files being scanned ==="
+      find /workspace/packer -type f | sort
+
+      echo ""
+      echo "=== Trivy Config Scan — HCL Misconfigurations ==="
+      echo "    Target: /workspace/packer/harden_ww.pkr.hcl"
+      trivy config \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        /workspace/packer/harden_ww.pkr.hcl || true
+
+      echo ""
+      echo "=== Trivy Filesystem Scan — Secrets in scripts/ ==="
+      echo "    Target: /workspace/packer/scripts"
+      trivy fs \
+        --scanners secret \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        /workspace/packer/scripts || true
+
+      echo ""
+      echo "=== Trivy scan complete ==="
+
+
+# Packer Build
+
+- id: 'packer-build'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      echo "Installing dependencies..."
+      apt-get update -y
+      apt-get install -y unzip curl jq
+
+      echo "Installing Packer ${_PACKER_VERSION}..."
+      curl -fSL \
+        "https://releases.hashicorp.com/packer/${_PACKER_VERSION}/packer_${_PACKER_VERSION}_linux_amd64.zip" \
+        -o packer.zip
+      unzip packer.zip
+      mv packer /usr/local/bin/
+      rm -f packer.zip
+      packer version
+
+      echo "Fetching WinRM password from Secret Manager..."
+      PACKER_PW=$$(gcloud secrets versions access latest \
+        --project "${_PROJECT_ID}" \
+        --secret "${_WINRM_SECRET}")
+
+      export PACKER_LOG=1
+      export PACKER_PW="$$PACKER_PW"
+
+      echo "Initializing Packer..."
+      packer init "${_PACKER_TEMPLATE}"
+
+      echo "Validating Packer template..."
+      packer validate \
+        -var "project_id=${_PROJECT_ID}" \
+        -var "source_image_project_id=${_SOURCE_IMAGE_PROJECT_ID}" \
+        -var "source_image_family=${_SOURCE_IMAGE_FAMILY}" \
+        -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+        -var "image_family=${_IMAGE_FAMILY}" \
+        -var "machine_type=${_MACHINE_TYPE}" \
+        -var "zone=${_ZONE}" \
+        -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
+        -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
+        -var "hardening_entry_script=run_all.ps1" \
+        "${_PACKER_TEMPLATE}"
+
+      echo "Building hardened image..."
+      packer build \
+        -var "project_id=${_PROJECT_ID}" \
+        -var "source_image_project_id=${_SOURCE_IMAGE_PROJECT_ID}" \
+        -var "source_image_family=${_SOURCE_IMAGE_FAMILY}" \
+        -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+        -var "image_family=${_IMAGE_FAMILY}" \
+        -var "machine_type=${_MACHINE_TYPE}" \
+        -var "zone=${_ZONE}" \
+        -var "hardening_source_dir=${_HARDENING_SOURCE_DIR}" \
+        -var "hardening_target_dir=${_HARDENING_TARGET_DIR}" \
+        -var "hardening_entry_script=run_all.ps1" \
+        "${_PACKER_TEMPLATE}"
+
+      echo "Packer build completed successfully."
+
+      LATEST_IMAGE=$$(gcloud compute images list \
+        --project="${_PROJECT_ID}" \
+        --filter="family=${_IMAGE_FAMILY}" \
+        --sort-by="~creationTimestamp" \
+        --format="value(name)" \
+        --limit=1)
+      echo "$$LATEST_IMAGE" > /workspace/latest_image.txt
+      echo "Image name saved: $$LATEST_IMAGE"
+  dir: 'packer'
+
+
+
+# Deprecate Older Images (Keep Latest Active)
+
+- id: 'deprecate-old-images'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      echo "Retrieving newest image in family ${_IMAGE_FAMILY}..."
+
+      LATEST_IMAGE=$$(gcloud compute images list \
+        --project="${_PROJECT_ID}" \
+        --filter="family=${_IMAGE_FAMILY}" \
+        --sort-by="~creationTimestamp" \
+        --format="value(name)" \
+        --limit=1)
+
+      if [ -z "$$LATEST_IMAGE" ]; then
+        echo "No images found in family."
+        exit 0
+      fi
+
+      echo "Latest image is: $$LATEST_IMAGE"
+
+      OLD_IMAGES=$$(gcloud compute images list \
+        --project="${_PROJECT_ID}" \
+        --filter="family=${_IMAGE_FAMILY} AND name!=$$LATEST_IMAGE" \
+        --format="value(name)")
+
+      if [ -z "$$OLD_IMAGES" ]; then
+        echo "No older images to deprecate."
+        exit 0
+      fi
+
+      for IMAGE in $$OLD_IMAGES; do
+        echo "Deprecating image: $$IMAGE"
+        gcloud compute images deprecate "$$IMAGE" \
+          --project="${_PROJECT_ID}" \
+          --state=DEPRECATED \
+          --replacement="$$LATEST_IMAGE"
+      done
+
+      echo "Old images deprecated successfully."
+
+
+
+# Service Account
+
+serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

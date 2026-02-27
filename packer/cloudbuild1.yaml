@@ -1,5 +1,5 @@
 substitutions:
-  _PROJECT_ID: "big-mender-473219-r2"
+  _PROJECT_ID: "ggn-nmfs-dev-1"
   _SOURCE_IMAGE_PROJECT_ID: "windows-cloud"
   _SOURCE_IMAGE_FAMILY: "windows-2022"
   _ZONE: "us-east4-b"

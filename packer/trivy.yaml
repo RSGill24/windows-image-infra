@@ -5,61 +5,60 @@ substitutions:
   _SCAN_MACHINE_TYPE: "e2-medium"
   _SCAN_RESULTS_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
 
+steps:
 - id: "trivy-scan-existing-image"
   name: "gcr.io/cloud-builders/gcloud"
-  timeout: 1800s
-  entrypoint: bash
+  entrypoint: "bash"
+  timeout: "1800s"
   args:
-  - -c
+  - "-c"
   - |
-      set -eo pipefail   # removed -u (important)
+      set -eo pipefail
 
       VM_NAME="trivy-scan-${BUILD_ID}"
       REPORT_PATH="gs://${_SCAN_RESULTS_BUCKET}/${BUILD_ID}/trivy-report.json"
 
-      echo "Creating VM from existing image..."
-      gcloud compute instances create "$VM_NAME" \
+      echo "Creating VM from image..."
+      gcloud compute instances create "${VM_NAME}" \
         --project="${_PROJECT_ID}" \
         --zone="${_ZONE}" \
         --machine-type="${_SCAN_MACHINE_TYPE}" \
         --image="${_IMAGE_NAME}" \
         --image-project="${_PROJECT_ID}" \
         --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
-        --scopes=cloud-platform \
-        --boot-disk-size=200GB
+        --scopes="cloud-platform" \
+        --boot-disk-size="200GB"
 
-      echo "Waiting for Windows boot..."
+      echo "Waiting for Windows to boot..."
       sleep 120
 
-      echo "Downloading Trivy..."
-      gcloud compute ssh "$VM_NAME" \
+      echo "Installing Trivy..."
+      gcloud compute ssh "${VM_NAME}" \
         --zone="${_ZONE}" \
         --command='powershell -Command "Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip"'
 
-      echo "Extracting Trivy..."
-      gcloud compute ssh "$VM_NAME" \
+      gcloud compute ssh "${VM_NAME}" \
         --zone="${_ZONE}" \
         --command='powershell -Command "Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force"'
 
       echo "Running Trivy scan..."
-      gcloud compute ssh "$VM_NAME" \
+      gcloud compute ssh "${VM_NAME}" \
         --zone="${_ZONE}" \
         --command='powershell -Command "C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json"'
 
       echo "Uploading report..."
-      gcloud compute ssh "$VM_NAME" \
+      gcloud compute ssh "${VM_NAME}" \
         --zone="${_ZONE}" \
         --command="powershell -Command \"gsutil cp C:\trivy-report.json ${REPORT_PATH}\""
 
-      echo "Deleting scan VM..."
-      gcloud compute instances delete "$VM_NAME" \
+      echo "Deleting VM..."
+      gcloud compute instances delete "${VM_NAME}" \
         --zone="${_ZONE}" \
         --quiet
 
-      echo "Scan complete."
-      echo "Report stored at: ${REPORT_PATH}"
-      
+      echo "Report stored at ${REPORT_PATH}"
+
 serviceAccount: "packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
 
 options:
-  logging: CLOUD_LOGGING_ONLY
+  logging: "CLOUD_LOGGING_ONLY"

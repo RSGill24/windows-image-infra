@@ -1,57 +1,121 @@
+
+
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
   _ZONE: "us-east4-b"
+  _TRIVY_VERSION: "0.50.1"
+  _TRIVY_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
+  _IMAGE_FAMILY: "pww-windows-2022-hardened"
+  # Override this with a specific image name when triggering manually.
+  # If left empty, the latest image in _IMAGE_FAMILY is used.
   _IMAGE_NAME: "pww-disa--hardened-patched-1772125065"
-  _SCAN_MACHINE_TYPE: "e2-medium"
-  _SCAN_RESULTS_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
 
 steps:
-- id: "trivy-scan-existing-image"
-  name: "gcr.io/cloud-builders/gcloud"
-  entrypoint: "bash"
-  timeout: "1800s"
+
+# --------------------------------------------------------
+# Trivy Scan
+# 1. Resolve image name (use _IMAGE_NAME or latest in family)
+# 
+- id: 'trivy-scan'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
   args:
-  - "-c"
+  - -c
   - |
-      set -eo pipefail
+      set -euo pipefail
 
-      VM_NAME="trivy-scan-$BUILD_ID"
-      REPORT_PATH="gs://${_SCAN_RESULTS_BUCKET}/$BUILD_ID/trivy-report.json"
+      echo "=== Resolving image to scan ==="
+      if [ -n "${_IMAGE_NAME}" ]; then
+        IMAGE="${_IMAGE_NAME}"
+        echo "Using provided image: $$IMAGE"
+      else
+        IMAGE=$$(gcloud compute images list \
+          --project="${_PROJECT_ID}" \
+          --filter="family=${_IMAGE_FAMILY}" \
+          --sort-by="~creationTimestamp" \
+          --format="value(name)" \
+          --limit=1)
+        echo "Using latest image in family: $$IMAGE"
+      fi
 
-      echo "Creating VM from image..."
-      gcloud compute instances create "$VM_NAME" \
+      if [ -z "$$IMAGE" ]; then
+        echo "ERROR: No image found. Provide _IMAGE_NAME or ensure family ${_IMAGE_FAMILY} has images."
+        exit 1
+      fi
+
+      EXPORT_URI="gs://${_TRIVY_BUCKET}/${BUILD_ID}/$$IMAGE.tar.gz"
+      RESULTS_JSON="gs://${_TRIVY_BUCKET}/${BUILD_ID}/trivy-results.json"
+      RESULTS_TABLE="gs://${_TRIVY_BUCKET}/${BUILD_ID}/trivy-results.txt"
+
+      echo "=== Installing Trivy v${_TRIVY_VERSION} ==="
+      apt-get update -y -qq
+      apt-get install -y -qq curl
+      curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+        | sh -s -- -b /usr/local/bin v${_TRIVY_VERSION}
+      trivy --version
+
+      echo "=== Ensuring GCS results bucket exists ==="
+      gsutil ls gs://${_TRIVY_BUCKET} 2>/dev/null \
+        || gsutil mb -p ${_PROJECT_ID} -l us-east4 -b on gs://${_TRIVY_BUCKET}
+
+      printf '{"rule":[{"action":{"type":"Delete"},"condition":{"age":30}}]}' \
+        > /tmp/lifecycle.json
+      gsutil lifecycle set /tmp/lifecycle.json gs://${_TRIVY_BUCKET}
+
+      echo "=== Exporting GCP image to GCS ==="
+      echo "    Image : $$IMAGE"
+      echo "    Dest  : $$EXPORT_URI"
+      echo "    Note  : Windows image export takes 15-25 minutes..."
+      gcloud compute images export \
         --project="${_PROJECT_ID}" \
-        --zone="${_ZONE}" \
-        --machine-type="${_SCAN_MACHINE_TYPE}" \
-        --image="${_IMAGE_NAME}" \
-        --image-project="${_PROJECT_ID}" \
-        --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
-        --scopes="cloud-platform" \
-        --boot-disk-size="200GB"
+        --image="$$IMAGE" \
+        --destination-uri="$$EXPORT_URI" \
+        --export-format=qcow2 \
+        --zone="${_ZONE}"
+      echo "Export complete."
 
-      sleep 120
+      echo "=== Downloading exported image to worker ==="
+      gsutil cp "$$EXPORT_URI" /workspace/disk.qcow2
+      echo "Download complete. Size: $$(du -sh /workspace/disk.qcow2 | cut -f1)"
 
-      gcloud compute ssh "$VM_NAME" \
-        --zone="${_ZONE}" \
-        --command='powershell -Command "Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip"'
+      echo "=== Running Trivy VM scan ==="
+      trivy vm \
+        --severity HIGH,CRITICAL \
+        --format json \
+        --output /workspace/trivy-results.json \
+        --no-progress \
+        /workspace/disk.qcow2 || true
 
-      gcloud compute ssh "$VM_NAME" \
-        --zone="${_ZONE}" \
-        --command='powershell -Command "Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force"'
+      trivy vm \
+        --severity HIGH,CRITICAL \
+        --format table \
+        --output /workspace/trivy-results.txt \
+        --no-progress \
+        /workspace/disk.qcow2 || true
 
-      gcloud compute ssh "$VM_NAME" \
-        --zone="${_ZONE}" \
-        --command='powershell -Command "C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json"'
+      echo "=== Pushing results to GCS ==="
+      gsutil cp /workspace/trivy-results.json "$$RESULTS_JSON"
+      gsutil cp /workspace/trivy-results.txt  "$$RESULTS_TABLE"
+      echo ""
+      echo "Results uploaded:"
+      echo "  JSON  : $$RESULTS_JSON"
+      echo "  Table : $$RESULTS_TABLE"
 
-      gcloud compute ssh "$VM_NAME" \
-        --zone="${_ZONE}" \
-        --command="powershell -Command \"gsutil cp C:\trivy-report.json $REPORT_PATH\""
+      echo "=== Cleaning up exported disk from GCS ==="
+      gsutil rm "$$EXPORT_URI" || true
+      rm -f /workspace/disk.qcow2
 
-      gcloud compute instances delete "$VM_NAME" \
-        --zone="${_ZONE}" \
-        --quiet
+      echo ""
+      echo "=== Trivy Scan Summary ==="
+      cat /workspace/trivy-results.txt
 
-serviceAccount: "packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
+      echo ""
+      echo "=== Scan complete for image: $$IMAGE ==="
+
+serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 
 options:
-  logging: "CLOUD_LOGGING_ONLY"
+  logging: CLOUD_LOGGING_ONLY
+  # Export (15-25 min) + download + scan (~5 min) = ~35 min
+  # Set to 60 min to be safe
+  timeout: 3600s

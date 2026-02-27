@@ -150,7 +150,7 @@ build {
   provisioner "powershell" {
     inline = [
       "cd ${var.hardening_target_dir}",
-      "./${var.hardening_entry_script}"
+      ".\\${var.hardening_entry_script}"
     ]
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password

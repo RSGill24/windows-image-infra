@@ -49,7 +49,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        ./win22-dev/packer || true
+        ./packer || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Secrets ==="
@@ -59,7 +59,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        ./win22-dev/scripts/ || true
+        ./packer/scripts || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
@@ -69,7 +69,7 @@ steps:
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
-        ./win22-dev/scripts/ || true
+        ./packer/scripts || true
 
       echo ""
       echo "=== Trivy scan complete ==="
@@ -204,6 +204,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

@@ -27,7 +27,7 @@ steps:
       echo "LLM cost estimation: not-provided"
 
 # trivy scan
-- id: 'trivy-scan'
+- id: 'trivy-config-scan'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
   args:
@@ -43,12 +43,8 @@ steps:
       trivy --version
 
       echo ""
-      echo "=== Files being scanned ==="
-      find /workspace/packer -type f | sort
-
-      echo ""
-      echo "=== Trivy Config Scan — HCL Misconfigurations ==="
-      echo "    Target: /workspace/packer/harden_ww.pkr.hcl"
+      echo "=== Trivy Config Scan — Packer HCL ==="
+      echo "    Scanning for misconfigurations in .hcl files..."
       trivy config \
         --severity ${_SEVERITY} \
         --exit-code 0 \
@@ -56,10 +52,20 @@ steps:
         ./packer || true
 
       echo ""
-      echo "=== Trivy Filesystem Scan — Secrets in scripts/ ==="
-      echo "    Target: /workspace/packer/scripts"
+      echo "=== Trivy Filesystem Scan — Secrets ==="
+      echo "    Scanning for hardcoded secrets and credentials..."
       trivy fs \
         --scanners secret \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./packer || true
+
+      echo ""
+      echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
+      echo "    Scanning for vulnerable dependencies..."
+      trivy fs \
+        --scanners vuln \
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
@@ -67,8 +73,6 @@ steps:
 
       echo ""
       echo "=== Trivy scan complete ==="
-
-
 # Packer Build
 
 - id: 'packer-build'
@@ -200,3 +204,4 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+

@@ -1,4 +1,5 @@
 
+timeout: 3600s
 
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
@@ -6,7 +7,7 @@ substitutions:
   _TRIVY_VERSION: "0.50.1"
   _TRIVY_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
   _IMAGE_FAMILY: "pww-windows-2022-hardened"
-  # Override this with a specific image name when triggering manually.
+  # Override with a specific image name when triggering manually.
   # If left empty, the latest image in _IMAGE_FAMILY is used.
   _IMAGE_NAME: "pww-disa--hardened-patched-1772125065"
 
@@ -15,7 +16,12 @@ steps:
 # --------------------------------------------------------
 # Trivy Scan
 # 1. Resolve image name (use _IMAGE_NAME or latest in family)
-# 
+# 2. Export GCP image to GCS as qcow2
+# 3. Download exported image to Cloud Build worker
+# 4. Run trivy vm scan
+# 5. Push JSON + table results to GCS bucket
+# 6. Print summary — never fails the build (test mode)
+# --------------------------------------------------------
 - id: 'trivy-scan'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -116,6 +122,3 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 
 options:
   logging: CLOUD_LOGGING_ONLY
-  # Export (15-25 min) + download + scan (~5 min) = ~35 min
-  # Set to 60 min to be safe
-  timeout: 3600s

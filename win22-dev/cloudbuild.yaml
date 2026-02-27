@@ -27,6 +27,7 @@ steps:
       echo "LLM cost estimation: not-provided"
 
 # trivy scan
+
 - id: 'trivy-config-scan'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -45,47 +46,31 @@ steps:
       echo ""
       echo "=== Trivy Config Scan — Packer HCL ==="
       echo "    Scanning for misconfigurations in .hcl files..."
-      if [ -d "./packer" ]; then
-        trivy config \
-          --severity ${_SEVERITY} \
-          --exit-code 0 \
-          --format table \
-          ./packer || true
-      else
-        echo "Skipping ./packer — folder does not exist"
-      fi
+      trivy config \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./packer || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Secrets ==="
       echo "    Scanning for hardcoded secrets and credentials..."
-      PATHS_TO_SCAN=""
-      [ -d "./packer" ] && PATHS_TO_SCAN="$PATHS_TO_SCAN ./packer"
-      [ -d "./scripts" ] && PATHS_TO_SCAN="$PATHS_TO_SCAN ./scripts"
-
-      if [ -n "$PATHS_TO_SCAN" ]; then
-        trivy fs \
-          --scanners secret \
-          --severity ${_SEVERITY} \
-          --exit-code 0 \
-          --format table \
-          $PATHS_TO_SCAN || true
-      else
-        echo "Skipping filesystem secret scan — no folders found"
-      fi
+      trivy fs \
+        --scanners secret \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./packer || true
 
       echo ""
       echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
       echo "    Scanning for vulnerable dependencies..."
-      if [ -n "$PATHS_TO_SCAN" ]; then
-        trivy fs \
-          --scanners vuln \
-          --severity ${_SEVERITY} \
-          --exit-code 0 \
-          --format table \
-          $PATHS_TO_SCAN || true
-      else
-        echo "Skipping filesystem vuln scan — no folders found"
-      fi
+      trivy fs \
+        --scanners vuln \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./packer/scripts || true
 
       echo ""
       echo "=== Trivy scan complete ==="
@@ -220,5 +205,6 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 

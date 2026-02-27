@@ -141,16 +141,22 @@ build {
   }
 
   # Step 3: Copy hardening scripts to the instance.
+  # FIX: trailing slash on source copies the *contents* of the folder,
+  # so scripts land directly in hardening_target_dir (not a sub-folder).
   provisioner "file" {
-    source      = var.hardening_source_dir
+    source      = "${var.hardening_source_dir}/"
     destination = var.hardening_target_dir
   }
 
   # Step 4: Run the hardening entry script.
+  # FIX: Set-Location ensures the working directory is correct so that
+  # any relative-path calls inside run_all.ps1 resolve properly.
+  # The full path is also used for the call itself to avoid any ambiguity
+  # in the elevated session which does not inherit the working directory.
   provisioner "powershell" {
     inline = [
-      "cd ${var.hardening_target_dir}",
-      ".\\${var.hardening_entry_script}"
+      "Set-Location '${var.hardening_target_dir}'",
+      "& '${var.hardening_target_dir}${var.hardening_entry_script}'"
     ]
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password

@@ -114,28 +114,6 @@ steps:
       echo "Image name saved: $$LATEST_IMAGE"
   dir: 'packer'
 
-
-# --------------------------------------------------------
-# OS Config Vulnerability Scan
-#
-# HOW IT WORKS:
-#   1. Boot a temporary e2-medium VM from the newly built image.
-#      OS Config agent starts automatically — it is pre-installed
-#      on all GCP Windows Server 2022 images and survives hardening.
-#   2. Poll the OS Config API every 30s until the vulnerability
-#      report is available (typically 5-10 minutes after boot).
-#   3. Fetch the report, upload to GCS for 90-day audit retention.
-#   4. Parse for HIGH/CRITICAL CVEs — fail build if any found.
-#   5. Delete the scan VM.
-#
-# NOTE: No heredocs are used in this step intentionally.
-# Heredocs (<<EOF) inside YAML multi-line strings cause YAML
-# parse errors due to quote and colon conflicts. All multi-line
-# content is written using printf or echo -e instead.
-# --------------------------------------------------------
-# --------------------------------------------------------
-# Trivy Vulnerability Scan
-# --------------------------------------------------------
 # --------------------------------------------------------
 # Trivy Scan + Upload to GCS
 # --------------------------------------------------------
@@ -161,7 +139,7 @@ steps:
       Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip
       Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force
 
-      # Run scan
+      # Run full OS scan
       C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json
 
       # Upload report to GCS
@@ -181,30 +159,28 @@ steps:
         --boot-disk-size=250GB
 
       echo "Waiting for report (max 20 minutes)..."
+
+      SUCCESS=false
       for i in {1..40}; do
         if gsutil -q stat "$REPORT_GCS_PATH"; then
-          echo "Report uploaded successfully."
+          echo "Report uploaded."
+          SUCCESS=true
           break
         fi
         sleep 30
       done
 
-      # Validate report exists
-      if ! gsutil -q stat "$REPORT_GCS_PATH"; then
-        echo "ERROR: Trivy report was not uploaded."
-        gcloud compute instances delete "$SCAN_VM" \
-          --zone="${_ZONE}" \
-          --quiet || true
-        exit 1
-      fi
-
       echo "Deleting scan VM..."
       gcloud compute instances delete "$SCAN_VM" \
         --zone="${_ZONE}" \
-        --quiet
+        --quiet || true
 
-      echo "Trivy scan completed."
-      echo "Report stored at:"
+      if [ "$SUCCESS" != "true" ]; then
+        echo "ERROR: Trivy report was not uploaded."
+        exit 1
+      fi
+
+      echo "Done. Report stored at:"
       echo "$REPORT_GCS_PATH"
 # --------------------------------------------------------
 # Deprecate Older Images (Keep Latest Active)

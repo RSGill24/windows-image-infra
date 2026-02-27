@@ -164,7 +164,7 @@ steps:
         --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
         --scopes="cloud-platform" \
         --no-address \
-        --boot-disk-size=60GB \
+        --boot-disk-size=250GB \
         --boot-disk-type=pd-balanced \
         --metadata="enable-osconfig=TRUE,osconfig-log-level=debug"
 

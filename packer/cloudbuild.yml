@@ -1,6 +1,6 @@
 # Variables
 substitutions:
-  _PROJECT_ID: "ggn-nmfs-pamdata-prod-1"
+  _PROJECT_ID: "big-mender-473219-r2"
   _ZONE: "us-east4-c"
   _IMAGE_FAMILY: "pww-windows-2022-hardened"
   _SOURCE_IMAGE: "ws2022"

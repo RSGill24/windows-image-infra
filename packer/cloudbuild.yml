@@ -161,11 +161,11 @@ steps:
       Invoke-WebRequest -Uri https://github.com/aquasecurity/trivy/releases/download/v0.50.0/trivy_0.50.0_windows-64bit.zip -OutFile C:\trivy.zip
       Expand-Archive C:\trivy.zip -DestinationPath C:\trivy -Force
 
-      # Scan full OS
+      # Run scan
       C:\trivy\trivy.exe rootfs C:\ --format json --output C:\trivy-report.json
 
-      # Upload to GCS (Cloud SDK already present on GCE Windows)
-      gsutil cp C:\trivy-report.json $REPORT_GCS_PATH
+      # Upload report to GCS
+      gsutil cp C:\trivy-report.json ${REPORT_GCS_PATH}
       EOF
 
       echo "Booting scan VM..."
@@ -183,18 +183,28 @@ steps:
       echo "Waiting for report (max 20 minutes)..."
       for i in {1..40}; do
         if gsutil -q stat "$REPORT_GCS_PATH"; then
-          echo "Report uploaded."
+          echo "Report uploaded successfully."
           break
         fi
         sleep 30
       done
+
+      # Validate report exists
+      if ! gsutil -q stat "$REPORT_GCS_PATH"; then
+        echo "ERROR: Trivy report was not uploaded."
+        gcloud compute instances delete "$SCAN_VM" \
+          --zone="${_ZONE}" \
+          --quiet || true
+        exit 1
+      fi
 
       echo "Deleting scan VM..."
       gcloud compute instances delete "$SCAN_VM" \
         --zone="${_ZONE}" \
         --quiet
 
-      echo "Done. Report stored at:"
+      echo "Trivy scan completed."
+      echo "Report stored at:"
       echo "$REPORT_GCS_PATH"
 # --------------------------------------------------------
 # Deprecate Older Images (Keep Latest Active)

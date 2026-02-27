@@ -24,3 +24,4 @@
 
 # Step 5: Register the scheduled task to run periodic STIG audits and push results to BigQuery
 & "$PSScriptRoot\create_audit_task.ps1"
+& "$PSScriptRoot\ensure_osconfig_agent.ps1"

@@ -43,49 +43,36 @@ steps:
         | sh -s -- -b /usr/local/bin v${_TRIVY_VERSION}
       trivy --version
 
-      # 1️⃣ Config scan — only .pkr.hcl files in packer/
-      if [ -d "./packer" ]; then
-        HCL_FILES=$(find ./packer -name "*.pkr.hcl")
-        if [ -n "$HCL_FILES" ]; then
-          echo "=== Trivy Config Scan — Packer HCL (.pkr.hcl) ==="
-          trivy config \
-            --severity ${_SEVERITY} \
-            --exit-code 0 \
-            --format table \
-            $HCL_FILES || true
-        else
-          echo "No .pkr.hcl files found in ./packer"
-        fi
-      else
-        echo "Skipping config scan — ./packer not found"
-      fi
+      echo ""
+      echo "=== Trivy Config Scan — Packer HCL ==="
+      echo "    Scanning for misconfigurations in .pkr.hcl files..."
+      trivy config \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./packer || true
 
-      # 2️⃣ Filesystem scan — only .ps1 scripts
-      if [ -d "./scripts" ]; then
-        PS_FILES=$(find ./scripts -name "*.ps1")
-        if [ -n "$PS_FILES" ]; then
-          echo "=== Trivy Filesystem Scan — Secrets (.ps1) ==="
-          trivy fs \
-            --scanners secret \
-            --severity ${_SEVERITY} \
-            --exit-code 0 \
-            --format table \
-            $PS_FILES || true
+      echo ""
+      echo "=== Trivy Filesystem Scan — Secrets ==="
+      echo "    Scanning for hardcoded secrets in .ps1 scripts..."
+      trivy fs \
+        --scanners secret \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./scripts || true
 
-          echo "=== Trivy Filesystem Scan — Vulnerabilities (.ps1) ==="
-          trivy fs \
-            --scanners vuln \
-            --severity ${_SEVERITY} \
-            --exit-code 0 \
-            --format table \
-            $PS_FILES || true
-        else
-          echo "No .ps1 files found in ./scripts"
-        fi
-      else
-        echo "Skipping filesystem scan — ./scripts not found"
-      fi
+      echo ""
+      echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
+      echo "    Scanning for vulnerable dependencies in .ps1 scripts..."
+      trivy fs \
+        --scanners vuln \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./scripts || true
 
+      echo ""
       echo "=== Trivy scan complete ==="
 # Packer Build
 
@@ -218,6 +205,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

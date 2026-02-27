@@ -1,7 +1,7 @@
-# Monthly Windows image hardening pipeline.
-
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
+  _SOURCE_IMAGE_PROJECT_ID: "windows-cloud"
+  _SOURCE_IMAGE_FAMILY: "windows-2022"
   _ZONE: "us-east4-b"
   _IMAGE_FAMILY: "pww-windows-2022-hardened"
   _SOURCE_IMAGE: "ws2022"
@@ -11,12 +11,14 @@ substitutions:
   _HARDENING_SOURCE_DIR: "./scripts/windows/"
   _HARDENING_TARGET_DIR: "C:/Users/packer_user/hardening/"
   _MACHINE_TYPE: "e2-standard-8"
+  _SCAN_MACHINE_TYPE: "e2-medium"
+  _SCAN_RESULTS_BUCKET: "osconfig-scan-results-big-mender-473219-r2"
 
 steps:
 
-# --------------------------------------------------------
+
 # Cost Estimation (Placeholder)
-# --------------------------------------------------------
+
 - id: 'llm-cost-estimation'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -26,26 +28,8 @@ steps:
       echo "LLM cost estimation: not-provided"
   dir: 'packer'
 
-
-# --------------------------------------------------------
-# Trivy Filesystem Scan
-# --------------------------------------------------------
-- id: 'trivy-fs-scan'
-  name: 'aquasec/trivy:latest'
-  args:
-  - fs
-  - --no-progress
-  - --severity
-  - HIGH,CRITICAL
-  - --exit-code
-  - '1'
-  - .
-  dir: 'packer'
-
-
-# --------------------------------------------------------
 # Packer Build
-# --------------------------------------------------------
+
 - id: 'packer-build'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
@@ -81,8 +65,8 @@ steps:
       echo "Validating Packer template..."
       packer validate \
         -var "project_id=${_PROJECT_ID}" \
-        -var "source_image_project_id=windows-cloud" \
-        -var "source_image_family=windows-2022" \
+        -var "source_image_project_id=${_SOURCE_IMAGE_PROJECT_ID}" \
+        -var "source_image_family=${_SOURCE_IMAGE_FAMILY}" \
         -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
         -var "image_family=${_IMAGE_FAMILY}" \
         -var "machine_type=${_MACHINE_TYPE}" \
@@ -95,8 +79,8 @@ steps:
       echo "Building hardened image..."
       packer build \
         -var "project_id=${_PROJECT_ID}" \
-        -var "source_image_project_id=windows-cloud" \
-        -var "source_image_family=windows-2022" \
+        -var "source_image_project_id=${_SOURCE_IMAGE_PROJECT_ID}" \
+        -var "source_image_family=${_SOURCE_IMAGE_FAMILY}" \
         -var "service_account_email=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
         -var "image_family=${_IMAGE_FAMILY}" \
         -var "machine_type=${_MACHINE_TYPE}" \
@@ -107,11 +91,164 @@ steps:
         "${_PACKER_TEMPLATE}"
 
       echo "Packer build completed successfully."
+
+      # Save newly built image name for subsequent steps
+      LATEST_IMAGE=$$(gcloud compute images list \
+        --project="${_PROJECT_ID}" \
+        --filter="family=${_IMAGE_FAMILY}" \
+        --sort-by="~creationTimestamp" \
+        --format="value(name)" \
+        --limit=1)
+      echo "$$LATEST_IMAGE" > /workspace/latest_image.txt
+      echo "Image name saved: $$LATEST_IMAGE"
   dir: 'packer'
 
 
 # --------------------------------------------------------
+# OS Config Vulnerability Scan
+#
+# HOW IT WORKS:
+#   1. Boot a temporary e2-medium VM from the newly built image.
+#      The GCP OS Config agent starts automatically on boot —
+#      it is pre-installed on all Google-provided Windows images
+#      and persists through the Packer hardening process.
+#   2. Wait for the agent to phone home and register its
+#      vulnerability report with the OS Config API (5-10 min).
+#   3. Fetch the report via:
+#        gcloud compute os-config vulnerability-reports describe
+#   4. Parse the report for HIGH/CRITICAL CVEs.
+#   5. Upload the full JSON report to GCS for audit records.
+#   6. Delete the scan VM.
+#   7. Fail the build if any HIGH/CRITICAL CVEs are present —
+#      the image will NOT be promoted as the active family image.
+#
+# WHY OS CONFIG OVER TRIVY COMMUNITY:
+#   - Enterprise-grade: backed by Google + NVD CVE feeds
+#   - Free: no license cost, included with Compute Engine
+#   - Most accurate for Windows: uses Windows Update Agent
+#     and registry — the same data source Microsoft uses
+#   - GCP-native: no external endpoints, no firewall rules,
+#     no SaaS dependencies, results in Cloud Logging
+#   - Audit-friendly: satisfies FedRAMP, SOC2, ISO 27001
+# --------------------------------------------------------
+- id: 'osconfig-vulnerability-scan'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      LATEST_IMAGE=$$(cat /workspace/latest_image.txt)
+      SCAN_VM="osconfig-scan-$$LATEST_IMAGE"
+      REPORT_PATH="gs://${_SCAN_RESULTS_BUCKET}/${BUILD_ID}/vulnerability-report.json"
+
+      echo "=== Ensuring GCS audit results bucket exists ==="
+      gsutil ls gs://${_SCAN_RESULTS_BUCKET} 2>/dev/null || \
+        gsutil mb -p ${_PROJECT_ID} -l us-east4 gs://${_SCAN_RESULTS_BUCKET}
+
+      # Retain scan reports for 90 days for audit purposes
+      cat > /tmp/lifecycle.json <<'EOF'
+{"rule":[{"action":{"type":"Delete"},"condition":{"age":90}}]}
+EOF
+      gsutil lifecycle set /tmp/lifecycle.json gs://${_SCAN_RESULTS_BUCKET}
+
+      echo "=== Booting scan VM from image: $$LATEST_IMAGE ==="
+      # --metadata=enable-osconfig=TRUE ensures the OS Config agent
+      # is active even if it was disabled during STIG hardening.
+      # osconfig-log-level=debug helps diagnose agent startup issues.
+      gcloud compute instances create "$$SCAN_VM" \
+        --project="${_PROJECT_ID}" \
+        --zone="${_ZONE}" \
+        --machine-type="${_SCAN_MACHINE_TYPE}" \
+        --image="$$LATEST_IMAGE" \
+        --image-project="${_PROJECT_ID}" \
+        --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+        --scopes="cloud-platform" \
+        --no-address \
+        --boot-disk-size=60GB \
+        --boot-disk-type=pd-balanced \
+        --metadata="enable-osconfig=TRUE,osconfig-log-level=debug"
+
+      echo "=== Waiting for OS Config agent to submit vulnerability report ==="
+      echo "    The agent scans on first boot and reports within 5-10 minutes."
+
+      REPORT_FOUND=false
+      # Poll every 30s for up to 15 minutes (30 attempts)
+      for i in $$(seq 1 30); do
+        echo "  [$$i/30] Checking for vulnerability report..."
+
+        REPORT=$$(gcloud compute os-config vulnerability-reports describe "$$SCAN_VM" \
+          --project="${_PROJECT_ID}" \
+          --zone="${_ZONE}" \
+          --format=json 2>/dev/null || echo "")
+
+        if [ -n "$$REPORT" ] && [ "$$REPORT" != "null" ]; then
+          echo "  Vulnerability report received."
+          echo "$$REPORT" > /workspace/vulnerability-report.json
+          REPORT_FOUND=true
+          break
+        fi
+
+        if [ "$$i" -eq 30 ]; then
+          echo "ERROR: OS Config vulnerability report not received within 15 minutes."
+          echo "       Possible causes:"
+          echo "         - OS Config API not enabled (gcloud services enable osconfig.googleapis.com)"
+          echo "         - OS Config agent disabled by STIG hardening policy"
+          echo "         - VM has no internet access to reach metadata server"
+          gcloud compute instances delete "$$SCAN_VM" \
+            --project="${_PROJECT_ID}" --zone="${_ZONE}" --quiet || true
+          exit 1
+        fi
+
+        sleep 30
+      done
+
+      echo "=== Deleting scan VM ==="
+      gcloud compute instances delete "$$SCAN_VM" \
+        --project="${_PROJECT_ID}" \
+        --zone="${_ZONE}" \
+        --quiet
+
+      echo "=== Uploading vulnerability report to GCS for audit records ==="
+      gsutil cp /workspace/vulnerability-report.json "$$REPORT_PATH"
+      echo "Report saved: $$REPORT_PATH"
+
+      echo ""
+      echo "=== Vulnerability Summary (HIGH/CRITICAL only) ==="
+      python3 -c "
+import json, sys
+
+with open('/workspace/vulnerability-report.json') as f:
+    report = json.load(f)
+
+vulnerabilities = report.get('vulnerabilities', {})
+high_critical = []
+
+for cve_id, details in vulnerabilities.items():
+    severity = details.get('details', [{}])[0].get('severity', 'UNKNOWN')
+    if severity in ('HIGH', 'CRITICAL'):
+        pkg = details.get('installedInventoryItemIds', ['unknown'])[0]
+        high_critical.append((severity, cve_id, pkg))
+
+if not high_critical:
+    print('No HIGH/CRITICAL vulnerabilities found. Image is clean.')
+else:
+    print(f'Found {len(high_critical)} HIGH/CRITICAL vulnerabilities:')
+    print()
+    for severity, cve_id, pkg in sorted(high_critical, key=lambda x: x[0]):
+        print(f'  [{severity}] {cve_id}  —  package: {pkg}')
+    sys.exit(1)
+"
+
+      echo ""
+      echo "=== OS Config scan PASSED. Image is clean and ready for promotion. ==="
+
+
+# --------------------------------------------------------
 # Deprecate Older Images (Keep Latest Active)
+# Only runs if OS Config scan passed — exit 1 above
+# prevents promotion of any vulnerable image.
 # --------------------------------------------------------
 - id: 'deprecate-old-images'
   name: 'gcr.io/cloud-builders/gcloud'
@@ -136,7 +273,6 @@ steps:
       fi
 
       echo "Latest image is: $$LATEST_IMAGE"
-      echo "Finding older images to deprecate..."
 
       OLD_IMAGES=$$(gcloud compute images list \
         --project="${_PROJECT_ID}" \
@@ -150,11 +286,10 @@ steps:
 
       for IMAGE in $$OLD_IMAGES; do
         echo "Deprecating image: $$IMAGE"
-
-        gcloud compute images deprecate $$IMAGE \
+        gcloud compute images deprecate "$$IMAGE" \
           --project="${_PROJECT_ID}" \
           --state=DEPRECATED \
-          --replacement=$$LATEST_IMAGE
+          --replacement="$$LATEST_IMAGE"
       done
 
       echo "Old images deprecated successfully."

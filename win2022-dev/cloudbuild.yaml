@@ -11,7 +11,7 @@ substitutions:
   _HARDENING_SOURCE_DIR: "./scripts"
   _HARDENING_TARGET_DIR: "C:/Users/packer_user/hardening/"
   _MACHINE_TYPE: "e2-standard-8"
-  _TRIVY_VERSION: "0.69.1"
+  _TRIVY_VERSION: "0.61.1"
   _SEVERITY: "HIGH,CRITICAL"
 
 steps:
@@ -204,6 +204,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

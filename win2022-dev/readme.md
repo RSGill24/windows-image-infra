@@ -93,13 +93,13 @@ win2022-dev/
 
 | Variable | Value | Notes |
 |----------|-------|-------|
-| `_PROJECT_ID` | `ggn-nmfs-placeholderdev--1` | ⚠️ Update to your project ID |
+| `_PROJECT_ID` | `ggn-nmfs-placeholderdev--1` | # Update to your project ID |
 | `_SOURCE_IMAGE_PROJECT_ID` | `windows-cloud` | |
 | `_SOURCE_IMAGE_FAMILY` | `windows-2022` | |
 | `_ZONE` | `us-east4-b` | |
 | `_IMAGE_FAMILY` | `pww-windows-2022-hardened` | |
 | `_SOURCE_IMAGE` | `ws2022` | |
-| `_WINRM_SECRET` | `packer-winrm-password` | ⚠️ Update Secret Manager secret name |
+| `_WINRM_SECRET` | `packer-winrm-password` | # Update Secret Manager secret name |
 | `_PACKER_TEMPLATE` | `harden_ww.pkr.hcl` | |
 | `_PACKER_VERSION` | `1.9.4` | |
 | `_HARDENING_SOURCE_DIR` | `./scripts` | |
@@ -114,3 +114,4 @@ win2022-dev/
 
 - The Cloud Build service account must have appropriate IAM roles to run the pipeline.
 - A Secret Manager secret must be created for the WinRM password and referenced via `_WINRM_SECRET`.
+

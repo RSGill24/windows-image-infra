@@ -28,32 +28,20 @@ steps:
 
 # trivy scan
 - id: 'trivy-config-scan'
-  name: 'gcr.io/cloud-builders/gcloud'
-  entrypoint: bash
+  name: 'aquasec/trivy:0.61.1'
+  entrypoint: sh
   args:
   - -c
   - |
-      set -euo pipefail
-
-      echo "=== Installing Trivy v${_TRIVY_VERSION} ==="
-      apt-get update -y -qq
-      apt-get install -y -qq curl
-      curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-        | sh -s -- -b /usr/local/bin v${_TRIVY_VERSION}
-      trivy --version
-
-      echo ""
+      set -e
       echo "=== Trivy Config Scan — Packer HCL ==="
-      echo "    Scanning for misconfigurations in .pkr.hcl files..."
       trivy config \
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
         ./win2022-dev/packer || true
 
-      echo ""
       echo "=== Trivy Filesystem Scan — Secrets ==="
-      echo "    Scanning for hardcoded secrets in .ps1 scripts..."
       trivy fs \
         --scanners secret \
         --severity ${_SEVERITY} \
@@ -61,9 +49,7 @@ steps:
         --format table \
         ./win2022-dev/packer/scripts || true
 
-      echo ""
       echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
-      echo "    Scanning for vulnerable dependencies in .ps1 scripts..."
       trivy fs \
         --scanners vuln \
         --severity ${_SEVERITY} \
@@ -71,7 +57,6 @@ steps:
         --format table \
         ./win2022-dev/packer/scripts || true
 
-      echo ""
       echo "=== Trivy scan complete ==="
 # Packer Build
 
@@ -204,6 +189,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

@@ -62,16 +62,6 @@ win2022-dev/
 
 ---
 
-## Component Description
-
-### Packer Template
-
-**`harden_ww.pkr.hcl`** — Main Packer configuration file. Responsible for:
-- Defining the Windows image source
-- Running provisioning scripts
-- Executing hardening workflow
-- Producing final hardened image artifact
-
 ### Scripts
 
 | Script | Description |
@@ -114,4 +104,5 @@ win2022-dev/
 
 - The Cloud Build service account must have appropriate IAM roles to run the pipeline.
 - A Secret Manager secret must be created for the WinRM password and referenced via `_WINRM_SECRET`.
+
 

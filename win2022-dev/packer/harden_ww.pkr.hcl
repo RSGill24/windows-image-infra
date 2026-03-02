@@ -162,3 +162,4 @@ build {
     elevated_password = var.packer_user_password
   }
 }
+

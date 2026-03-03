@@ -17,23 +17,17 @@ substitutions:
 
 steps:
 
-- id: 'debug-workspace'
+- id: 'setup-trigger'
   name: 'gcr.io/cloud-builders/gcloud'
   entrypoint: bash
   args:
   - -c
   - |
-      echo "=== PWD ==="
-      pwd
+      set -euo pipefail
       
-      echo "=== /workspace ==="
-      ls -la /workspace/
-      
-      echo "=== /workspace/win2022-dev ==="
-      ls -la /workspace/win2022-dev/ || echo "NOT FOUND"
-      
-      echo "=== Finding triggers.yaml ==="
-      find /workspace -name "triggers.yaml" 2>/dev/null || echo "NOT FOUND"
+      gcloud builds triggers import \
+        --source=/workspace/win2022-dev/Triggers.yaml \
+        --project="${_PROJECT_ID}"
         
 # trivy scan
 - id: 'trivy-config-scan'
@@ -198,6 +192,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

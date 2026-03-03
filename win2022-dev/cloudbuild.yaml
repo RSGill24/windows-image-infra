@@ -16,16 +16,6 @@ substitutions:
 
 steps:
 
-# Cost Estimation (Placeholder)
-
-- id: 'llm-cost-estimation'
-  name: 'gcr.io/cloud-builders/gcloud'
-  entrypoint: bash
-  args:
-  - -c
-  - |
-      echo "LLM cost estimation: not-provided"
-
 # trivy scan
 - id: 'trivy-config-scan'
   name: 'aquasec/trivy:0.61.1'
@@ -189,6 +179,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

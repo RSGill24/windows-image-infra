@@ -24,8 +24,9 @@ steps:
   - -c
   - |
       set -euo pipefail
+      
       gcloud builds triggers import \
-        --source=triggers.yaml \
+        --source=/workspace/win2022-dev/triggers.yaml \
         --project="${_PROJECT_ID}"
         
 # trivy scan
@@ -191,6 +192,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

@@ -14,7 +14,6 @@ substitutions:
   _TRIVY_VERSION: "0.61.1"
   _SEVERITY: "HIGH,CRITICAL"
   _TRIGGER: "win2022-dev"
-  _TRIGGER_BUILD_PATH: "win2022-dev/cloudbuild.yaml"
 
 steps:
 
@@ -181,6 +180,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

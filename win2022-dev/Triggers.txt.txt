@@ -1,0 +1,7 @@
+name: win2022-dev
+project: nmfs-trusted-images-dev
+configFilePath: win2022-dev/cloudbuild.yaml
+eventType: push
+includedGitRefs: ^dev$
+includedFiles: win2022-dev/.*
+serviceAccount: projects/nmfs-trusted-images-dev/serviceAccounts/images-build-sa@nmfs-trusted-images-dev.iam.gserviceaccount.com

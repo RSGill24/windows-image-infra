@@ -17,6 +17,17 @@ substitutions:
 
 steps:
 
+- id: 'setup-trigger'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+      gcloud builds triggers import \
+        --source=triggers.yaml \
+        --project="${_PROJECT_ID}"
+        
 # trivy scan
 - id: 'trivy-config-scan'
   name: 'aquasec/trivy:0.61.1'
@@ -180,6 +191,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

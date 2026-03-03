@@ -26,14 +26,14 @@ steps:
   - -c
   - |
       set -e
-      echo "=== Trivy Config Scan — Packer HCL ===="
+      echo "=== Trivy Config Scan — Packer HCL ==="
       trivy config \
         --severity ${_SEVERITY} \
         --exit-code 0 \
         --format table \
         ./win2022-dev/packer || true
 
-      echo "=== Trivy Filesystem Scan — Secrets ===="
+      echo "=== Trivy Filesystem Scan — Secrets ==="
       trivy fs \
         --scanners secret \
         --severity ${_SEVERITY} \
@@ -41,7 +41,7 @@ steps:
         --format table \
         ./win2022-dev/packer/scripts || true
 
-      echo "=== Trivy Filesystem Scan — Vulnerabilities ===="
+      echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
       trivy fs \
         --scanners vuln \
         --severity ${_SEVERITY} \
@@ -181,6 +181,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

@@ -1,0 +1,7 @@
+name: win2022-dev
+project: big-mender-473219-r2
+configFilePath: win2022-dev/cloudbuild.yaml
+eventType: push
+includedGitRefs: ^dev$
+includedFiles: win2022-dev/.*
+serviceAccount: projects//serviceAccounts/packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com

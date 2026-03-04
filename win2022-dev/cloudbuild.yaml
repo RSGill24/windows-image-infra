@@ -13,21 +13,8 @@ substitutions:
   _MACHINE_TYPE: "e2-standard-8"
   _TRIVY_VERSION: "0.61.1"
   _SEVERITY: "HIGH,CRITICAL"
-  _TRIGGER: "win2022-dev"
 
 steps:
-
-- id: 'setup-trigger'
-  name: 'gcr.io/cloud-builders/gcloud'
-  entrypoint: bash
-  args:
-  - -c
-  - |
-      set -euo pipefail
-      
-      gcloud builds triggers import \
-        --source=/workspace/win2022-dev/Triggers.yaml \
-        --project="${_PROJECT_ID}"
         
 # trivy scan
 - id: 'trivy-config-scan'
@@ -192,6 +179,7 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
 
   logging: CLOUD_LOGGING_ONLY
+
 
 
 

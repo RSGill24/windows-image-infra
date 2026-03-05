@@ -1,0 +1,30 @@
+API.tf code 
+# Enable Secret Manager API
+resource "google_project_service" "secretmanager_service" {
+  project = var.project_id #nmfs-trusted-images-dev
+  service = "secretmanager.googleapis.com"
+
+  depends_on = [
+    google_project.my_project,
+  ]
+}
+
+roles.tf code
+# Secret Manager Role 
+resource "google_project_iam_member" "build_sa_secret_accessor" {
+  project = var.project_id #nmfs-trusted-images-dev
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:images-build-sa@nmfs-trusted-images-dev.iam.gserviceaccount.com"
+}
+
+After Enabling  Secret Manager API
+1. Secret Manager - secret name  - "packer-winrm-password"
+2. In permissin add below service account 
+          Service account: projects/nmfs-trusted-images-dev/serviceAccounts/images-build-sa@nmfs-trusted-images-dev.iam.gserviceaccount.com
+
+
+
+
+
+
+	

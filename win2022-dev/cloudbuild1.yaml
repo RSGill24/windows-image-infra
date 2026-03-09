@@ -101,36 +101,29 @@ steps:
 
       echo "=== Trivy image scan complete ==="
 
-# ── Step 4: Push Docker Image to Artifact Registry ────────────
-# Uses gcloud-included builder so both gcloud and docker are available.
-# After this step, go to GCP Console → Cloud Run → Jobs
-# and manually execute the windows-image-build job.
+# ── Step 4: Configure Artifact Registry Auth ─────────────────
 
-- id: 'docker-push'
+- id: 'configure-docker-auth'
   name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: bash
   args:
   - -c
   - |
       set -euo pipefail
-
-      IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}"
-
       echo "Configuring Docker auth for Artifact Registry..."
       gcloud auth configure-docker ${_REGION}-docker.pkg.dev --quiet
+      echo "Auth configured."
 
-      echo "Pushing image: $$IMAGE_TAG:$SHORT_SHA"
-      docker push "$$IMAGE_TAG:$SHORT_SHA"
+# ── Step 5: Push Docker Image to Artifact Registry ────────────
+# After this step, go to GCP Console → Cloud Run → Jobs
+# and manually execute the windows-image-build job.
 
-      echo "Pushing image: $$IMAGE_TAG:latest"
-      docker push "$$IMAGE_TAG:latest"
-
-      echo "================================================"
-      echo " Image pushed successfully."
-      echo " To run the Windows image build:"
-      echo " GCP Console → Cloud Run → Jobs"
-      echo " → windows-image-build → Execute"
-      echo "================================================"
+- id: 'docker-push'
+  name: 'gcr.io/cloud-builders/docker'
+  args:
+  - push
+  - '--all-tags'
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}'
 
 # ── Images stored in Artifact Registry ───────────────────────
 images:

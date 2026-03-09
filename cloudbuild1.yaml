@@ -1,0 +1,143 @@
+substitutions:
+  _PROJECT_ID: "big-mender-473219-r2"
+  _SOURCE_IMAGE_PROJECT_ID: "windows-cloud"
+  _SOURCE_IMAGE_FAMILY: "windows-2022"
+  _ZONE: "us-east4-b"
+  _IMAGE_FAMILY: "pww-windows-2022-hardened"
+  _SOURCE_IMAGE: "ws2022"
+  _WINRM_SECRET: "packer-winrm-password"
+  _PACKER_TEMPLATE: "harden_ww.pkr.hcl"
+  _PACKER_VERSION: "1.9.4"
+  _HARDENING_SOURCE_DIR: "./scripts"
+  _HARDENING_TARGET_DIR: "C:/Users/packer_user/hardening/"
+  _MACHINE_TYPE: "e2-standard-8"
+  _TRIVY_VERSION: "0.61.1"
+  _SEVERITY: "HIGH,CRITICAL"
+  _REGION: "us-east4"
+  _AR_REPO: "packer-images"
+  _IMAGE_NAME: "windows-packer-builder"
+
+steps:
+
+# ── Step 1: Trivy Security Scans ─────────────────────────────
+
+- id: 'trivy-config-scan'
+  name: 'aquasec/trivy:${_TRIVY_VERSION}'
+  entrypoint: sh
+  args:
+  - -c
+  - |
+      set -e
+
+      echo "=== Trivy Config Scan — Packer HCL ==="
+      trivy config \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./win2022-dev/packer || true
+
+      echo "=== Trivy Filesystem Scan — Secrets ==="
+      trivy fs \
+        --scanners secret \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./win2022-dev/packer/scripts || true
+
+      echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
+      trivy fs \
+        --scanners vuln \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./win2022-dev/packer/scripts || true
+
+      echo "=== Trivy scan complete ==="
+
+# ── Step 2: Build Docker Image ────────────────────────────────
+# Builds a Linux container with Packer + hardening scripts inside.
+# This is the image Cloud Run Job will pull and execute manually.
+
+- id: 'docker-build'
+  name: 'gcr.io/cloud-builders/docker'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}"
+
+      echo "Building Docker image: $$IMAGE_TAG"
+
+      docker build \
+        --build-arg PACKER_VERSION=${_PACKER_VERSION} \
+        --tag "$$IMAGE_TAG:$SHORT_SHA" \
+        --tag "$$IMAGE_TAG:latest" \
+        --file ./win2022-dev/Dockerfile \
+        ./win2022-dev
+
+      echo "Docker build complete."
+
+# ── Step 3: Trivy Scan — Docker Image ─────────────────────────
+# Scans the freshly built container image before pushing.
+
+- id: 'trivy-image-scan'
+  name: 'aquasec/trivy:${_TRIVY_VERSION}'
+  entrypoint: sh
+  args:
+  - -c
+  - |
+      set -e
+
+      IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA"
+
+      echo "=== Trivy Image Scan — Docker container ==="
+      trivy image \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        "$$IMAGE_TAG" || true
+
+      echo "=== Trivy image scan complete ==="
+
+# ── Step 4: Push Docker Image to Artifact Registry ────────────
+# After this step, go to GCP Console → Cloud Run → Jobs
+# and manually execute the windows-image-build job.
+
+- id: 'docker-push'
+  name: 'gcr.io/cloud-builders/docker'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}"
+
+      echo "Configuring Docker auth for Artifact Registry..."
+      gcloud auth configure-docker ${_REGION}-docker.pkg.dev --quiet
+
+      echo "Pushing image: $$IMAGE_TAG:$SHORT_SHA"
+      docker push "$$IMAGE_TAG:$SHORT_SHA"
+
+      echo "Pushing image: $$IMAGE_TAG:latest"
+      docker push "$$IMAGE_TAG:latest"
+
+      echo "================================================"
+      echo " Image pushed successfully."
+      echo " To run the Windows image build:"
+      echo " GCP Console → Cloud Run → Jobs"
+      echo " → windows-image-build → Execute"
+      echo "================================================"
+
+# ── Images stored in Artifact Registry ───────────────────────
+images:
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA'
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest'
+
+# ── Service Account & Options ─────────────────────────────────
+serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

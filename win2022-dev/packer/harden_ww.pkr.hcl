@@ -61,6 +61,7 @@ variable "hardening_entry_script" {
 source "googlecompute" "update_pam_ww" {
   project_id              = var.project_id
   use_iap                 = true
+  use_internal_ip         = true 
   omit_external_ip        = true
   source_image_project_id = [var.source_image_project_id]
   source_image_family     = var.source_image_family
@@ -163,5 +164,6 @@ build {
     elevated_password = var.packer_user_password
   }
 }
+
 
 

@@ -102,11 +102,12 @@ steps:
       echo "=== Trivy image scan complete ==="
 
 # ── Step 4: Push Docker Image to Artifact Registry ────────────
+# Uses gcloud-included builder so both gcloud and docker are available.
 # After this step, go to GCP Console → Cloud Run → Jobs
 # and manually execute the windows-image-build job.
 
 - id: 'docker-push'
-  name: 'gcr.io/cloud-builders/docker'
+  name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: bash
   args:
   - -c

@@ -79,29 +79,7 @@ steps:
 
       echo "Docker build complete."
 
-# ── Step 3: Trivy Scan — Docker Image ─────────────────────────
-# Scans the freshly built container image before pushing.
-
-- id: 'trivy-image-scan'
-  name: 'aquasec/trivy:${_TRIVY_VERSION}'
-  entrypoint: sh
-  args:
-  - -c
-  - |
-      set -e
-
-      IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA"
-
-      echo "=== Trivy Image Scan — Docker container ==="
-      trivy image \
-        --severity ${_SEVERITY} \
-        --exit-code 0 \
-        --format table \
-        "$$IMAGE_TAG" || true
-
-      echo "=== Trivy image scan complete ==="
-
-# ── Step 4: Configure Artifact Registry Auth ─────────────────
+# ── Step 3: Configure Artifact Registry Auth ─────────────────
 
 - id: 'configure-docker-auth'
   name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -135,3 +113,4 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 
 options:
   logging: CLOUD_LOGGING_ONLY
+

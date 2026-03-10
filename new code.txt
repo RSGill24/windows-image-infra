@@ -1,0 +1,4 @@
+_AR_REPO: "imagebuilder" _IMAGE_NAME: "windows/windows-packer-builder"
+ 
+image="${var.region}-docker.pkg.dev/${var.project_id}/imagebuilder/windows/windows-packer-builder:latest"
+ 

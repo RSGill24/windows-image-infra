@@ -92,7 +92,7 @@ steps:
       gcloud auth configure-docker ${_REGION}-docker.pkg.dev --quiet
       echo "Auth configured."
 
-# ── Step 5: Push Docker Image to Artifact Registry ────────────
+# ── Step 4: Push Docker Image to Artifact Registry ────────────
 # After this step, go to GCP Console → Cloud Run → Jobs
 # and manually execute the windows-image-build job.
 
@@ -113,4 +113,5 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 
 options:
   logging: CLOUD_LOGGING_ONLY
+
 

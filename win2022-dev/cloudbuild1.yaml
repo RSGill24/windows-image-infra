@@ -16,6 +16,10 @@ substitutions:
   _REGION: "us-east4"
   _AR_REPO: "packer-images"
   _IMAGE_NAME: "windows-packer-builder"
+  _VPC_NETWORK: "app-network"
+  _VPC_CONNECTOR: "packer-connector"
+  _VPC_CONNECTOR_RANGE: "10.8.0.0/28"
+  _CLOUD_RUN_JOB: "windows-image-build"
 
 steps:
 
@@ -55,8 +59,6 @@ steps:
       echo "=== Trivy scan complete ==="
 
 # ── Step 2: Build Docker Image ────────────────────────────────
-# Builds a Linux container with Packer + hardening scripts inside.
-# This is the image Cloud Run Job will pull and execute manually.
 
 - id: 'docker-build'
   name: 'gcr.io/cloud-builders/docker'
@@ -93,8 +95,6 @@ steps:
       echo "Auth configured."
 
 # ── Step 4: Push Docker Image to Artifact Registry ────────────
-# After this step, go to GCP Console → Cloud Run → Jobs
-# and manually execute the windows-image-build job.
 
 - id: 'docker-push'
   name: 'gcr.io/cloud-builders/docker'
@@ -102,6 +102,107 @@ steps:
   - push
   - '--all-tags'
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}'
+
+# ── Step 5: Ensure VPC Connector Exists ──────────────────────
+# FIX: Cloud Run Job needs a VPC connector to reach the internal
+# subnet (app-subnet1) where the Packer VM is created.
+# Without this, IAP tunnel opens but WinRM traffic can't route
+# to the VM → causes "401 - invalid content type".
+
+- id: 'ensure-vpc-connector'
+  name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      echo "Checking VPC connector: ${_VPC_CONNECTOR}..."
+
+      EXISTS=$(gcloud compute networks vpc-access connectors describe ${_VPC_CONNECTOR} \
+        --region=${_REGION} \
+        --project=${_PROJECT_ID} \
+        --format="value(name)" 2>/dev/null || echo "")
+
+      if [ -z "$$EXISTS" ]; then
+        echo "VPC connector not found. Creating..."
+        gcloud compute networks vpc-access connectors create ${_VPC_CONNECTOR} \
+          --region=${_REGION} \
+          --network=${_VPC_NETWORK} \
+          --range=${_VPC_CONNECTOR_RANGE} \
+          --project=${_PROJECT_ID} \
+          --min-instances=2 \
+          --max-instances=3 \
+          --machine-type=e2-micro
+        echo "VPC connector created."
+      else
+        echo "VPC connector already exists: $$EXISTS"
+      fi
+
+# ── Step 6: Update Cloud Run Job with VPC + latest image ─────
+# FIX: Wires the VPC connector to the Cloud Run Job so Packer
+# can reach the internal VM through IAP tunnel correctly.
+# Also updates the job image to the freshly built version.
+
+- id: 'update-cloud-run-job'
+  name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA"
+
+      echo "Updating Cloud Run Job: ${_CLOUD_RUN_JOB}..."
+
+      # Check if job exists
+      JOB_EXISTS=$(gcloud run jobs describe ${_CLOUD_RUN_JOB} \
+        --region=${_REGION} \
+        --project=${_PROJECT_ID} \
+        --format="value(name)" 2>/dev/null || echo "")
+
+      if [ -z "$$JOB_EXISTS" ]; then
+        echo "Cloud Run Job not found. Creating..."
+        gcloud run jobs create ${_CLOUD_RUN_JOB} \
+          --image="$$IMAGE_TAG" \
+          --region=${_REGION} \
+          --project=${_PROJECT_ID} \
+          --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+          --vpc-connector=${_VPC_CONNECTOR} \
+          --vpc-egress=all-traffic \
+          --memory=2Gi \
+          --cpu=2 \
+          --task-timeout=7200 \
+          --max-retries=0 \
+          --set-env-vars="PROJECT_ID=${_PROJECT_ID}" \
+          --set-env-vars="SOURCE_IMAGE_PROJECT_ID=${_SOURCE_IMAGE_PROJECT_ID}" \
+          --set-env-vars="SOURCE_IMAGE_FAMILY=${_SOURCE_IMAGE_FAMILY}" \
+          --set-env-vars="IMAGE_FAMILY=${_IMAGE_FAMILY}" \
+          --set-env-vars="ZONE=${_ZONE}" \
+          --set-env-vars="MACHINE_TYPE=${_MACHINE_TYPE}" \
+          --set-env-vars="SERVICE_ACCOUNT_EMAIL=packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+          --set-env-vars="HARDENING_TARGET_DIR=${_HARDENING_TARGET_DIR}" \
+          --set-env-vars="PACKER_TEMPLATE=${_PACKER_TEMPLATE}" \
+          --set-secrets="WINRM_SECRET=${_WINRM_SECRET}:latest"
+        echo "Cloud Run Job created."
+      else
+        echo "Updating existing Cloud Run Job..."
+        gcloud run jobs update ${_CLOUD_RUN_JOB} \
+          --image="$$IMAGE_TAG" \
+          --region=${_REGION} \
+          --project=${_PROJECT_ID} \
+          --service-account="packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com" \
+          --vpc-connector=${_VPC_CONNECTOR} \
+          --vpc-egress=all-traffic \
+          --memory=2Gi \
+          --cpu=2 \
+          --task-timeout=7200 \
+          --max-retries=0
+        echo "Cloud Run Job updated."
+      fi
+
+      echo "Cloud Run Job ready. Trigger manually from GCP Console → Cloud Run → Jobs → ${_CLOUD_RUN_JOB} → Execute"
 
 # ── Images stored in Artifact Registry ───────────────────────
 images:
@@ -113,5 +214,3 @@ serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
-

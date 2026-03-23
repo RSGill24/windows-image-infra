@@ -6,36 +6,33 @@ Each setting in this file is linked by STIG ID and the valid range is in an
 associated comment.
 -->
 <OrganizationalSettings fullversion="2.1">
+  <!-- ANTIVIRUS AND FIREWALL -->
   <!-- Ensure ServiceName/StartupType is populated with correct AntiVirus service information-->
   <OrganizationalSetting id="V-254248" ServiceName="" StartupType="" />
   <!-- Ensure ServiceName/StartupType is populated with correct Firewall service information-->
   <OrganizationalSetting id="V-254265" ServiceName="" StartupType="" />
+  
+  <!-- SECURITY FEATURES AND BOOT -->
   <!-- Ensure "V-254343.b" -match '1|3'-->
   <OrganizationalSetting id="V-254343.b" ValueData="1" />
   <!-- Ensure "V-254344" -match '1|3|8|ShouldBeAbsent'-->
   <OrganizationalSetting id="V-254344" ValueData="8" />
   <!-- Ensure "V-254357" -match '0|1|2|99|100'-->
   <OrganizationalSetting id="V-254357" ValueData="100" />
+  
+  <!-- EVENT LOG SIZES -->
   <!-- Ensure "V-254358" -ge '32768'-->
   <OrganizationalSetting id="V-254358" ValueData="32768" />
   <!-- Ensure "V-254359" -ge '196608'-->
   <OrganizationalSetting id="V-254359" ValueData="196608" />
   <!-- Ensure "V-254360" -ge '32768'-->
   <OrganizationalSetting id="V-254360" ValueData="32768" />
+  
+  <!-- CREDENTIAL CACHING -->
   <!-- Ensure "V-254432" -le '4'-->
   <OrganizationalSetting id="V-254432" ValueData="4" />
-  <!-- Ensure location for DoD Root CA 3 certificate is present-->
-  <OrganizationalSetting id="V-254442.a" Location="" />
-  <!-- Ensure location for DoD Root CA 4 certificate is present-->
-  <OrganizationalSetting id="V-254442.b" Location="" />
-  <!-- Ensure location for DoD Root CA 5 certificate is present-->
-  <OrganizationalSetting id="V-254442.c" Location="" />
-  <!-- Ensure location for DoD Root CA 6 certificate is present-->
-  <OrganizationalSetting id="V-254442.d" Location="" />
-  <!-- Ensure location for DoD Interoperability Root CA 2 certificate is present-->
-  <OrganizationalSetting id="V-254443" Location="" />
-  <!-- Ensure location for US DoD CCEB Interoperability Root CA 2 certificate is present-->
-  <OrganizationalSetting id="V-254444" Location="" />
+  
+  <!-- ACCOUNT LOCKOUT AND LOGIN BANNER -->
   <!-- Ensure "V-254454" -le "30" and "V-254454" -gt "0"-->
   <OrganizationalSetting id="V-254454" ValueData="30" />
   <!-- Ensure "V-254456" -le "900" and "V-254456" -gt "0"-->
@@ -54,26 +51,71 @@ By using this IS (which includes any device attached to this IS), you consent to
   <OrganizationalSetting id="V-254459" ValueData="1" />
   <!-- Ensure "V-254484" -match '1|2'-->
   <OrganizationalSetting id="V-254484" ValueData="1" />
+  
+  <!-- ACCOUNT LOCKOUT POLICY -->
   <!-- Ensure "V-254285" -ge '15' -or "V-254285" -eq '0'-->
   <OrganizationalSetting id="V-254285" PolicyValue="15" />
   <!-- Ensure "V-254286" -le '3' -and "V-254286" -ne '0'-->
   <OrganizationalSetting id="V-254286" PolicyValue="3" />
   <!-- Ensure "V-254287" -ge '15'-->
   <OrganizationalSetting id="V-254287" PolicyValue="15" />
-  <!-- Ensure "V-254288" -ge '24'-->
+  
+  <!-- PASSWORD POLICY SETTINGS - FIX V-254288-292 -->
+  <!-- Ensure "V-254288" -ge '24' - Password History -->
   <OrganizationalSetting id="V-254288" PolicyValue="24" />
-  <!-- Ensure "V-254289" -le '60' -and "V-254289" -ne '0'-->
+  <!-- Ensure "V-254289" -le '60' -and "V-254289" -ne '0' - Maximum Password Age -->
   <OrganizationalSetting id="V-254289" PolicyValue="60" />
-  <!-- Ensure "V-254290" -ne '0'-->
+  <!-- Ensure "V-254290" -ne '0' - Minimum Password Age (1 day) -->
   <OrganizationalSetting id="V-254290" PolicyValue="1" />
-  <!-- Ensure "V-254291" -ge '14'-->
+  <!-- Ensure "V-254291" -ge '14' - Minimum Password Length -->
   <OrganizationalSetting id="V-254291" PolicyValue="14" />
+  <!-- NEW: Ensure "V-254292" Password Complexity Enabled (1 = Enabled) - FIX FAILURE #7 -->
+  <OrganizationalSetting id="V-254292" PolicyValue="1" />
+  
+  <!-- BLANK PASSWORD SETTING - FIX V-254446 (FAILURE #1) -->
+  <!-- NEW: Ensure "V-254446" LimitBlankPasswordUse is set to 1 -->
+  <OrganizationalSetting id="V-254446" LimitBlankPasswordUse="1" />
+  
+  <!-- ACCOUNT NAMING AND SECURITY - FIX V-254447, V-254448 -->
+  <!-- NEW: Ensure "V-254447" Administrator account renamed -->
+  <OrganizationalSetting id="V-254447" AccountName="AdminUser" />
+  <!-- NEW: Ensure "V-254448" Guest account renamed -->
+  <OrganizationalSetting id="V-254448" AccountName="GuestUser" />
+  
+  <!-- USER RIGHTS ASSIGNMENT - FIX V-254501 -->
+  <!-- NEW: Ensure "V-254501" Force shutdown from remote assigned only to Administrators -->
+  <OrganizationalSetting id="V-254501" Privilege="SeRemoteShutdownPrivilege" Identity="Administrators" />
+  
+  <!-- USER RIGHTS - EXISTING -->
   <!-- Ensure "V-254435" -match 'Enterprise Admins,Domain Admins,(Local account and member of Administrators group|Local account),Guests'-->
   <OrganizationalSetting id="V-254435" Identity="Enterprise Admins,Domain Admins,(Local account and member of Administrators group|Local account),Guests" />
-  <!-- Ensure "V-254447" -ne 'Administrator'-->
-  <OrganizationalSetting id="V-254447" OptionValue="" />
-  <!-- Ensure "V-254448" -ne 'Guest'-->
-  <OrganizationalSetting id="V-254448" OptionValue="" />
   <!-- Ensure "V-254499" -match '^(Administrators,NT Virtual Machine\\Virtual Machines|Administrators)$'-->
   <OrganizationalSetting id="V-254499" Identity="Administrators" />
+  
+  <!-- DoD CERTIFICATES - FIX V-254442, V-254443, V-254444 -->
+  <!-- NOTE: Certificate files should be stored in GCP Secret Manager or mounted volume -->
+  <!-- Ensure location for DoD Root CA 3 certificate is present-->
+  <OrganizationalSetting id="V-254442.a" Location="Cert:\LocalMachine\Root\DoD-Root-CA-3.cer" CertificateName="DoD Root Certificate Authority 3" />
+  <!-- Ensure location for DoD Root CA 4 certificate is present-->
+  <OrganizationalSetting id="V-254442.b" Location="Cert:\LocalMachine\Root\DoD-Root-CA-4.cer" CertificateName="DoD Root Certificate Authority 4" />
+  <!-- Ensure location for DoD Root CA 5 certificate is present-->
+  <OrganizationalSetting id="V-254442.c" Location="Cert:\LocalMachine\Root\DoD-Root-CA-5.cer" CertificateName="DoD Root Certificate Authority 5" />
+  <!-- Ensure location for DoD Root CA 6 certificate is present-->
+  <OrganizationalSetting id="V-254442.d" Location="Cert:\LocalMachine\Root\DoD-Root-CA-6.cer" CertificateName="DoD Root Certificate Authority 6" />
+  <!-- Ensure location for DoD Interoperability Root CA 2 certificate is present-->
+  <OrganizationalSetting id="V-254443" Location="Cert:\LocalMachine\Disallowed\DoD-Interop-Root-CA-2.cer" CertificateName="DoD Interoperability Root Certificate Authority 2" />
+  <!-- Ensure location for US DoD CCEB Interoperability Root CA 2 certificate is present-->
+  <OrganizationalSetting id="V-254444" Location="Cert:\LocalMachine\Disallowed\US-DoD-CCEB-Root-CA-2.cer" CertificateName="US DoD CCEB Interoperability Root Certificate Authority 2" />
+  
+  <!-- AUDIT POLICIES - FIX V-278942-947 -->
+  <!-- NEW: File System Auditing -->
+  <OrganizationalSetting id="V-278942" AuditCategory="Object Access" AuditSubcategory="File System" AuditFlag="Failure" Status="Enable" />
+  <OrganizationalSetting id="V-278943" AuditCategory="Object Access" AuditSubcategory="File System" AuditFlag="Success" Status="Enable" />
+  <!-- NEW: Handle Manipulation Auditing -->
+  <OrganizationalSetting id="V-278944" AuditCategory="Object Access" AuditSubcategory="Handle Manipulation" AuditFlag="Failure" Status="Enable" />
+  <OrganizationalSetting id="V-278945" AuditCategory="Object Access" AuditSubcategory="Handle Manipulation" AuditFlag="Success" Status="Enable" />
+  <!-- NEW: Registry Auditing -->
+  <OrganizationalSetting id="V-278946" AuditCategory="Object Access" AuditSubcategory="Registry" AuditFlag="Failure" Status="Enable" />
+  <OrganizationalSetting id="V-278947" AuditCategory="Object Access" AuditSubcategory="Registry" AuditFlag="Success" Status="Enable" />
+  
 </OrganizationalSettings>

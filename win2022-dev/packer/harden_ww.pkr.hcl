@@ -81,8 +81,8 @@ source "googlecompute" "update_pam_ww" {
   enable_integrity_monitoring = false
   enable_vtpm                 = false
   disk_size                   = 250
-  network                     = "app-network"
-  subnetwork                  = "app-subnet1"
+  network                     = "default"
+  subnetwork                  = "default"
   tags                        = ["winrm"]
 
   image_family = var.image_family

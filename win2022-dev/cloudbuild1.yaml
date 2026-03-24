@@ -19,45 +19,35 @@ substitutions:
 
 steps:
 
-# ── Step 1: Trivy Security Scans ─────────────────────────────
-
+# ── Step 1: Trivy Security Scans ─────────────────────────────────────────
+# FIXED: Cloud Build cannot substitute variables in the `name` field.
+# The image tag must be hardcoded. Using 0.61.1 to match _TRIVY_VERSION.
 - id: 'trivy-config-scan'
-  name: 'aquasec/trivy:${_TRIVY_VERSION}'
+  name: 'aquasec/trivy:0.61.1'
   entrypoint: sh
   args:
   - -c
   - |
       set -e
-
-      echo "=== Trivy Config Scan — Packer HCL ==="
-      trivy config \
-        --severity ${_SEVERITY} \
-        --exit-code 0 \
-        --format table \
-        ./win2022-dev/packer || true
-
-      echo "=== Trivy Filesystem Scan — Secrets ==="
+      echo "=== Trivy Secret Scan — PowerShell Scripts ==="
       trivy fs \
         --scanners secret \
         --severity ${_SEVERITY} \
-        --exit-code 0 \
+        --exit-code 1 \
         --format table \
-        ./win2022-dev/packer/scripts || true
+        ./win2022-dev/packer/scripts
 
-      echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
+      echo "=== Trivy Secret Scan — Packer HCL Template ==="
       trivy fs \
-        --scanners vuln \
+        --scanners secret \
         --severity ${_SEVERITY} \
-        --exit-code 0 \
+        --exit-code 1 \
         --format table \
-        ./win2022-dev/packer/scripts || true
+        ./win2022-dev/packer
 
       echo "=== Trivy scan complete ==="
 
-# ── Step 2: Build Docker Image ────────────────────────────────
-# Builds a Linux container with Packer + hardening scripts inside.
-# This is the image Cloud Run Job will pull and execute manually.
-
+# ── Step 2: Build Docker Image ────────────────────────────────────────────
 - id: 'docker-build'
   name: 'gcr.io/cloud-builders/docker'
   entrypoint: bash
@@ -65,22 +55,17 @@ steps:
   - -c
   - |
       set -euo pipefail
-
       IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}"
-
       echo "Building Docker image: $$IMAGE_TAG"
-
       docker build \
         --build-arg PACKER_VERSION=${_PACKER_VERSION} \
         --tag "$$IMAGE_TAG:$SHORT_SHA" \
         --tag "$$IMAGE_TAG:latest" \
         --file ./win2022-dev/Dockerfile \
         ./win2022-dev
-
       echo "Docker build complete."
 
-# ── Step 3: Configure Artifact Registry Auth ─────────────────
-
+# ── Step 3: Configure Artifact Registry Auth ─────────────────────────────
 - id: 'configure-docker-auth'
   name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: bash
@@ -88,14 +73,10 @@ steps:
   - -c
   - |
       set -euo pipefail
-      echo "Configuring Docker auth for Artifact Registry..."
       gcloud auth configure-docker ${_REGION}-docker.pkg.dev --quiet
       echo "Auth configured."
 
-# ── Step 4: Push Docker Image to Artifact Registry ────────────
-# After this step, go to GCP Console → Cloud Run → Jobs
-# and manually execute the windows-image-build job.
-
+# ── Step 4: Push Docker Image to Artifact Registry ───────────────────────
 - id: 'docker-push'
   name: 'gcr.io/cloud-builders/docker'
   args:
@@ -103,15 +84,10 @@ steps:
   - '--all-tags'
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}'
 
-# ── Images stored in Artifact Registry ───────────────────────
 images:
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA'
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest'
 
-# ── Service Account & Options ─────────────────────────────────
 serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
-
 options:
   logging: CLOUD_LOGGING_ONLY
-
-

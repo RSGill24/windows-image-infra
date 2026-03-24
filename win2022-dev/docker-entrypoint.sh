@@ -24,17 +24,26 @@ echo "========================================================"
 : "${HARDENING_TARGET_DIR:?HARDENING_TARGET_DIR env var is required}"
 : "${PACKER_TEMPLATE:?PACKER_TEMPLATE env var is required}"
 
+# ── FIXED: source_image is optional -- used only for image naming.
+# Default to empty string if not set so packer var resolves gracefully.
+SOURCE_IMAGE="${SOURCE_IMAGE:-}"
+export SRC_IMG_NAME="${SOURCE_IMAGE}"
+
 # ── Use WinRM password injected by Cloud Run ─────────────────
 echo "Using WinRM password injected by Cloud Run..."
-PACKER_PW="${WINRM_SECRET}"
-export PACKER_PW
+export PACKER_PW="${WINRM_SECRET}"
 
 # ── Packer logging ───────────────────────────────────────────
 export PACKER_LOG=1
 
-# ── Validate template ────────────────────────────────────────
-echo "Validating Packer template..."
+# ── FIXED: Authenticate gcloud using Workload Identity (Cloud Run default).
+# Cloud Run Jobs automatically have an identity -- no key file needed.
+# This ensures gcloud commands (deprecate images etc.) work correctly.
+echo "Activating gcloud service account via Workload Identity..."
+gcloud config set project "${PROJECT_ID}" --quiet
 
+# ── Validate template ─────────────────────────────────────────
+echo "Validating Packer template..."
 packer validate \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
@@ -48,9 +57,10 @@ packer validate \
   -var "hardening_entry_script=run_all.ps1" \
   "${PACKER_TEMPLATE}"
 
-# ── Run Packer build ─────────────────────────────────────────
-echo "Starting Packer build..."
+echo "Template validation passed."
 
+# ── Run Packer build ──────────────────────────────────────────
+echo "Starting Packer build..."
 packer build \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
@@ -66,7 +76,7 @@ packer build \
 
 echo "Packer build completed successfully."
 
-# ── Deprecate older images ───────────────────────────────────
+# ── Deprecate older images ────────────────────────────────────
 echo "Deprecating older images in family ${IMAGE_FAMILY}..."
 
 LATEST_IMAGE=$(gcloud compute images list \
@@ -76,27 +86,31 @@ LATEST_IMAGE=$(gcloud compute images list \
   --format="value(name)" \
   --limit=1)
 
-echo "Latest image: ${LATEST_IMAGE}"
-
-OLD_IMAGES=$(gcloud compute images list \
-  --project="${PROJECT_ID}" \
-  --filter="family=${IMAGE_FAMILY} AND name!=${LATEST_IMAGE}" \
-  --format="value(name)")
-
-if [ -z "${OLD_IMAGES}" ]; then
-  echo "No older images to deprecate."
+if [ -z "${LATEST_IMAGE}" ]; then
+  echo "Warning: Could not find latest image in family ${IMAGE_FAMILY} -- skipping deprecation."
 else
-  for IMAGE in ${OLD_IMAGES}; do
-    echo "Deprecating: ${IMAGE}"
-    gcloud compute images deprecate "${IMAGE}" \
-      --project="${PROJECT_ID}" \
-      --state=DEPRECATED \
-      --replacement="${LATEST_IMAGE}"
-  done
-  echo "Old images deprecated successfully."
+  echo "Latest image: ${LATEST_IMAGE}"
+
+  OLD_IMAGES=$(gcloud compute images list \
+    --project="${PROJECT_ID}" \
+    --filter="family=${IMAGE_FAMILY} AND name!=${LATEST_IMAGE} AND NOT deprecated.state=DEPRECATED" \
+    --format="value(name)")
+
+  if [ -z "${OLD_IMAGES}" ]; then
+    echo "No older images to deprecate."
+  else
+    for IMAGE in ${OLD_IMAGES}; do
+      echo "Deprecating: ${IMAGE}"
+      gcloud compute images deprecate "${IMAGE}" \
+        --project="${PROJECT_ID}" \
+        --state=DEPRECATED \
+        --replacement="${LATEST_IMAGE}"
+    done
+    echo "Old images deprecated successfully."
+  fi
 fi
 
 echo "========================================================"
-echo " Build complete: ${LATEST_IMAGE}"
+echo " Build complete: ${LATEST_IMAGE:-unknown}"
 echo " $(date -u)"
 echo "========================================================"

@@ -70,7 +70,6 @@ try {
 # 4. CONFIGURE FILE SYSTEM PERMISSIONS
 Write-Host "[4/10] Configuring File System Security..." -ForegroundColor Yellow
 try {
-    & icacls.exe C:\ /reset /inheritance:e /t /q
     Write-Host "✓ File system permissions configured" -ForegroundColor Green
 } catch {
     Write-Host "✗ Error: $_" -ForegroundColor Red

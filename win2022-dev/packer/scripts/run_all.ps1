@@ -22,7 +22,7 @@ if (Test-Path "$PSScriptRoot\install_dod_certs.ps1") {
 # 3. Apply PowerSTIG via DSC MOF
 #    Use the CORRECTED create_mof.ps1 (bad Exception entries removed)
 # ---------------------------------------------------------
-& "$PSScriptRoot\create_mof_corrected.ps1"
+& "$PSScriptRoot\create_mof.ps1"
 & "$PSScriptRoot\apply_mof.ps1"
 
 # ---------------------------------------------------------

@@ -3,7 +3,6 @@
 # Base: Linux (Debian slim) + Packer + gcloud + PS scripts
 # Used by Cloud Run Job to build STIG-hardened Windows GCE image
 # ============================================================
-
 FROM debian:bookworm-slim
 
 ARG PACKER_VERSION=1.9.4
@@ -45,13 +44,18 @@ WORKDIR /workspace
 COPY packer/harden_ww.pkr.hcl ./harden_ww.pkr.hcl
 
 # ── Copy hardening scripts ───────────────────────────────────
+# FIXED: Also copies the new scripts added to fix STIG failures:
+#   apply_audit_policy.ps1, apply_account_hardening.ps1, install_dod_certs.ps1
+# These land in ./scripts/ alongside the existing ones.
 COPY packer/scripts/ ./scripts/
 
-# ── Copy entrypoint ─────────────────────────────────────────
+# ── Copy entrypoint ──────────────────────────────────────────
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh
 
 # ── Initialize Packer plugins at build time ──────────────────
+# Bakes the googlecompute plugin into the image so Cloud Run Job
+# does not need outbound access to releases.hashicorp.com at runtime.
 RUN packer init ./harden_ww.pkr.hcl
 
 # ── Entrypoint ───────────────────────────────────────────────

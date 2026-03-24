@@ -1,28 +1,144 @@
-# apply_mof.ps1
+# create_mof.ps1
+# Compiles a DSC MOF using PowerSTIG.
+# FIXED: Removed Exception blocks that were bypassing failing STIG rules.
 
+Write-Host "=== create_mof.ps1 starting ==="
 
+# -----------------------------------------------------------------------
+# Ensure all module paths are in PSModulePath
+# -----------------------------------------------------------------------
+$requiredPaths = @(
+    "C:\Program Files\WindowsPowerShell\Modules",
+    "C:\Windows\system32\WindowsPowerShell\v1.0\Modules",
+    "C:\Program Files (x86)\WindowsPowerShell\Modules"
+)
+foreach ($p in $requiredPaths) {
+    if ($p -and ($env:PSModulePath -split ';') -notcontains $p) {
+        Write-Host "Adding to PSModulePath: $p"
+        $env:PSModulePath = "$p;$env:PSModulePath"
+    }
+}
 
-Write-Host "=== Applying DSC configuration ==="
+# -----------------------------------------------------------------------
+# Detect latest PowerSTIG module
+# -----------------------------------------------------------------------
+$module = Get-Module PowerSTIG -ListAvailable |
+          Sort-Object Version -Descending | Select-Object -First 1
+if (-not $module) {
+    Write-Error "PowerSTIG module not found. Ensure install_PowerSTIG.ps1 ran successfully."
+    exit 1
+}
+$pstigVersion = $module.Version.ToString()
+Write-Host "Found PowerSTIG module $pstigVersion at: $($module.ModuleBase)"
 
-# Resolve MOF path relative to this script's directory -- $OutputPath from
-# create_mof.ps1 does not carry over into a separate script invocation
-$OutputPath = Join-Path $PSScriptRoot "MOF"
-$mofFile    = Join-Path $OutputPath "localhost.mof"
+# -----------------------------------------------------------------------
+# Detect STIG XML and parse version
+# -----------------------------------------------------------------------
+$stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
+$stigXml = Get-ChildItem -Path $stigDataPath `
+             -Filter "WindowsServer-2022-MS-*.org.default.xml" |
+           Sort-Object Name -Descending | Select-Object -First 1
+if (-not $stigXml) {
+    Write-Error "No WindowsServer-2022-MS-*.org.default.xml found in $stigDataPath"
+    exit 1
+}
+$stigVersionString = ($stigXml.Name `
+    -replace 'WindowsServer-2022-MS-', '' `
+    -replace '\.org\.default\.xml', '')
+Write-Host "Detected STIG XML: $($stigXml.FullName)"
+Write-Host "Detected STIG version: $stigVersionString"
 
-# Fail fast if MOF was never compiled
-if (!(Test-Path $mofFile)) {
-    Write-Error "MOF file not found at: $mofFile -- ensure create_mof.ps1 ran successfully before this script."
+# -----------------------------------------------------------------------
+# Paths
+# -----------------------------------------------------------------------
+$HardeningDir = $PSScriptRoot
+$OutputPath   = Join-Path $HardeningDir "MOF"
+$OrgSettings  = Join-Path $HardeningDir ($stigXml.Name -replace '\.org\.default\.xml', '.org.pamdata.xml')
+
+if (!(Test-Path $OrgSettings)) {
+    Write-Warning "PAM org settings not found at $OrgSettings -- falling back to default XML"
+    $OrgSettings = $stigXml.FullName
+}
+Write-Host "Using OrgSettings: $OrgSettings"
+
+if (!(Test-Path $OutputPath)) {
+    New-Item -Path $OutputPath -ItemType Directory -Force | Out-Null
+    Write-Host "Created MOF output directory: $OutputPath"
+}
+
+# -----------------------------------------------------------------------
+# Verify DSC resource is available
+# -----------------------------------------------------------------------
+Import-Module -Name PowerSTIG -RequiredVersion $pstigVersion -Force
+try {
+    $dscCheck = Get-DscResource -Name WindowsServer -Module PowerSTIG -ErrorAction Stop
+    Write-Host "DSC resource confirmed: $($dscCheck.Name) from $($dscCheck.Module)"
+} catch {
+    Write-Error "WindowsServer DSC resource not found: $_"
     exit 1
 }
 
-Write-Host "Found MOF: $mofFile"
-Write-Host "Applying DSC configuration..."
+# -----------------------------------------------------------------------
+# Generate DSC configuration script
+# FIXED: Exception block no longer bypasses password policy rules or
+# V-254446 (blank password). SkipRule only used for genuinely inapplicable
+# rules (domain-only checks on a standalone MS server).
+# V-254284 (Secure Boot) is handled at Packer layer -- excluded here only.
+# -----------------------------------------------------------------------
+$tempScript = Join-Path $env:TEMP "dsc_config_generated.ps1"
 
-Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose
+$safeOutputPath  = $OutputPath  -replace "'", "''"
+$safeOrgSettings = $OrgSettings -replace "'", "''"
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Start-DscConfiguration failed with exit code $LASTEXITCODE"
-    exit $LASTEXITCODE
+$scriptContent = @"
+Configuration ApplyWindowsServerStig {
+    Import-DscResource -ModuleName PowerSTIG -ModuleVersion $pstigVersion
+
+    Node 'localhost' {
+        WindowsServer 'ConfigureServer' {
+            OsVersion   = '2022'
+            OsRole      = 'MS'
+            StigVersion = '$stigVersionString'
+            OrgSettings = '$safeOrgSettings'
+
+            SkipRule = @(
+                'V-254284',    # Secure Boot -- enforced at Packer/VM layer (enable_secure_boot = true)
+                'V-254254.c',  # Domain-only rule, not applicable to standalone MS server
+                'V-254271'     # Domain-only rule, not applicable to standalone MS server
+            )
+        }
+    }
 }
 
-Write-Host "=== STIG applied successfully. ==="
+ApplyWindowsServerStig -OutputPath '$safeOutputPath'
+"@
+
+Set-Content -Path $tempScript -Value $scriptContent -Encoding UTF8
+Write-Host "Generated DSC config script: $tempScript"
+
+# -----------------------------------------------------------------------
+# Spawn a fresh PowerShell process to compile the MOF
+# -----------------------------------------------------------------------
+Write-Host "=== Compiling MOF... ==="
+$result = Start-Process powershell `
+    -ArgumentList "-ExecutionPolicy Bypass -NonInteractive -File `"$tempScript`"" `
+    -Wait `
+    -PassThru `
+    -NoNewWindow
+
+if ($result.ExitCode -ne 0) {
+    Write-Error "DSC MOF compilation failed with exit code $($result.ExitCode)"
+    exit $result.ExitCode
+}
+
+# -----------------------------------------------------------------------
+# Verify MOF was created
+# -----------------------------------------------------------------------
+$mofFile = Join-Path $OutputPath "localhost.mof"
+if (!(Test-Path $mofFile)) {
+    Write-Error "MOF file was not generated at: $mofFile"
+    exit 1
+}
+
+Write-Host "MOF generated: $mofFile"
+Write-Host "=== DSC configuration compiled successfully ==="

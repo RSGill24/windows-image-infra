@@ -1,7 +1,6 @@
 # install_dsc_deps.ps1
 # Installs PowerSTIG dependencies, copies modules to DSC LCM path,
-# generates org settings XML with PAM overrides.
-# Safe for GCP Cloud Build / Packer pipelines.
+# and generates org settings XML with ALL required STIG overrides.
 
 param (
     [string]$HardeningDir = $PSScriptRoot
@@ -10,7 +9,7 @@ param (
 Write-Host "=== Installing PowerSTIG dependencies ==="
 
 # -----------------------------------------------------------------------
-# Step 0: Import PowerSTIG and detect latest module
+# Step 0: Locate installed PowerSTIG module
 # -----------------------------------------------------------------------
 $module = Get-Module PowerSTIG -ListAvailable |
           Sort-Object Version -Descending | Select-Object -First 1
@@ -56,10 +55,10 @@ $pstigDstDir = Join-Path $dscSystemPath "PowerSTIG"
 $pstigDst    = Join-Path $pstigDstDir   $module.Version
 if (!(Test-Path $pstigDstDir)) { New-Item -Path $pstigDstDir -ItemType Directory -Force | Out-Null }
 Copy-Item -Path $pstigSrc -Destination $pstigDst -Recurse -Force
-Write-Host "Copied PowerSTIG module to DSC path: $pstigDst"
+Write-Host "Copied PowerSTIG to DSC path: $pstigDst"
 
 # -----------------------------------------------------------------------
-# Step 3: Find the .org.default.xml inside the installed module
+# Step 3: Locate the .org.default.xml inside the installed module
 # -----------------------------------------------------------------------
 $stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
 Write-Host "--- Searching for org.default.xml in: $stigDataPath"
@@ -77,8 +76,10 @@ if (-not $defaultOrgFile) {
 Write-Host "Found org.default.xml: $($defaultOrgFile.FullName)"
 
 # -----------------------------------------------------------------------
-# Step 4: Copy the default XML to the hardening dir and apply PAM overrides
-# Dynamic filename -- picks up whatever version is installed (2.7, 3.0, etc.)
+# Step 4: Copy and apply ALL required org setting overrides.
+# FIXED: Added all failing password policy V-IDs (V-254289/290/291),
+# account rename targets (V-254447/448), and DoD cert locations.
+# These were missing from the original script causing SCC failures.
 # -----------------------------------------------------------------------
 $outputOrgXml = Join-Path $HardeningDir ($defaultOrgFile.Name -replace '\.org\.default\.xml', '.org.pamdata.xml')
 Copy-Item -Path $defaultOrgFile.FullName -Destination $outputOrgXml -Force
@@ -86,36 +87,78 @@ Write-Host "Copied XML to: $outputOrgXml"
 
 [xml]$orgXml = Get-Content -Path $outputOrgXml -Encoding UTF8
 
-Write-Host "--- Applying PAM org setting overrides..."
+Write-Host "--- Applying org setting overrides..."
 
-# Example PAM overrides (can expand for all V-IDs you need)
 $overrides = @{
-    "V-254248"  = @{ ServiceName="WinDefend"; StartupType="Automatic" }
-    "V-254265"  = @{ ServiceName="MpsSvc"; StartupType="Automatic" }
-    "V-254287"  = @{ PolicyValue="15" }
-    "V-254288"  = @{ PolicyValue="24" }
-    "V-254285"  = @{ PolicyValue="15" }
-    "V-254286"  = @{ PolicyValue="3" }
+    # AV and Firewall services
+    "V-254248"   = @{ ServiceName="WinDefend"; StartupType="Automatic" }
+    "V-254265"   = @{ ServiceName="MpsSvc";    StartupType="Automatic" }
+
+    # Account lockout policy
+    "V-254285"   = @{ PolicyValue="15" }   # lockout duration (minutes)
+    "V-254286"   = @{ PolicyValue="3"  }   # lockout threshold (attempts)
+    "V-254287"   = @{ PolicyValue="15" }   # reset lockout counter (minutes)
+
+    # Password history
+    "V-254288"   = @{ PolicyValue="24" }   # enforce password history
+
+    # Password age -- FIXED: These were being skipped via Exception in create_mof.ps1
+    "V-254289"   = @{ PolicyValue="60" }   # max password age (days) -- V-254289 FIX
+    "V-254290"   = @{ PolicyValue="1"  }   # min password age (days) -- V-254290 FIX
+    "V-254291"   = @{ PolicyValue="14" }   # min password length     -- V-254291 FIX
+
+    # Misc registry/policy values
+    "V-254343.b" = @{ ValueData="1"   }
+    "V-254344"   = @{ ValueData="8"   }
+    "V-254357"   = @{ ValueData="100" }
+    "V-254358"   = @{ ValueData="32768"  }
+    "V-254359"   = @{ ValueData="196608" }
+    "V-254360"   = @{ ValueData="32768"  }
+    "V-254432"   = @{ ValueData="4"   }
+    "V-254454"   = @{ ValueData="30"  }
+    "V-254456"   = @{ ValueData="900" }
+
+    # DoD banner text
+    "V-254457"   = @{ ValueData="You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only. By using this IS, you consent to monitoring, interception, and search of all data." }
+    "V-254458"   = @{ ValueData="DoD Notice and Consent Banner" }
+    "V-254459"   = @{ ValueData="1" }
+    "V-254484"   = @{ ValueData="1" }
+
+    # Account rename -- FIXED: These were missing entirely from original script
+    "V-254447"   = @{ OptionValue="Local_Admin"  }   # rename Administrator -- V-254447 FIX
+    "V-254448"   = @{ OptionValue="Local_Guest"  }   # rename Guest         -- V-254448 FIX
+
+    # User rights assignments
+    "V-254499"   = @{ Identity="Administrators" }
+    "V-254435"   = @{ Identity="Enterprise Admins,Domain Admins,(Local account and member of Administrators group|Local account),Guests" }
+
+    # DoD certificate locations (empty = PowerSTIG auto-detects from cert store)
+    "V-254442.a" = @{ Location="" }
+    "V-254442.b" = @{ Location="" }
+    "V-254442.c" = @{ Location="" }
+    "V-254442.d" = @{ Location="" }
+    "V-254443"   = @{ Location="" }
+    "V-254444"   = @{ Location="" }
 }
 
 foreach ($vid in $overrides.Keys) {
-    $node = $orgXml.OrganizationalSettings.OrganizationalSetting | Where-Object { $_.id -eq $vid }
+    $node = $orgXml.OrganizationalSettings.OrganizationalSetting |
+            Where-Object { $_.id -eq $vid }
     if ($node) {
         foreach ($attr in $overrides[$vid].Keys) {
             $node.SetAttribute($attr, $overrides[$vid][$attr])
         }
-        Write-Host "  Set $vid overrides: $($overrides[$vid] | Out-String)"
+        Write-Host "  Set [$vid]: $($overrides[$vid] | ConvertTo-Json -Compress)"
     } else {
-        Write-Warning "  $vid not found in XML"
+        Write-Warning "  $vid not found in XML -- skipping"
     }
 }
 
-# Save the final XML
 $orgXml.Save($outputOrgXml)
 Write-Host "Org settings XML saved to: $outputOrgXml"
 
 # -----------------------------------------------------------------------
-# Step 5: Verify DSC resources
+# Step 5: Verify DSC resources loaded correctly
 # -----------------------------------------------------------------------
 Write-Host "--- Verifying DSC resources..."
 Get-DscResource -Module PowerSTIG | Select-Object -First 5 | ForEach-Object {

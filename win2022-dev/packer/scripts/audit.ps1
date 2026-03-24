@@ -1,49 +1,58 @@
 # Variables
 $gcpInstanceName = Invoke-RestMethod -Uri "http://169.254.169.254/computeMetadata/v1/instance/name" -Headers @{"Metadata-Flavor" = "Google"}
-$gcpInstanceId = Invoke-RestMethod -Uri "http://169.254.169.254/computeMetadata/v1/instance/id" -Headers @{"Metadata-Flavor" = "Google"}
+$gcpInstanceId   = Invoke-RestMethod -Uri "http://169.254.169.254/computeMetadata/v1/instance/id" -Headers @{"Metadata-Flavor" = "Google"}
 $gcpImageNameLong = Invoke-RestMethod -Uri "http://169.254.169.254/computeMetadata/v1/instance/image" -Headers @{"Metadata-Flavor" = "Google"}
 $gcpImageName = $gcpImageNameLong.Split("/")[-1]
 $auditUuid = [guid]::NewGuid()
 
 $scriptDir = $PSScriptRoot
 $outputPath = Join-Path $scriptDir 'DSC_Audit_Results.csv'
-$referenceMofPath = Join-Path $scriptDir 'ApplyWindowsServerStig\localhost.mof'
+$referenceMofPath = Join-Path $scriptDir 'ApplyWindowsServerStig'
 
-# Run DSC Test
-$results = Test-DscConfiguration -ReferenceConfiguration $referenceMofPath
+# ---------------------------------------------------------
+# ✅ STEP 1: APPLY STIG (FIX FAILED RULES)
+# ---------------------------------------------------------
+Write-Host "=== Applying STIG Configuration ==="
 
-# Initialize an array to hold formatted results
+Start-DscConfiguration `
+    -Path $referenceMofPath `
+    -Wait `
+    -Verbose `
+    -Force
+
+Write-Host "=== STIG Apply Completed ==="
+
+# ---------------------------------------------------------
+# ✅ STEP 2: VERIFY (AUDIT AGAIN)
+# ---------------------------------------------------------
+Write-Host "=== Running Compliance Check ==="
+
+$results = Test-DscConfiguration -Detailed
+
+# ---------------------------------------------------------
+# FORMAT RESULTS
+# ---------------------------------------------------------
 $formattedResults = @()
 
-# Process resources in desired state (if any)
-if ($results.ResourcesInDesiredState.Count -gt 0) {
-    $results.ResourcesInDesiredState | ForEach-Object {
-        # Clone all existing properties dynamically and add metadata
-        $result = $_ | Select-Object *
-        $result | Add-Member -MemberType NoteProperty -Name Compliance -Value "TRUE"
-        $result | Add-Member -MemberType NoteProperty -Name GCPInstanceName -Value $gcpInstanceName
-        $result | Add-Member -MemberType NoteProperty -Name GCPInstanceId -Value $gcpInstanceId
-        $result | Add-Member -MemberType NoteProperty -Name GCPImageName -Value $gcpImageName
-        $result | Add-Member -MemberType NoteProperty -Name GCPAuditUuid -Value $auditUuid
-
-        $formattedResults += $result
-    }
+foreach ($r in $results.ResourcesInDesiredState) {
+    $r | Add-Member -NotePropertyName Compliance -NotePropertyValue "TRUE" -Force
+    $r | Add-Member -NotePropertyName GCPInstanceName -NotePropertyValue $gcpInstanceName -Force
+    $r | Add-Member -NotePropertyName GCPInstanceId -NotePropertyValue $gcpInstanceId -Force
+    $r | Add-Member -NotePropertyName GCPImageName -NotePropertyValue $gcpImageName -Force
+    $r | Add-Member -NotePropertyName GCPAuditUuid -NotePropertyValue $auditUuid -Force
+    $formattedResults += $r
 }
 
-# Process resources not in desired state (if any)
-if ($results.ResourcesNotInDesiredState.Count -gt 0) {
-    $results.ResourcesNotInDesiredState | ForEach-Object {
-        # Clone all existing properties dynamically and add metadata
-        $result = $_ | Select-Object *
-        $result | Add-Member -MemberType NoteProperty -Name Compliance -Value "FALSE"
-        $result | Add-Member -MemberType NoteProperty -Name GCPInstanceName -Value $gcpInstanceName
-        $result | Add-Member -MemberType NoteProperty -Name GCPInstanceId -Value $gcpInstanceId
-        $result | Add-Member -MemberType NoteProperty -Name GCPImageName -Value $gcpImageName
-        $result | Add-Member -MemberType NoteProperty -Name GCPAuditUuid -Value $auditUuid
-
-        $formattedResults += $result
-    }
+foreach ($r in $results.ResourcesNotInDesiredState) {
+    $r | Add-Member -NotePropertyName Compliance -NotePropertyValue "FALSE" -Force
+    $r | Add-Member -NotePropertyName GCPInstanceName -NotePropertyValue $gcpInstanceName -Force
+    $r | Add-Member -NotePropertyName GCPInstanceId -NotePropertyValue $gcpInstanceId -Force
+    $r | Add-Member -NotePropertyName GCPImageName -NotePropertyValue $gcpImageName -Force
+    $r | Add-Member -NotePropertyName GCPAuditUuid -NotePropertyValue $auditUuid -Force
+    $formattedResults += $r
 }
 
-# Export to CSV
+# Export
 $formattedResults | Export-Csv -Path $outputPath -NoTypeInformation
+
+Write-Host "=== Compliance Report Generated ==="

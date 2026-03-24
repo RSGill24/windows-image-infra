@@ -2,7 +2,7 @@
 # ============================================================
 # docker-entrypoint.sh
 # Runs inside the Cloud Run Job container.
-# Uses injected secrets and executes the Packer build.
+# Fetches secrets, validates, and executes the Packer build.
 # ============================================================
 
 set -euo pipefail
@@ -13,6 +13,7 @@ echo " $(date -u)"
 echo "========================================================"
 
 # ── Required environment variables ───────────────────────────
+# These are injected by the Cloud Run Job definition (Terraform)
 : "${PROJECT_ID:?PROJECT_ID env var is required}"
 : "${SOURCE_IMAGE_PROJECT_ID:?SOURCE_IMAGE_PROJECT_ID env var is required}"
 : "${SOURCE_IMAGE_FAMILY:?SOURCE_IMAGE_FAMILY env var is required}"
@@ -24,9 +25,11 @@ echo "========================================================"
 : "${HARDENING_TARGET_DIR:?HARDENING_TARGET_DIR env var is required}"
 : "${PACKER_TEMPLATE:?PACKER_TEMPLATE env var is required}"
 
-# ── Use WinRM password injected by Cloud Run ─────────────────
-echo "Using WinRM password injected by Cloud Run..."
-PACKER_PW="${WINRM_SECRET}"
+# ── Fetch WinRM password from Secret Manager ─────────────────
+echo "Fetching WinRM password from Secret Manager..."
+PACKER_PW=$(gcloud secrets versions access latest \
+  --project "${PROJECT_ID}" \
+  --secret "${WINRM_SECRET}")
 export PACKER_PW
 
 # ── Packer logging ───────────────────────────────────────────
@@ -34,7 +37,6 @@ export PACKER_LOG=1
 
 # ── Validate template ────────────────────────────────────────
 echo "Validating Packer template..."
-
 packer validate \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
@@ -50,7 +52,6 @@ packer validate \
 
 # ── Run Packer build ─────────────────────────────────────────
 echo "Starting Packer build..."
-
 packer build \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \

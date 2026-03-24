@@ -1,144 +1,64 @@
-# create_mof.ps1
-# Compiles a DSC MOF using PowerSTIG.
-# FIXED: Removed Exception blocks that were bypassing failing STIG rules.
+# apply_mof.ps1
+# Applies the compiled DSC MOF and verifies configuration state.
 
-Write-Host "=== create_mof.ps1 starting ==="
-
-# -----------------------------------------------------------------------
-# Ensure all module paths are in PSModulePath
-# -----------------------------------------------------------------------
-$requiredPaths = @(
-    "C:\Program Files\WindowsPowerShell\Modules",
-    "C:\Windows\system32\WindowsPowerShell\v1.0\Modules",
-    "C:\Program Files (x86)\WindowsPowerShell\Modules"
+param (
+    [string]$HardeningDir = $PSScriptRoot
 )
-foreach ($p in $requiredPaths) {
-    if ($p -and ($env:PSModulePath -split ';') -notcontains $p) {
-        Write-Host "Adding to PSModulePath: $p"
-        $env:PSModulePath = "$p;$env:PSModulePath"
-    }
-}
 
-# -----------------------------------------------------------------------
-# Detect latest PowerSTIG module
-# -----------------------------------------------------------------------
-$module = Get-Module PowerSTIG -ListAvailable |
-          Sort-Object Version -Descending | Select-Object -First 1
-if (-not $module) {
-    Write-Error "PowerSTIG module not found. Ensure install_PowerSTIG.ps1 ran successfully."
+Write-Host "=== Applying DSC configuration ==="
+
+$OutputPath = Join-Path $HardeningDir "MOF"
+$mofFile    = Join-Path $OutputPath "localhost.mof"
+
+if (!(Test-Path $mofFile)) {
+    Write-Error "MOF file not found at: $mofFile -- ensure create_mof.ps1 ran successfully."
     exit 1
 }
-$pstigVersion = $module.Version.ToString()
-Write-Host "Found PowerSTIG module $pstigVersion at: $($module.ModuleBase)"
+Write-Host "Found MOF: $mofFile"
 
 # -----------------------------------------------------------------------
-# Detect STIG XML and parse version
+# Configure LCM: ApplyAndAutoCorrect ensures drift is re-remediated on reboot
 # -----------------------------------------------------------------------
-$stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
-$stigXml = Get-ChildItem -Path $stigDataPath `
-             -Filter "WindowsServer-2022-MS-*.org.default.xml" |
-           Sort-Object Name -Descending | Select-Object -First 1
-if (-not $stigXml) {
-    Write-Error "No WindowsServer-2022-MS-*.org.default.xml found in $stigDataPath"
-    exit 1
-}
-$stigVersionString = ($stigXml.Name `
-    -replace 'WindowsServer-2022-MS-', '' `
-    -replace '\.org\.default\.xml', '')
-Write-Host "Detected STIG XML: $($stigXml.FullName)"
-Write-Host "Detected STIG version: $stigVersionString"
+Write-Host "Configuring LCM..."
 
-# -----------------------------------------------------------------------
-# Paths
-# -----------------------------------------------------------------------
-$HardeningDir = $PSScriptRoot
-$OutputPath   = Join-Path $HardeningDir "MOF"
-$OrgSettings  = Join-Path $HardeningDir ($stigXml.Name -replace '\.org\.default\.xml', '.org.pamdata.xml')
-
-if (!(Test-Path $OrgSettings)) {
-    Write-Warning "PAM org settings not found at $OrgSettings -- falling back to default XML"
-    $OrgSettings = $stigXml.FullName
-}
-Write-Host "Using OrgSettings: $OrgSettings"
-
-if (!(Test-Path $OutputPath)) {
-    New-Item -Path $OutputPath -ItemType Directory -Force | Out-Null
-    Write-Host "Created MOF output directory: $OutputPath"
-}
-
-# -----------------------------------------------------------------------
-# Verify DSC resource is available
-# -----------------------------------------------------------------------
-Import-Module -Name PowerSTIG -RequiredVersion $pstigVersion -Force
-try {
-    $dscCheck = Get-DscResource -Name WindowsServer -Module PowerSTIG -ErrorAction Stop
-    Write-Host "DSC resource confirmed: $($dscCheck.Name) from $($dscCheck.Module)"
-} catch {
-    Write-Error "WindowsServer DSC resource not found: $_"
-    exit 1
-}
-
-# -----------------------------------------------------------------------
-# Generate DSC configuration script
-# FIXED: Exception block no longer bypasses password policy rules or
-# V-254446 (blank password). SkipRule only used for genuinely inapplicable
-# rules (domain-only checks on a standalone MS server).
-# V-254284 (Secure Boot) is handled at Packer layer -- excluded here only.
-# -----------------------------------------------------------------------
-$tempScript = Join-Path $env:TEMP "dsc_config_generated.ps1"
-
-$safeOutputPath  = $OutputPath  -replace "'", "''"
-$safeOrgSettings = $OrgSettings -replace "'", "''"
-
-$scriptContent = @"
-Configuration ApplyWindowsServerStig {
-    Import-DscResource -ModuleName PowerSTIG -ModuleVersion $pstigVersion
-
-    Node 'localhost' {
-        WindowsServer 'ConfigureServer' {
-            OsVersion   = '2022'
-            OsRole      = 'MS'
-            StigVersion = '$stigVersionString'
-            OrgSettings = '$safeOrgSettings'
-
-            SkipRule = @(
-                'V-254284',    # Secure Boot -- enforced at Packer/VM layer (enable_secure_boot = true)
-                'V-254254.c',  # Domain-only rule, not applicable to standalone MS server
-                'V-254271'     # Domain-only rule, not applicable to standalone MS server
-            )
+[DSCLocalConfigurationManager()]
+Configuration LCMConfig {
+    Node localhost {
+        Settings {
+            RefreshMode        = 'Push'
+            ConfigurationMode  = 'ApplyAndAutoCorrect'
+            RebootNodeIfNeeded = $false
+            ActionAfterReboot  = 'ContinueConfiguration'
         }
     }
 }
 
-ApplyWindowsServerStig -OutputPath '$safeOutputPath'
-"@
-
-Set-Content -Path $tempScript -Value $scriptContent -Encoding UTF8
-Write-Host "Generated DSC config script: $tempScript"
+$lcmPath = Join-Path $HardeningDir "LCM"
+if (!(Test-Path $lcmPath)) { New-Item -Path $lcmPath -ItemType Directory -Force | Out-Null }
+LCMConfig -OutputPath $lcmPath | Out-Null
+Set-DscLocalConfigurationManager -Path $lcmPath -Force
+Write-Host "LCM configured: ApplyAndAutoCorrect"
 
 # -----------------------------------------------------------------------
-# Spawn a fresh PowerShell process to compile the MOF
+# Apply the STIG MOF
 # -----------------------------------------------------------------------
-Write-Host "=== Compiling MOF... ==="
-$result = Start-Process powershell `
-    -ArgumentList "-ExecutionPolicy Bypass -NonInteractive -File `"$tempScript`"" `
-    -Wait `
-    -PassThru `
-    -NoNewWindow
+Write-Host "Applying DSC STIG configuration..."
+Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose -ErrorAction Stop
 
-if ($result.ExitCode -ne 0) {
-    Write-Error "DSC MOF compilation failed with exit code $($result.ExitCode)"
-    exit $result.ExitCode
+# -----------------------------------------------------------------------
+# Post-apply verification
+# -----------------------------------------------------------------------
+Write-Host "Verifying DSC configuration state..."
+$result = Test-DscConfiguration -Detailed
+
+if ($result.InDesiredState) {
+    Write-Host "=== All DSC resources are in desired state. ==="
+} else {
+    Write-Warning "The following resources are NOT in desired state after apply:"
+    $result.ResourcesNotInDesiredState | ForEach-Object {
+        Write-Warning "  NOT COMPLIANT: $($_.ResourceId)"
+    }
+    Write-Warning "Note: V-254284 (Secure Boot) is expected here -- handled at Packer layer."
 }
 
-# -----------------------------------------------------------------------
-# Verify MOF was created
-# -----------------------------------------------------------------------
-$mofFile = Join-Path $OutputPath "localhost.mof"
-if (!(Test-Path $mofFile)) {
-    Write-Error "MOF file was not generated at: $mofFile"
-    exit 1
-}
-
-Write-Host "MOF generated: $mofFile"
-Write-Host "=== DSC configuration compiled successfully ==="
+Write-Host "=== DSC configuration applied. ==="

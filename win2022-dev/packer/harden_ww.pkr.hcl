@@ -88,30 +88,48 @@ source "googlecompute" "update_pam_ww" {
   image_name   = "pww-disa-${var.source_image}-hardened-patched-{{timestamp}}"
   machine_type = var.machine_type
 
+  source "googlecompute" "update_pam_ww" {
+
+  # ... other config ...
+
   metadata = {
     windows-startup-script-ps1 = <<EOF
-# Step 1: Create packer_user FIRST with the correct password
-net user packer_user ${var.packer_user_password} /add /y
+# Step 0: Ensure EventLog source exists
+if (-not [System.Diagnostics.EventLog]::SourceExists("GCEMetadataScripts")) {
+    New-EventLog -LogName Application -Source "GCEMetadataScripts"
+}
+
+# Step 1: Create packer_user safely
+$password = "${var.packer_user_password}"
+
+try {
+    net user packer_user $password /add
+} catch {
+    Write-Host "User creation failed - check password policy"
+    exit 1
+}
+
 net localgroup Administrators packer_user /add
 
 # Step 2: Configure WinRM
 winrm quickconfig -q
 Enable-PSRemoting -Force
 
-# Step 3: Create self-signed cert and configure HTTPS listener
+# Step 3: HTTPS listener
 $cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
 $thumb = $cert.Thumbprint
 
-# Remove existing HTTPS listener if any, then create new one
-Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
+Get-ChildItem WSMan:\localhost\Listener |
+Where-Object { $_.Keys -contains "Transport=HTTPS" } |
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
 New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
 
 # Step 4: Auth settings
-Set-Item -Path WSMan:\localhost\Service\Auth\Basic -Value $true
-Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
-Set-Item -Path WSMan:\localhost\MaxTimeoutms -Value 1800000
+Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
+Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $false
 
-# Step 5: Firewall rule — open port LAST so Packer only connects when ready
+# Step 5: Firewall LAST
 netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
 
 Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM setup complete" -EntryType Information

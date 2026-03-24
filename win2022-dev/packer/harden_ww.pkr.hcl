@@ -63,6 +63,7 @@ source "googlecompute" "update_pam_ww" {
   use_iap                 = true
   use_internal_ip         = true 
   omit_external_ip        = true
+
   source_image_project_id = [var.source_image_project_id]
   source_image_family     = var.source_image_family
 
@@ -74,23 +75,21 @@ source "googlecompute" "update_pam_ww" {
   winrm_port        = 5986
   winrm_timeout     = "40m"
 
-  service_account_email       = var.service_account_email
-  zone                        = var.zone
+  service_account_email = var.service_account_email
+  zone                  = var.zone
+
   enable_secure_boot          = false
   enable_integrity_monitoring = false
   enable_vtpm                 = false
-  disk_size                   = 250
-  network                     = "app-network"
-  subnetwork                  = "app-subnet1"
-  tags                        = ["winrm"]
+
+  disk_size  = 250
+  network    = "app-network"
+  subnetwork = "app-subnet1"
+  tags       = ["winrm"]
 
   image_family = var.image_family
   image_name   = "pww-disa-${var.source_image}-hardened-patched-{{timestamp}}"
   machine_type = var.machine_type
-
-  source "googlecompute" "update_pam_ww" {
-
-  # ... other config ...
 
   metadata = {
     windows-startup-script-ps1 = <<EOF
@@ -176,7 +175,7 @@ build {
   provisioner "powershell" {
     inline = [
       "Set-Location '${var.hardening_target_dir}'",
-      "& '${var.hardening_target_dir}${var.hardening_entry_script}'"
+      "& '${var.hardening_target_dir}/${var.hardening_entry_script}'"
     ]
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password

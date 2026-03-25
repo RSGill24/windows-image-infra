@@ -1,63 +1,63 @@
-# run_all.ps1  (UPDATED — correct execution order to prevent DSC overriding fixes)
-Write-Host "========== START STIG HARDENING =========="
+#Requires -RunAsAdministrator
+# run_all.ps1 — Main STIG hardening entry point for Packer/GCP builds
+Write-Host "========== START STIG HARDENING ==========" -ForegroundColor Cyan
 
-# ---------------------------------------------------------
-# 1. Install PowerSTIG + DSC dependencies
-# ---------------------------------------------------------
-& "$PSScriptRoot\install_PowerSTIG.ps1"
-& "$PSScriptRoot\install_dsc_deps.ps1"
+$scriptDir = $PSScriptRoot
 
-# ---------------------------------------------------------
-# 2. Install DoD Certificates (V-254442 / 443 / 444)
-#    Requires InstallRoot tool from https://cyber.mil/pki-pke/tools-configuration-files
-#    Must run BEFORE DSC so cert presence is picked up in audit
-# ---------------------------------------------------------
-if (Test-Path "$PSScriptRoot\install_dod_certs.ps1") {
-    & "$PSScriptRoot\install_dod_certs.ps1"
-} else {
-    Write-Warning "install_dod_certs.ps1 not found — V-254442/443/444 will remain FAIL"
+# Helper: run a script and abort on failure
+function Invoke-Step {
+    param([string]$ScriptPath, [string]$Label)
+    Write-Host "`n--- $Label ---" -ForegroundColor Yellow
+    if (-not (Test-Path $ScriptPath)) {
+        Write-Warning "Script not found, skipping: $ScriptPath"
+        return
+    }
+    & $ScriptPath
+    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+        Write-Error "$Label failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
 }
 
-# ---------------------------------------------------------
-# 3. Apply PowerSTIG via DSC MOF
-#    Use the CORRECTED create_mof.ps1 (bad Exception entries removed)
-# ---------------------------------------------------------
-& "$PSScriptRoot\create_mof.ps1"
-& "$PSScriptRoot\apply_mof.ps1"
+# 1. Install PowerSTIG + DSC dependencies
+Invoke-Step "$scriptDir\install_PowerSTIG.ps1"    "Install PowerSTIG"
+Invoke-Step "$scriptDir\install_dsc_deps.ps1"     "Install DSC dependencies"
 
-# ---------------------------------------------------------
-# 4. Apply targeted STIG fixes AFTER DSC
-#    This order is critical — DSC runs first, then we override
-#    the few things DSC gets wrong or doesn't cover.
-# ---------------------------------------------------------
-Write-Host "=== Applying Custom STIG Fixes (post-DSC) ==="
-& "$PSScriptRoot\registry_stig.ps1"
-& "$PSScriptRoot\services_stig.ps1"
-& "$PSScriptRoot\account_policy.ps1"
+# 2. Install DoD Certificates (V-254442 / 443 / 444)
+Invoke-Step "$scriptDir\install_dod_certs.ps1"    "Install DoD Certificates"
 
-# This is the new consolidated fix script — replaces ad-hoc fixes
-& "$PSScriptRoot\stig_remediation_fixes.ps1"
+# 3. Apply PowerSTIG DSC MOF (use corrected version — bad Exception entries removed)
+Invoke-Step "$scriptDir\create_mof.ps1" "Create DSC MOF"
+Invoke-Step "$scriptDir\apply_mof.ps1"            "Apply DSC MOF"
 
-# ---------------------------------------------------------
-# 5. Final audit
-# ---------------------------------------------------------
-Write-Host "=== Running Final DSC Compliance Audit ==="
-$results = Test-DscConfiguration -Detailed
-$reportPath = Join-Path $PSScriptRoot "DSC_Audit_Results.csv"
+# 4. Post-DSC targeted fixes (must run AFTER DSC so DSC cannot undo them)
+Invoke-Step "$scriptDir\registry_stig.ps1"              "Registry STIG fixes"
+Invoke-Step "$scriptDir\services_stig.ps1"              "Services STIG fixes"
+Invoke-Step "$scriptDir\account_policy.ps1"             "Account policy fixes"
+Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"     "Targeted STIG remediation (22 failures)"
+
+# 5. Final DSC compliance audit
+Write-Host "`n--- Final DSC Compliance Audit ---" -ForegroundColor Yellow
+$results    = Test-DscConfiguration -Detailed
+$reportPath = Join-Path $scriptDir "DSC_Audit_Results.csv"
 
 $final = @()
+
 foreach ($r in $results.ResourcesInDesiredState) {
     $r | Add-Member -NotePropertyName Compliance -NotePropertyValue "TRUE" -Force
     $final += $r
 }
+
 foreach ($r in $results.ResourcesNotInDesiredState) {
     $r | Add-Member -NotePropertyName Compliance -NotePropertyValue "FALSE" -Force
     $final += $r
 }
+
 $final | Export-Csv -Path $reportPath -NoTypeInformation
 
-$passCount = ($results.ResourcesInDesiredState | Measure-Object).Count
+$passCount = ($results.ResourcesInDesiredState  | Measure-Object).Count
 $failCount = ($results.ResourcesNotInDesiredState | Measure-Object).Count
-Write-Host "DSC Compliance: $passCount PASS / $failCount FAIL"
-Write-Host "Report saved at: $reportPath"
-Write-Host "========== STIG HARDENING COMPLETE =========="
+
+Write-Host "DSC Compliance: $passCount PASS  /  $failCount FAIL" -ForegroundColor Cyan
+Write-Host "Report: $reportPath"
+Write-Host "========== STIG HARDENING COMPLETE ==========" -ForegroundColor Cyan

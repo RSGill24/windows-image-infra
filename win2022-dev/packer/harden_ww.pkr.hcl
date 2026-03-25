@@ -72,25 +72,11 @@ source "googlecompute" "update_pam_ww" {
   winrm_use_ssl  = true
   winrm_insecure = true
   winrm_port     = 5986
-  # FIX 1: Increased from 40m to 90m.
-  # STIG hardening (PowerSTIG install + DSC MOF compilation + DSC apply
-  # + targeted remediation) routinely takes 45-70 minutes on a fresh image.
-  # A 40m timeout causes Packer to disconnect mid-hardening and mark the
-  # build as failed even though the scripts are still running.
-  winrm_timeout = "90m"
+  winrm_timeout  = "90m"
 
-  service_account_email = var.service_account_email
-  zone                  = var.zone
-
-  # FIX 2: enable_secure_boot must be true for V-254284 STIG compliance.
-  # This enables Shielded VM Secure Boot at the GCP image level — it cannot
-  # be set from inside the guest OS, so it MUST be set here in Packer.
-  # If your GCP project does not allow Shielded VMs, set to false and
-  # document V-254284 as an ISSO-approved exception.
-  enable_secure_boot = true
-
-  # Integrity monitoring and vTPM should also be enabled for Shielded VM.
-  # Both are required for a fully Shielded VM configuration.
+  service_account_email       = var.service_account_email
+  zone                        = var.zone
+  enable_secure_boot          = true
   enable_integrity_monitoring = true
   enable_vtpm                 = true
 
@@ -105,29 +91,23 @@ source "googlecompute" "update_pam_ww" {
 
   metadata = {
     windows-startup-script-ps1 = <<EOF
-# Step 1: Create packer_user FIRST with the correct password
 net user packer_user "${var.packer_user_password}" /add /y
 net localgroup Administrators packer_user /add
 
-# Step 2: Configure WinRM
 winrm quickconfig -q
 Enable-PSRemoting -Force
 
-# Step 3: Create self-signed cert and configure HTTPS listener
 $cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
 $thumb = $cert.Thumbprint
 
-# Remove existing HTTPS listener if any, then create new one
 Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
 New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
 
-# Step 4: Auth settings
-Set-Item -Path WSMan:\localhost\Service\Auth\Basic      -Value $true
-Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate  -Value $true
+Set-Item -Path WSMan:\localhost\Service\Auth\Basic       -Value $true
+Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate   -Value $true
 Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
-Set-Item -Path WSMan:\localhost\MaxTimeoutms            -Value 1800000
+Set-Item -Path WSMan:\localhost\MaxTimeoutms             -Value 1800000
 
-# Step 5: Firewall rule — open port LAST so Packer only connects when ready
 netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
 
 Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM setup complete" -EntryType Information
@@ -158,22 +138,15 @@ build {
     elevated_password = var.packer_user_password
   }
 
-  # Step 3: Upload hardening scripts to the instance — one file at a time.
+  # Step 3: Upload each hardening script individually with its full destination
+  # path. Do NOT use directory-mode upload (trailing slash on source) — it
+  # silently truncates large scripts over WinRM, causing parse errors like
+  # MissingEndCurlyBrace mid-build.
   #
-  # FIX 3: Replaced the single directory "file" provisioner with individual
-  # per-file provisioners. The original approach used:
-  #   source      = "${var.hardening_source_dir}/"
-  #   destination = var.hardening_target_dir
-  # This causes Packer's WinRM file upload to silently TRUNCATE large scripts
-  # (> ~100 KB) because WinRM splits the file into chunks and the directory
-  # upload mode does not wait for each chunk to flush before moving on.
-  # The result is a syntactically broken script (MissingEndCurlyBrace) even
-  # though the source file on disk is perfectly valid.
-  #
-  # Fix: upload each script individually with its full destination path.
-  # This forces WinRM to complete each file transfer before starting the next.
-  #
-  # If you add new scripts to the hardening directory, add them here too.
+  # NOTE: WindowsServer-2022-MS-2.7.org.pamdata.xml is NOT uploaded here.
+  # It does not exist at build time — install_dsc_deps.ps1 generates it
+  # dynamically on the VM from the PowerSTIG module's bundled default XML
+  # and then applies the PAM overrides defined in that script.
 
   provisioner "file" {
     source      = "${var.hardening_source_dir}/run_all.ps1"
@@ -230,18 +203,9 @@ build {
     destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
   }
 
-  # Upload the org settings XML alongside the scripts.
-  # The filename must match what install_dsc_deps.ps1 generates
-  # (WindowsServer-2022-MS-<version>.org.pamdata.xml).
-  # If the version changes (e.g. 2.7 -> 3.0), update this filename.
-  provisioner "file" {
-    source      = "${var.hardening_source_dir}/WindowsServer-2022-MS-2.7.org.pamdata.xml"
-    destination = "${var.hardening_target_dir}/WindowsServer-2022-MS-2.7.org.pamdata.xml"
-  }
-
-  # Step 4: Verify all uploaded scripts are intact before running hardening.
-  # FIX 4: This step catches truncation before it causes silent failures
-  # mid-hardening (e.g. MissingEndCurlyBrace in install_dod_certs.ps1).
+  # Step 4: Verify uploaded scripts are intact before running hardening.
+  # Catches WinRM truncation early with a clear error rather than a cryptic
+  # PowerShell parse failure mid-build.
   provisioner "powershell" {
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password
@@ -255,7 +219,7 @@ build {
       ")",
       "$failed = $false",
       "foreach ($c in $checks) {",
-      "  $path = '${var.hardening_target_dir}/' + $c.File",
+      "  $path = Join-Path '${var.hardening_target_dir}' $c.File",
       "  if (Test-Path $path) {",
       "    $lines = (Get-Content $path).Count",
       "    $hash  = (Get-FileHash $path -Algorithm SHA256).Hash.Substring(0,16)",
@@ -275,9 +239,10 @@ build {
   }
 
   # Step 5: Run the STIG hardening pipeline.
-  # FIX 5: Increased execution_timeout to match winrm_timeout.
-  # Without this, Packer kills the PowerShell process after the default
-  # timeout even though the WinRM session itself is still alive.
+  # FIX: 'execution_timeout' is not a valid argument for the powershell
+  # provisioner — the correct argument is 'timeout' (a duration string).
+  # Set to 85m, just under the 90m winrm_timeout, so Packer reports a
+  # clean timeout error rather than a confusing WinRM disconnect.
   provisioner "powershell" {
     inline = [
       "Set-Location '${var.hardening_target_dir}'",
@@ -285,6 +250,6 @@ build {
     ]
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password
-    execution_timeout = "85m"
+    timeout           = "85m"
   }
 }

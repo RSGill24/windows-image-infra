@@ -86,7 +86,8 @@ function Invoke-Step {
 Write-Host "`n--- Pre-flight: Script integrity checks ---" -ForegroundColor Yellow
  
 $integrityChecks = @(
-    @{ Path = "$scriptDir\install_dod_certs.ps1";       MinLines = 200; Label = "install_dod_certs.ps1"  }
+    # FIX: Lowered MinLines to 50 for install_dod_certs.ps1 because the new MSI logic is much shorter!
+    @{ Path = "$scriptDir\install_dod_certs.ps1";       MinLines = 50;  Label = "install_dod_certs.ps1"  }
     @{ Path = "$scriptDir\stig_remediation_fixes.ps1";  MinLines = 100; Label = "stig_remediation_fixes" }
     @{ Path = "$scriptDir\install_dsc_deps.ps1";        MinLines = 50;  Label = "install_dsc_deps.ps1"   }
     @{ Path = "$scriptDir\create_mof.ps1";              MinLines = 50;  Label = "create_mof.ps1"         }

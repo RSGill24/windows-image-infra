@@ -6,41 +6,82 @@
            V-254444 (US DOD CCEB Interop cross-certs)
 
 .NOTES
+    FIX: Rewrote script to eliminate the PowerShell parse error
+         (MissingEndCurlyBrace at lines 206, 237, 255, 273, 303, 321, 392)
+         that caused the script to fail entirely during Packer image builds.
+         The previous version was being truncated by Packer's WinRM file
+         upload when the destination was specified as a directory path only.
+
     Certificate source: https://crl.gds.disa.mil / https://cyber.mil/pki-pke
     This script downloads the DoD PKI bundle ZIP, extracts it, and installs
     each required certificate into the correct Windows certificate store.
     Safe to re-run — existing certs are skipped.
+
+    IMPORTANT FOR PACKER USERS:
+    In your Packer HCL file provisioner, always specify the FULL destination
+    path including the filename — not just the directory. Example:
+      destination = "C:/Users/packer_user/hardening/install_dod_certs.ps1"
+    Specifying only the directory (e.g. "C:/Users/packer_user/hardening/")
+    causes WinRM to silently truncate large scripts.
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Write-Section ($msg) {
+# -----------------------------------------------------------------------
+# Helper functions
+# -----------------------------------------------------------------------
+function Write-Section {
+    param([string]$msg)
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host " $msg" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 }
-function Write-OK    ($msg) { Write-Host "  [OK]     $msg" -ForegroundColor Green   }
-function Write-Fixed ($msg) { Write-Host "  [ADDED]  $msg" -ForegroundColor Yellow  }
-function Write-Warn  ($msg) { Write-Host "  [WARN]   $msg" -ForegroundColor Magenta }
-function Write-Info  ($msg) { Write-Host "  [INFO]   $msg" -ForegroundColor Gray    }
+
+function Write-OK {
+    param([string]$msg)
+    Write-Host "  [OK]     $msg" -ForegroundColor Green
+}
+
+function Write-Fixed {
+    param([string]$msg)
+    Write-Host "  [ADDED]  $msg" -ForegroundColor Yellow
+}
+
+function Write-Warn {
+    param([string]$msg)
+    Write-Host "  [WARN]   $msg" -ForegroundColor Magenta
+}
+
+function Write-Info {
+    param([string]$msg)
+    Write-Host "  [INFO]   $msg" -ForegroundColor Gray
+}
 
 # -----------------------------------------------------------------------
-# Enforce TLS 1.2 for all web requests (required on older .NET defaults)
+# Enforce TLS 1.2 for all web requests
+# Required on older .NET defaults (Windows Server 2022 defaults to TLS 1.2
+# but this makes the requirement explicit)
 # -----------------------------------------------------------------------
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# -----------------------------------------------------------------------
+# Working directory for downloaded files
+# -----------------------------------------------------------------------
 $workDir = Join-Path $env:TEMP "dod_certs_install"
-if (Test-Path $workDir) { Remove-Item $workDir -Recurse -Force }
+if (Test-Path $workDir) {
+    Remove-Item $workDir -Recurse -Force
+}
 New-Item -Path $workDir -ItemType Directory -Force | Out-Null
 
-$ErrorCount = 0
+$ErrorCount  = 0
+$bundleP7b   = Join-Path $workDir "DODRoots.p7b"
+$bundleZip   = Join-Path $workDir "dod_certs_bundle.zip"
 
 # -----------------------------------------------------------------------
 # REQUIRED CERTIFICATES — defined as structured data
-# -----------------------------------------------------------------------
-
 # V-254442: DoD Root CAs -> Trusted Root Certification Authorities store
+# -----------------------------------------------------------------------
 $dodRootCAs = @(
     @{
         Name       = "DoD Root CA 3"
@@ -48,21 +89,21 @@ $dodRootCAs = @(
         Store      = "Cert:\LocalMachine\Root"
         StoreName  = "Root"
         NotAfter   = "2029-12-30"
-    }
+    },
     @{
         Name       = "DoD Root CA 4"
         Thumbprint = "B8269F25DBD937ECAFD4C35A9838571723F2D026"
         Store      = "Cert:\LocalMachine\Root"
         StoreName  = "Root"
         NotAfter   = "2032-07-25"
-    }
+    },
     @{
         Name       = "DoD Root CA 5"
         Thumbprint = "4ECB5CC3095670454DA1CBD410FC921F46B8564B"
         Store      = "Cert:\LocalMachine\Root"
         StoreName  = "Root"
         NotAfter   = "2041-06-14"
-    }
+    },
     @{
         Name       = "DoD Root CA 6"
         Thumbprint = "D37ECF61C0B4ED88681EF3630C4E2FC787B37AEF"
@@ -72,7 +113,9 @@ $dodRootCAs = @(
     }
 )
 
-# V-254443: DoD Interoperability Root CA cross-certs -> Untrusted/Disallowed store
+# -----------------------------------------------------------------------
+# V-254443: DoD Interoperability Root CA cross-certs -> Disallowed store
+# -----------------------------------------------------------------------
 $dodInteropCerts = @(
     @{
         Name       = "DoD Root CA 3 (issued by DoD Interoperability Root CA 2)"
@@ -83,7 +126,9 @@ $dodInteropCerts = @(
     }
 )
 
-# V-254444: US DOD CCEB Interoperability Root CA cross-certs -> Untrusted/Disallowed store
+# -----------------------------------------------------------------------
+# V-254444: US DOD CCEB Interoperability Root CA cross-certs -> Disallowed store
+# -----------------------------------------------------------------------
 $dodCCEBCerts = @(
     @{
         Name       = "DOD Root CA 3 (issued by US DOD CCEB Interoperability Root CA 2)"
@@ -91,7 +136,7 @@ $dodCCEBCerts = @(
         Store      = "Cert:\LocalMachine\Disallowed"
         StoreName  = "Disallowed"
         NotAfter   = "2025-07-18"
-    }
+    },
     @{
         Name       = "DOD Root CA 6 (issued by US DOD CCEB Interoperability Root CA 2)"
         Thumbprint = "D471CA32F7A692CE6CBB6196BD3377FE4DBCD106"
@@ -102,60 +147,10 @@ $dodCCEBCerts = @(
 )
 
 # -----------------------------------------------------------------------
-# STEP 1 — Download the official DoD PKI certificate bundle from DISA
+# Helper: Install a single certificate from a p7b bundle by thumbprint
+# Returns $true if installed (or already present), $false if not found in bundle
 # -----------------------------------------------------------------------
-Write-Section "Step 1: Download DoD PKI certificate bundle"
-
-# Primary source: DISA CRL/PKI bundle (unclassified)
-# This ZIP contains all DoD Root CA and Interop cross-cert .cer files
-$bundleUrls = @(
-    "https://crl.gds.disa.mil/get/DODRoots.p7b",
-    "https://dl.dod.cyber.mil/wp-content/uploads/pki-pke/zip/unclass-certificates_pkcs7_DoD.zip"
-)
-
-$bundleZip = Join-Path $workDir "dod_certs_bundle.zip"
-$bundleP7b = Join-Path $workDir "DODRoots.p7b"
-$downloaded = $false
-
-# Try downloading the PKCS#7 bundle first (most reliable single file)
-Write-Info "Attempting download from DISA CRL server..."
-try {
-    Invoke-WebRequest -Uri $bundleUrls[0] `
-        -OutFile $bundleP7b `
-        -UseBasicParsing `
-        -TimeoutSec 60 `
-        -ErrorAction Stop
-    Write-OK "Downloaded DoD PKI bundle (p7b): $bundleP7b"
-    $downloaded = $true
-} catch {
-    Write-Warn "Primary download failed: $_"
-}
-
-# Try the ZIP bundle if p7b failed
-if (-not $downloaded) {
-    Write-Info "Attempting fallback download from cyber.mil..."
-    try {
-        Invoke-WebRequest -Uri $bundleUrls[1] `
-            -OutFile $bundleZip `
-            -UseBasicParsing `
-            -TimeoutSec 120 `
-            -ErrorAction Stop
-        Write-OK "Downloaded DoD cert bundle ZIP: $bundleZip"
-        $downloaded = $true
-        # Extract ZIP
-        Expand-Archive -Path $bundleZip -DestinationPath $workDir -Force
-        Write-OK "Extracted bundle to: $workDir"
-    } catch {
-        Write-Warn "Fallback download also failed: $_"
-    }
-}
-
-# -----------------------------------------------------------------------
-# STEP 2 — Install certificates from the downloaded bundle (if available)
-# -----------------------------------------------------------------------
-Write-Section "Step 2: Install certificates from bundle"
-
-function Install-CertFromBundle {
+function Install-CertFromP7bBundle {
     param(
         [string]$BundlePath,
         [string]$Thumbprint,
@@ -163,76 +158,60 @@ function Install-CertFromBundle {
         [string]$CertName
     )
 
-    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
-        $StoreName,
-        [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
-    )
-    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-
-    # Check if already installed
-    $existing = $store.Certificates | Where-Object { $_.Thumbprint -eq $Thumbprint }
-    if ($existing) {
-        $store.Close()
-        return $true  # already present
+    if (-not (Test-Path $BundlePath)) {
+        return $false
     }
 
-    # Try to load from p7b bundle
-    if ($BundlePath -and (Test-Path $BundlePath) -and $BundlePath.EndsWith('.p7b')) {
-        try {
-            $p7b = New-Object System.Security.Cryptography.Pkcs.SignedCms
-            $p7b.Decode([System.IO.File]::ReadAllBytes($BundlePath))
-            $match = $p7b.Certificates | Where-Object {
-                $_.Thumbprint -eq $Thumbprint
-            }
-            if ($match) {
-                $store.Add($match)
-                $store.Close()
-                return $true
-            }
-        } catch {
-            Write-Info "  Could not parse p7b for $CertName`: $_"
+    $store = $null
+    try {
+        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
+            $StoreName,
+            [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+        )
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+
+        # Check if already present
+        $existing = $store.Certificates | Where-Object { $_.Thumbprint -eq $Thumbprint }
+        if ($existing) {
+            return $true
+        }
+
+        # Try to parse the p7b and find the cert by thumbprint
+        $p7b   = New-Object System.Security.Cryptography.Pkcs.SignedCms
+        $bytes = [System.IO.File]::ReadAllBytes($BundlePath)
+        $p7b.Decode($bytes)
+
+        $match = $p7b.Certificates | Where-Object { $_.Thumbprint -eq $Thumbprint }
+        if ($match) {
+            $store.Add($match)
+            return $true
+        }
+
+        return $false
+    } catch {
+        Write-Info "Could not parse p7b bundle for $CertName : $_"
+        return $false
+    } finally {
+        if ($store) {
+            $store.Close()
         }
     }
-
-    $store.Close()
-    return $false
 }
 
 # -----------------------------------------------------------------------
-# STEP 3 — Install each required cert (bundle first, then embedded fallback)
+# Helper: Download and install a single cert by thumbprint from DISA CRL
+# Returns $true on success, $false on failure
 # -----------------------------------------------------------------------
-Write-Section "Step 3: Install DoD Root CA certificates (V-254442)"
+function Install-CertFromDisa {
+    param(
+        [string]$Thumbprint,
+        [string]$StoreName,
+        [string]$CertName,
+        [string]$WorkDir
+    )
 
-foreach ($ca in $dodRootCAs) {
-    Write-Info "Processing: $($ca.Name) [$($ca.Thumbprint.Substring(0,8))...]"
-
-    # Check if already installed
-    $existing = Get-ChildItem -Path $ca.Store -ErrorAction SilentlyContinue |
-                Where-Object { $_.Thumbprint -eq $ca.Thumbprint }
-
-    if ($existing) {
-        Write-OK "Already installed: $($ca.Name)"
-        continue
-    }
-
-    # Try bundle install
-    $installedFromBundle = $false
-    if (Test-Path $bundleP7b) {
-        $installedFromBundle = Install-CertFromBundle `
-            -BundlePath $bundleP7b `
-            -Thumbprint $ca.Thumbprint `
-            -StoreName $ca.StoreName `
-            -CertName $ca.Name
-    }
-
-    if ($installedFromBundle) {
-        Write-Fixed "Installed from bundle: $($ca.Name)"
-        continue
-    }
-
-    # Try downloading individual cert by thumbprint from DISA CRL
-    $certUrl = "https://crl.gds.disa.mil/get/$($ca.Thumbprint).cer"
-    $certFile = Join-Path $workDir "$($ca.Thumbprint).cer"
+    $certUrl  = "https://crl.gds.disa.mil/get/$Thumbprint.cer"
+    $certFile = Join-Path $WorkDir "$Thumbprint.cer"
 
     try {
         Invoke-WebRequest -Uri $certUrl `
@@ -243,32 +222,128 @@ foreach ($ca in $dodRootCAs) {
 
         $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certFile)
 
-        if ($cert.Thumbprint -eq $ca.Thumbprint) {
-            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
-                $ca.StoreName,
-                [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
-            )
-            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            $store.Add($cert)
-            $store.Close()
-            Write-Fixed "Installed from individual download: $($ca.Name)"
+        if ($cert.Thumbprint -ne $Thumbprint) {
+            Write-Warn "Thumbprint mismatch for $CertName — NOT installing (possible tampering)"
+            return $false
+        }
+
+        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
+            $StoreName,
+            [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+        )
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $store.Add($cert)
+        $store.Close()
+        return $true
+
+    } catch {
+        Write-Warn "Could not download $CertName from DISA: $_"
+        return $false
+    }
+}
+
+# -----------------------------------------------------------------------
+# STEP 1 — Download the DoD PKI bundle from DISA
+# -----------------------------------------------------------------------
+Write-Section "Step 1: Download DoD PKI certificate bundle"
+
+$downloaded = $false
+
+# Attempt 1: PKCS#7 bundle from DISA CRL server (single file, most reliable)
+Write-Info "Attempting p7b download from DISA CRL server..."
+try {
+    Invoke-WebRequest -Uri "https://crl.gds.disa.mil/get/DODRoots.p7b" `
+        -OutFile $bundleP7b `
+        -UseBasicParsing `
+        -TimeoutSec 60 `
+        -ErrorAction Stop
+    Write-OK "Downloaded DoD PKI bundle (p7b): $bundleP7b"
+    $downloaded = $true
+} catch {
+    Write-Warn "Primary p7b download failed: $_"
+}
+
+# Attempt 2: ZIP bundle from cyber.mil
+if (-not $downloaded) {
+    Write-Info "Attempting ZIP download from cyber.mil..."
+    try {
+        Invoke-WebRequest -Uri "https://dl.dod.cyber.mil/wp-content/uploads/pki-pke/zip/unclass-certificates_pkcs7_DoD.zip" `
+            -OutFile $bundleZip `
+            -UseBasicParsing `
+            -TimeoutSec 120 `
+            -ErrorAction Stop
+
+        Expand-Archive -Path $bundleZip -DestinationPath $workDir -Force
+
+        # Look for a p7b inside the extracted ZIP
+        $extractedP7b = Get-ChildItem -Path $workDir -Filter "*.p7b" -Recurse | Select-Object -First 1
+        if ($extractedP7b) {
+            Copy-Item $extractedP7b.FullName $bundleP7b -Force
+            Write-OK "Extracted p7b from ZIP: $($extractedP7b.FullName)"
+            $downloaded = $true
         } else {
-            Write-Warn "Thumbprint mismatch for $($ca.Name) — NOT installing"
-            $ErrorCount++
+            Write-Warn "ZIP extracted but no .p7b found inside"
         }
     } catch {
-        Write-Warn "Could not download individual cert for $($ca.Name): $_"
-        Write-Warn "  Manual action: Install from InstallRoot tool at https://cyber.mil/pki-pke/tools-configuration-files"
+        Write-Warn "ZIP fallback also failed: $_"
+    }
+}
+
+if (-not $downloaded) {
+    Write-Warn "Bundle download failed — will attempt individual cert downloads per thumbprint"
+}
+
+# -----------------------------------------------------------------------
+# STEP 2 — Install DoD Root CA certificates (V-254442)
+# -----------------------------------------------------------------------
+Write-Section "Step 2: Install DoD Root CA certificates (V-254442)"
+
+foreach ($ca in $dodRootCAs) {
+    Write-Info "Processing: $($ca.Name) [$($ca.Thumbprint.Substring(0,8))...]"
+
+    # Check if already present
+    $existing = Get-ChildItem -Path $ca.Store -ErrorAction SilentlyContinue |
+                Where-Object { $_.Thumbprint -eq $ca.Thumbprint }
+
+    if ($existing) {
+        Write-OK "Already installed: $($ca.Name)"
+        continue
+    }
+
+    # Try bundle install
+    $installed = Install-CertFromP7bBundle `
+        -BundlePath $bundleP7b `
+        -Thumbprint $ca.Thumbprint `
+        -StoreName  $ca.StoreName `
+        -CertName   $ca.Name
+
+    if ($installed) {
+        Write-Fixed "Installed from bundle: $($ca.Name)"
+        continue
+    }
+
+    # Try individual DISA download
+    $installed = Install-CertFromDisa `
+        -Thumbprint $ca.Thumbprint `
+        -StoreName  $ca.StoreName `
+        -CertName   $ca.Name `
+        -WorkDir    $workDir
+
+    if ($installed) {
+        Write-Fixed "Installed from individual DISA download: $($ca.Name)"
+    } else {
+        Write-Warn "FAILED to install: $($ca.Name)"
+        Write-Warn "  Manual action: Run InstallRoot from https://cyber.mil/pki-pke/tools-configuration-files"
         $ErrorCount++
     }
 }
 
 # -----------------------------------------------------------------------
-# Install Interop cross-certs into Disallowed (Untrusted) store
+# STEP 3 — Install Interop cross-certs into Disallowed store (V-254443 / V-254444)
 # -----------------------------------------------------------------------
-Write-Section "Step 4: Install DoD Interop cross-certs — Disallowed store (V-254443 / V-254444)"
+Write-Section "Step 3: Install DoD Interop cross-certs into Disallowed store (V-254443 / V-254444)"
 
-$allCrossCerts = $dodInteropCerts + $dodCCEBCerts
+$allCrossCerts = @($dodInteropCerts) + @($dodCCEBCerts)
 
 foreach ($ca in $allCrossCerts) {
     Write-Info "Processing: $($ca.Name)"
@@ -282,59 +357,39 @@ foreach ($ca in $allCrossCerts) {
     }
 
     # Try bundle install
-    $installedFromBundle = $false
-    if (Test-Path $bundleP7b) {
-        $installedFromBundle = Install-CertFromBundle `
-            -BundlePath $bundleP7b `
-            -Thumbprint $ca.Thumbprint `
-            -StoreName $ca.StoreName `
-            -CertName $ca.Name
-    }
+    $installed = Install-CertFromP7bBundle `
+        -BundlePath $bundleP7b `
+        -Thumbprint $ca.Thumbprint `
+        -StoreName  $ca.StoreName `
+        -CertName   $ca.Name
 
-    if ($installedFromBundle) {
-        Write-Fixed "Installed from bundle: $($ca.Name)"
+    if ($installed) {
+        Write-Fixed "Installed from bundle: $($ca.Name) -> $($ca.StoreName)"
         continue
     }
 
-    # Try individual download
-    $certUrl = "https://crl.gds.disa.mil/get/$($ca.Thumbprint).cer"
-    $certFile = Join-Path $workDir "$($ca.Thumbprint).cer"
+    # Try individual DISA download
+    $installed = Install-CertFromDisa `
+        -Thumbprint $ca.Thumbprint `
+        -StoreName  $ca.StoreName `
+        -CertName   $ca.Name `
+        -WorkDir    $workDir
 
-    try {
-        Invoke-WebRequest -Uri $certUrl `
-            -OutFile $certFile `
-            -UseBasicParsing `
-            -TimeoutSec 30 `
-            -ErrorAction Stop
-
-        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certFile)
-
-        if ($cert.Thumbprint -eq $ca.Thumbprint) {
-            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
-                $ca.StoreName,
-                [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
-            )
-            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            $store.Add($cert)
-            $store.Close()
-            Write-Fixed "Installed: $($ca.Name) -> $($ca.StoreName)"
-        } else {
-            Write-Warn "Thumbprint mismatch for $($ca.Name) — NOT installing"
-            $ErrorCount++
-        }
-    } catch {
-        Write-Warn "Could not download $($ca.Name): $_"
+    if ($installed) {
+        Write-Fixed "Installed from individual DISA download: $($ca.Name) -> $($ca.StoreName)"
+    } else {
+        Write-Warn "FAILED to install: $($ca.Name)"
         Write-Warn "  Manual action: Run FBCA Cross-Certificate Remover Tool from https://cyber.mil/pki-pke/tools-configuration-files"
         $ErrorCount++
     }
 }
 
 # -----------------------------------------------------------------------
-# STEP 5 — Verify all required certs are now present
+# STEP 4 — Verify all required certs are present
 # -----------------------------------------------------------------------
-Write-Section "Step 5: Verification"
+Write-Section "Step 4: Verification"
 
-$allRequired = $dodRootCAs + $dodInteropCerts + $dodCCEBCerts
+$allRequired = @($dodRootCAs) + @($dodInteropCerts) + @($dodCCEBCerts)
 $verifyFail  = 0
 
 foreach ($ca in $allRequired) {
@@ -353,11 +408,13 @@ foreach ($ca in $allRequired) {
 }
 
 # -----------------------------------------------------------------------
-# Cleanup
+# Cleanup working directory
 # -----------------------------------------------------------------------
 try {
     Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
-} catch { }
+} catch {
+    # Non-fatal
+}
 
 # -----------------------------------------------------------------------
 # Summary
@@ -366,7 +423,7 @@ Write-Section "DoD Certificate Installation Summary"
 
 if ($verifyFail -eq 0) {
     Write-Host "  All DoD certificates installed and verified." -ForegroundColor Green
-    Write-Host "  V-254442, V-254443, V-254444 should now PASS on next SCAP scan." -ForegroundColor Green
+    Write-Host "  V-254442, V-254443, V-254444 should PASS on next SCAP scan." -ForegroundColor Green
 } else {
     Write-Host "  $verifyFail certificate(s) could not be installed automatically." -ForegroundColor Yellow
     Write-Host @"

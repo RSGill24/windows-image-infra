@@ -1,9 +1,22 @@
-# create_mof.ps1  (CORRECTED — removes Exception entries that caused STIG failures)
+# create_mof.ps1
 # Compiles a DSC MOF using PowerSTIG.
+#
+# FIX: Removed all Exception entries that caused STIG regressions:
+#   - V-254446 ValueData='0'         was DISABLING blank-password protection (CAT I!)
+#   - V-254289 PolicyValue='0'       was setting max password age to NEVER
+#   - V-254290 PolicyValue='0'       was setting min password age to 0
+#   - V-254291 PolicyValue='0'       was setting min password length to 0
+#   - V-254292 PolicyValue='Disabled' was disabling password complexity
+#   - V-254501 Identity='Everyone'   was granting Everyone remote shutdown right
+#
+# Only ISSO-approved exceptions remain: V-254439 and V-254435 (Guests group).
+# All password/lockout policy values are driven by the org.pamdata.xml file.
 
 Write-Host "=== create_mof.ps1 starting ==="
 
+# -----------------------------------------------------------------------
 # Ensuring all module paths are in PSModulePath
+# -----------------------------------------------------------------------
 $requiredPaths = @(
     "C:\Program Files\WindowsPowerShell\Modules",
     "C:\Windows\system32\WindowsPowerShell\v1.0\Modules",
@@ -16,7 +29,9 @@ foreach ($p in $requiredPaths) {
     }
 }
 
+# -----------------------------------------------------------------------
 # Detecting latest PowerSTIG module
+# -----------------------------------------------------------------------
 $module = Get-Module PowerSTIG -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
 if (-not $module) {
     Write-Error "PowerSTIG module not found. Ensure install_PowerSTIG.ps1 ran successfully."
@@ -25,7 +40,9 @@ if (-not $module) {
 $pstigVersion = $module.Version.ToString()
 Write-Host "Found PowerSTIG module $pstigVersion at: $($module.ModuleBase)"
 
+# -----------------------------------------------------------------------
 # Detecting STIG XML and parse version
+# -----------------------------------------------------------------------
 $stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
 $stigXml = Get-ChildItem -Path $stigDataPath -Filter "WindowsServer-2022-MS-*.org.default.xml" |
            Sort-Object Name -Descending | Select-Object -First 1
@@ -37,7 +54,9 @@ $stigVersionString = ($stigXml.Name -replace 'WindowsServer-2022-MS-', '' -repla
 Write-Host "Detected STIG XML: $($stigXml.FullName)"
 Write-Host "Detected STIG version: $stigVersionString"
 
+# -----------------------------------------------------------------------
 # Paths
+# -----------------------------------------------------------------------
 $HardeningDir = $PSScriptRoot
 $OutputPath   = Join-Path $HardeningDir "MOF"
 $OrgSettings  = Join-Path $HardeningDir ($stigXml.Name -replace '\.org\.default\.xml', '.org.pamdata.xml')
@@ -53,7 +72,9 @@ if (!(Test-Path $OutputPath)) {
     Write-Host "Created MOF output directory: $OutputPath"
 }
 
-# Verify DSC resource
+# -----------------------------------------------------------------------
+# Verify DSC resource is available
+# -----------------------------------------------------------------------
 Import-Module -Name PowerSTIG -RequiredVersion $pstigVersion -Force
 try {
     $dscCheck = Get-DscResource -Name WindowsServer -Module PowerSTIG -ErrorAction Stop
@@ -63,7 +84,9 @@ try {
     exit 1
 }
 
-# Generate temporary DSC configuration script.
+# -----------------------------------------------------------------------
+# Generate temporary DSC configuration script
+# -----------------------------------------------------------------------
 $tempScript = Join-Path $env:TEMP "dsc_config_generated.ps1"
 
 $safeOutputPath  = $OutputPath  -replace "'", "''"
@@ -81,23 +104,25 @@ Configuration ApplyWindowsServerStig {
             OrgSettings = '$safeOrgSettings'
 
             # ---------------------------------------------------------------
-            # EXCEPTION RULES EXPLAINED
+            # EXCEPTION RULES — ISSO-APPROVED DEVIATIONS ONLY
             # ---------------------------------------------------------------
-            # Only add Exceptions when you have a documented ISSO-approved
-            # reason to deviate from the STIG default. Wrong exceptions here
-            # will cause SCAP failures even after the script runs.
+            # All password policy, lockout policy, and security option values
+            # are driven by OrgSettings (pamdata.xml). Do NOT add exceptions
+            # for those rules here — exceptions override pamdata.xml and will
+            # cause SCAP failures.
             #
-            # REMOVED (were causing SCAP failures):
-            #   'V-254446' ValueData='0'        -> Disabled blank-password protection (CAT I!)
-            #   'V-254289' PolicyValue='0'      -> Set max password age to NEVER
-            #   'V-254290' PolicyValue='0'      -> Set min password age to 0
-            #   'V-254291' PolicyValue='0'      -> Set min password length to 0
-            #   'V-254292' PolicyValue='Disabled'-> Disabled password complexity
-            #   'V-254501' Identity='Everyone'  -> Granted Everyone remote shutdown right
+            # REMOVED exceptions that caused SCAP failures:
+            #   V-254446 ValueData='0'          -> Disabled blank-password protection (CAT I)
+            #   V-254289 PolicyValue='0'         -> Max password age = NEVER
+            #   V-254290 PolicyValue='0'         -> Min password age = 0
+            #   V-254291 PolicyValue='0'         -> Min password length = 0
+            #   V-254292 PolicyValue='Disabled'  -> Disabled password complexity
+            #   V-254501 Identity='Everyone'     -> Granted Everyone remote shutdown
             # ---------------------------------------------------------------
             Exception = @{
-                # Keep only legitimate exceptions with ISSO approval:
+                # V-254439: Deny log on as a service — Guests only
                 'V-254439' = @{ 'Identity' = 'Guests' }
+                # V-254435: Deny log on as a batch job — Guests only
                 'V-254435' = @{ 'Identity' = 'Guests' }
             }
 
@@ -115,7 +140,10 @@ ApplyWindowsServerStig -OutputPath '$safeOutputPath'
 Set-Content -Path $tempScript -Value $scriptContent -Encoding UTF8
 Write-Host "Generated temporary DSC config script: $tempScript"
 
+# -----------------------------------------------------------------------
 # Spawn a fresh PowerShell process to compile the MOF.
+# A new process avoids CIM class caching issues from the current session.
+# -----------------------------------------------------------------------
 Write-Host "=== Generating MOF... ==="
 $result = Start-Process powershell `
     -ArgumentList "-ExecutionPolicy Bypass -NonInteractive -File `"$tempScript`"" `
@@ -128,12 +156,22 @@ if ($result.ExitCode -ne 0) {
     exit $result.ExitCode
 }
 
+# -----------------------------------------------------------------------
 # Verify MOF was created
+# -----------------------------------------------------------------------
 $mofFile = Join-Path $OutputPath "localhost.mof"
 if (!(Test-Path $mofFile)) {
     Write-Error "MOF file was not generated at: $mofFile"
     exit 1
 }
 
-Write-Host "MOF generated: $mofFile"
+# Display MOF size as a quick sanity check (a truncated/empty MOF is a red flag)
+$mofSize = (Get-Item $mofFile).Length
+Write-Host "MOF generated: $mofFile (size: $mofSize bytes)"
+
+if ($mofSize -lt 50000) {
+    Write-Warning "MOF file is unusually small ($mofSize bytes). Expected > 50 KB."
+    Write-Warning "This may indicate that many STIG rules were skipped or the compilation was incomplete."
+}
+
 Write-Host "=== DSC configuration compiled successfully ==="

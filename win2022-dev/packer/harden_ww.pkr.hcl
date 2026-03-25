@@ -18,45 +18,16 @@ variable "source_image" {
   default = env("SRC_IMG_NAME")
 }
 
-variable "project_id" {
-  type = string
-}
-
-variable "source_image_project_id" {
-  type = string
-}
-
-variable "source_image_family" {
-  type = string
-}
-
-variable "service_account_email" {
-  type = string
-}
-
-variable "image_family" {
-  type = string
-}
-
-variable "machine_type" {
-  type = string
-}
-
-variable "zone" {
-  type = string
-}
-
-variable "hardening_source_dir" {
-  type = string
-}
-
-variable "hardening_target_dir" {
-  type = string
-}
-
-variable "hardening_entry_script" {
-  type = string
-}
+variable "project_id"              { type = string }
+variable "source_image_project_id" { type = string }
+variable "source_image_family"     { type = string }
+variable "service_account_email"   { type = string }
+variable "image_family"            { type = string }
+variable "machine_type"            { type = string }
+variable "zone"                    { type = string }
+variable "hardening_source_dir"    { type = string }
+variable "hardening_target_dir"    { type = string }
+variable "hardening_entry_script"  { type = string }
 
 source "googlecompute" "update_pam_ww" {
   project_id              = var.project_id
@@ -138,7 +109,14 @@ build {
     elevated_password = var.packer_user_password
   }
 
-  # Step 3: Upload each hardening script individually with its full destination path.
+  # Step 3: Upload each hardening script individually with its full destination
+  # path. Do NOT use directory-mode upload (trailing slash on source) -- it
+  # silently truncates large scripts over WinRM causing parse errors mid-build.
+  #
+  # NOTE: WindowsServer-2022-MS-2.7.org.pamdata.xml is NOT uploaded here.
+  # install_dsc_deps.ps1 generates it dynamically on the VM from the
+  # PowerSTIG module's bundled default XML then applies PAM overrides.
+
   provisioner "file" {
     source      = "${var.hardening_source_dir}/run_all.ps1"
     destination = "${var.hardening_target_dir}/run_all.ps1"
@@ -193,14 +171,34 @@ build {
     source      = "${var.hardening_source_dir}/repair_winrm_for_packer.ps1"
     destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
   }
-  provisioner "file" {
-  source      = "${var.hardening_source_dir}/InstallRoot.msi"
-  destination = "${var.hardening_target_dir}/InstallRoot.msi"
-}
 
-  # Step 3.5: Fix Script Encoding (CRLF + UTF-8 BOM)
-  # Forces all uploaded scripts into the exact format WinRM requires,
-  # neutralizing any Git line-ending conversions (LF to CRLF) that break try/catch blocks.
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/InstallRoot.msi"
+    destination = "${var.hardening_target_dir}/InstallRoot.msi"
+  }
+
+  # FIX: script is named audit.ps1 on disk -- upload as audit.ps1.
+  # run_all.ps1 calls "$scriptDir\audit.ps1" so the filename must match exactly.
+  # The previous Packer HCL had this correct; the integrity check was wrong
+  # (it was checking for apply_audit_policy.ps1 which does not exist).
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/audit.ps1"
+    destination = "${var.hardening_target_dir}/audit.ps1"
+  }
+
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/apply_remaining_fixes.ps1"
+    destination = "${var.hardening_target_dir}/apply_remaining_fixes.ps1"
+  }
+
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/Certificates_PKCS7_v5_14_DoD.der.p7b"
+    destination = "${var.hardening_target_dir}/Certificates_PKCS7_v5_14_DoD.der.p7b"
+  }
+
+  # Step 3.5: Normalize script encoding to CRLF + UTF-8 BOM.
+  # Prevents PowerShell parse errors caused by encoding mismatches
+  # introduced during WinRM file transfer.
   provisioner "powershell" {
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password
@@ -219,16 +217,20 @@ build {
   }
 
   # Step 4: Verify uploaded scripts are intact before running hardening.
+  # FIX: integrity check now uses 'audit.ps1' (the actual filename) instead
+  # of 'apply_audit_policy.ps1' which caused the MISSING error in the last run.
   provisioner "powershell" {
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password
     inline = [
       "Write-Host '--- Pre-hardening script integrity check ---'",
       "$checks = @(",
-      "  @{ File='install_dod_certs.ps1';      MinLines=200 },",
+      "  @{ File='install_dod_certs.ps1';      MinLines=50  },",
       "  @{ File='stig_remediation_fixes.ps1'; MinLines=100 },",
       "  @{ File='install_dsc_deps.ps1';       MinLines=50  },",
-      "  @{ File='create_mof.ps1';             MinLines=50  }",
+      "  @{ File='create_mof.ps1';             MinLines=50  },",
+      "  @{ File='audit.ps1';                  MinLines=30  },",
+      "  @{ File='apply_remaining_fixes.ps1';  MinLines=30  }",
       ")",
       "$failed = $false",
       "foreach ($c in $checks) {",

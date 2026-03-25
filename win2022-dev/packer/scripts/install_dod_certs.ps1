@@ -45,3 +45,21 @@ if ($appliedCerts.Count -eq 0) {
 }
 
 Write-Host "`nAll done." -ForegroundColor Cyan
+
+# ------------------------------------------------------------
+# Notes / Comments:
+# 1. Cloud Run / Packer sometimes truncates long scripts; consider splitting each V-ID import into separate .ps1 files.
+# 2. Ensure script is saved as UTF-8 without BOM and CRLF line endings.
+# 3. Running as Admin is required to write to LocalMachine stores.
+# 4. DoD Root certs are skipped by default; if needed, remove the skip check.
+# 5. Verification prints the subject, expiration date, and thumbprint of applied certificates.
+# ------------------------------------------------------------
+
+# ------------------------------------------------------------
+# Notes / Comments:
+# 1. Cloud Run / Packer sometimes truncates long scripts; consider splitting each V-ID import into separate .ps1 files.
+# 2. Ensure script is saved as UTF-8 without BOM and CRLF line endings.
+# 3. Running as Admin is required to write to LocalMachine stores.
+# 4. DoD Root certs are skipped by default; if needed, remove the skip check.
+# 5. Verification prints the subject, expiration date, and thumbprint of applied certificates.
+# ------------------------------------------------------------

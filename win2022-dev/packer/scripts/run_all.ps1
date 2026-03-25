@@ -11,7 +11,9 @@
     3. DSC MOF must be created before it is applied
     4. account_policy.ps1 runs AFTER apply_mof.ps1 (DSC cannot undo secedit writes)
     5. stig_remediation_fixes.ps1 runs AFTER apply_mof.ps1 (same reason)
-    6. repair_winrm_for_packer.ps1 runs LAST (must not be undone by any STIG script)
+    6. apply_audit_policy.ps1 runs AFTER apply_mof.ps1 (V-278942 to V-278947)
+    7. apply_remaining_fixes.ps1 runs AFTER apply_mof.ps1 (V-254251/258/261)
+    8. repair_winrm_for_packer.ps1 runs LAST (must not be undone by any STIG script)
  
     FIX: Added script integrity check for install_dod_certs.ps1 to catch
          WinRM file upload truncation before it causes a silent parse failure.
@@ -20,10 +22,12 @@
     FIX: Added DSC compliance audit at end with pass/fail counts.
     FIX: Replaced all smart/curly quotes with straight quotes to prevent
          PowerShell parse errors.
+    FIX: Added apply_audit_policy.ps1 (V-278942 to V-278947) and
+         apply_remaining_fixes.ps1 (V-254251/258/261) to Step 4.
 #>
  
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Continue'  # Don't abort the whole pipeline on non-fatal step errors
+$ErrorActionPreference = 'Continue'
  
 Write-Host "========== START STIG HARDENING ==========" -ForegroundColor Cyan
 Write-Host "  Start time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
@@ -38,7 +42,7 @@ function Invoke-Step {
     param(
         [string]$ScriptPath,
         [string]$Label,
-        [switch]$AllowFailure   # Pass this flag for non-critical steps
+        [switch]$AllowFailure
     )
  
     Write-Host "`n--- $Label ---" -ForegroundColor Yellow
@@ -50,14 +54,11 @@ function Invoke-Step {
         return
     }
  
-    # Reset exit code to prevent phantom errors from bleeding into the next step
     $global:LASTEXITCODE = 0
     $stepFailed = $false
  
     try {
-        # Run the script in the current session context
         & $ScriptPath
-        
         if ($global:LASTEXITCODE -ne 0) { $stepFailed = $true }
     } catch {
         Write-Warning "Unhandled exception in $Label : $_"
@@ -80,17 +81,16 @@ function Invoke-Step {
  
 # -----------------------------------------------------------------------
 # PRE-FLIGHT: Verify critical scripts are not truncated
-# Packer's WinRM file upload can silently truncate large scripts when the
-# destination path is a directory instead of a full file path.
 # -----------------------------------------------------------------------
 Write-Host "`n--- Pre-flight: Script integrity checks ---" -ForegroundColor Yellow
  
 $integrityChecks = @(
-    # FIX: Lowered MinLines to 50 for install_dod_certs.ps1 because the new MSI logic is much shorter!
-    @{ Path = "$scriptDir\install_dod_certs.ps1";       MinLines = 50;  Label = "install_dod_certs.ps1"  }
-    @{ Path = "$scriptDir\stig_remediation_fixes.ps1";  MinLines = 100; Label = "stig_remediation_fixes" }
-    @{ Path = "$scriptDir\install_dsc_deps.ps1";        MinLines = 50;  Label = "install_dsc_deps.ps1"   }
-    @{ Path = "$scriptDir\create_mof.ps1";              MinLines = 50;  Label = "create_mof.ps1"         }
+    @{ Path = "$scriptDir\install_dod_certs.ps1";          MinLines = 50;  Label = "install_dod_certs.ps1"      }
+    @{ Path = "$scriptDir\stig_remediation_fixes.ps1";     MinLines = 100; Label = "stig_remediation_fixes"     }
+    @{ Path = "$scriptDir\install_dsc_deps.ps1";           MinLines = 50;  Label = "install_dsc_deps.ps1"       }
+    @{ Path = "$scriptDir\create_mof.ps1";                 MinLines = 50;  Label = "create_mof.ps1"             }
+    @{ Path = "$scriptDir\audit.ps1";                      MinLines = 30;  Label = "apply_audit_policy.ps1"     }
+    @{ Path = "$scriptDir\apply_remaining_fixes.ps1";      MinLines = 30;  Label = "apply_remaining_fixes.ps1"  }
 )
  
 $integrityFail = $false
@@ -122,51 +122,45 @@ if ($integrityFail) {
  
 # -----------------------------------------------------------------------
 # STEP 1 -- Install PowerSTIG and DSC dependencies
-# Must run first. Removes duplicate CertificateDsc copies before installing
-# to prevent CIM class conflict errors during MOF compilation.
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\install_PowerSTIG.ps1"   "Install PowerSTIG"
 Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (removes CIM duplicates)"
  
 # -----------------------------------------------------------------------
-# STEP 2 -- Install DoD Certificates
-# Must run BEFORE create_mof.ps1 / apply_mof.ps1 so that DSC certificate
-# verification rules find the certs already in the store.
-# V-254442, V-254443, V-254444
+# STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
+# Must run BEFORE create_mof.ps1 so DSC certificate checks find certs already installed.
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-254442/443/444)" -AllowFailure
  
 # -----------------------------------------------------------------------
 # STEP 3 -- Create and apply the DSC MOF
-# create_mof.ps1 now has all bad Exception entries removed.
-# apply_mof.ps1 will have DSC SCE lock failures for account policy --
-# those are fixed by account_policy.ps1 in Step 4.
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
 Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
  
 # -----------------------------------------------------------------------
 # STEP 4 -- Post-DSC targeted fixes
-# These MUST run AFTER apply_mof.ps1.
-# DSC cannot undo secedit or direct registry writes -- running these after
+# All scripts below MUST run AFTER apply_mof.ps1.
+# DSC cannot undo secedit/registry/auditpol writes -- running these after
 # DSC ensures they are the final state baked into the image.
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\registry_stig.ps1"            "Registry STIG fixes"         -AllowFailure
-Invoke-Step "$scriptDir\services_stig.ps1"            "Services STIG fixes"         -AllowFailure
- 
-# account_policy.ps1 uses BOTH net accounts AND secedit to reliably set
-# policies that DSC's MSFT_AccountPolicy often fails to apply due to SCE lock.
-# Covers: V-254285, V-254286, V-254287, V-254288, V-254289, V-254290, V-254291, V-254292
+Invoke-Step "$scriptDir\registry_stig.ps1"            "Registry STIG fixes"                              -AllowFailure
+Invoke-Step "$scriptDir\services_stig.ps1"            "Services STIG fixes"                              -AllowFailure
+
+# V-254285/286/287/288/289/290/291/292 -- password and lockout policy
 Invoke-Step "$scriptDir\account_policy.ps1"           "Account Policy (net accounts + secedit)"
- 
-# Targeted fixes for the remaining 22 SCAP failures (CAT I + CAT II)
-Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"   "Targeted STIG remediation (22 failures)" -AllowFailure
+
+# V-278942/943/944/945/946/947 -- audit file system, handle manipulation, registry
+Invoke-Step "$scriptDir\audit.ps1"                    "Audit Subcategory Policy (V-278942 to V-278947)"  -AllowFailure
+
+# V-254251/258/261 -- C:\ permissions, password expiry, cert file removal
+Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"    "Remaining STIG fixes (V-254251/258/261)"          -AllowFailure
+
+# Broader targeted fixes for remaining SCAP failures
+Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"   "Targeted STIG remediation"                        -AllowFailure
  
 # -----------------------------------------------------------------------
-# STEP 5 -- Repair WinRM for Packer
-# MUST be the LAST script. Packer needs WinRM to reconnect after hardening
-# to upload its cleanup script and capture the image.
-# This restores Packer's auth without undoing any STIG controls.
+# STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1"  "Repair WinRM for Packer (LAST step)"
  
@@ -220,8 +214,4 @@ if ($globalFails -gt 0) {
 }
  
 Write-Host "==========================================" -ForegroundColor Cyan
-
-# -----------------------------------------------------------------------
-# Stop phantom exit codes from failing the Packer build
-# -----------------------------------------------------------------------
 exit 0

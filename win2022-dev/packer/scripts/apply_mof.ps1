@@ -57,6 +57,9 @@ try {
     Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose -ErrorAction Stop
 
     Write-Host "=== DSC configuration applied successfully ===" -ForegroundColor Green
+    
+    # Force clean exit code on success to prevent phantom exit code leaks
+    exit 0
 
 } catch {
     # Start-DscConfiguration throws on hard failures (e.g. MOF parse error,

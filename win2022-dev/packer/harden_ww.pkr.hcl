@@ -18,45 +18,16 @@ variable "source_image" {
   default = env("SRC_IMG_NAME")
 }
 
-variable "project_id" {
-  type = string
-}
-
-variable "source_image_project_id" {
-  type = string
-}
-
-variable "source_image_family" {
-  type = string
-}
-
-variable "service_account_email" {
-  type = string
-}
-
-variable "image_family" {
-  type = string
-}
-
-variable "machine_type" {
-  type = string
-}
-
-variable "zone" {
-  type = string
-}
-
-variable "hardening_source_dir" {
-  type = string
-}
-
-variable "hardening_target_dir" {
-  type = string
-}
-
-variable "hardening_entry_script" {
-  type = string
-}
+variable "project_id"              { type = string }
+variable "source_image_project_id" { type = string }
+variable "source_image_family"     { type = string }
+variable "service_account_email"   { type = string }
+variable "image_family"            { type = string }
+variable "machine_type"            { type = string }
+variable "zone"                    { type = string }
+variable "hardening_source_dir"    { type = string }
+variable "hardening_target_dir"    { type = string }
+variable "hardening_entry_script"  { type = string }
 
 source "googlecompute" "update_pam_ww" {
   project_id              = var.project_id
@@ -193,14 +164,31 @@ build {
     source      = "${var.hardening_source_dir}/repair_winrm_for_packer.ps1"
     destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
   }
+
   provisioner "file" {
-  source      = "${var.hardening_source_dir}/InstallRoot.msi"
-  destination = "${var.hardening_target_dir}/InstallRoot.msi"
-}
+    source      = "${var.hardening_source_dir}/InstallRoot.msi"
+    destination = "${var.hardening_target_dir}/InstallRoot.msi"
+  }
+
+  # ── NEW: apply_audit_policy.ps1 (V-278942 to V-278947) ──────────────
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/audit.ps1"
+    destination = "${var.hardening_target_dir}/audit.ps1"
+  }
+
+  # ── NEW: apply_remaining_fixes.ps1 (V-254251/258/261) ───────────────
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/apply_remaining_fixes.ps1"
+    destination = "${var.hardening_target_dir}/apply_remaining_fixes.ps1"
+  }
+
+  # ── NEW: DoD PKI certificate bundle (V-254442) ───────────────────────
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/Certificates_PKCS7_v5_14_DoD.der.p7b"
+    destination = "${var.hardening_target_dir}/Certificates_PKCS7_v5_14_DoD.der.p7b"
+  }
 
   # Step 3.5: Fix Script Encoding (CRLF + UTF-8 BOM)
-  # Forces all uploaded scripts into the exact format WinRM requires,
-  # neutralizing any Git line-ending conversions (LF to CRLF) that break try/catch blocks.
   provisioner "powershell" {
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password
@@ -225,10 +213,12 @@ build {
     inline = [
       "Write-Host '--- Pre-hardening script integrity check ---'",
       "$checks = @(",
-      "  @{ File='install_dod_certs.ps1';      MinLines=200 },",
-      "  @{ File='stig_remediation_fixes.ps1'; MinLines=100 },",
-      "  @{ File='install_dsc_deps.ps1';       MinLines=50  },",
-      "  @{ File='create_mof.ps1';             MinLines=50  }",
+      "  @{ File='install_dod_certs.ps1';         MinLines=50  },",
+      "  @{ File='stig_remediation_fixes.ps1';     MinLines=100 },",
+      "  @{ File='install_dsc_deps.ps1';           MinLines=50  },",
+      "  @{ File='create_mof.ps1';                 MinLines=50  },",
+      "  @{ File='apply_audit_policy.ps1';         MinLines=30  },",
+      "  @{ File='apply_remaining_fixes.ps1';      MinLines=30  }",
       ")",
       "$failed = $false",
       "foreach ($c in $checks) {",

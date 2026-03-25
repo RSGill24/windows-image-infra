@@ -92,7 +92,7 @@ foreach ($check in $integrityChecks) {
         if ($lineCount -lt $check.MinLines) {
             Write-Host "  [FAIL] $($check.Label) appears TRUNCATED ($lineCount lines, expected >= $($check.MinLines))" -ForegroundColor Red
             Write-Host "         Check your Packer file provisioner — destination must include the filename," -ForegroundColor Red
-            Write-Host "         e.g.:  destination = `"C:/Users/packer_user/hardening/$($check.Label)`"" -ForegroundColor Red
+            Write-Host ('         e.g.:  destination = "C:/Users/packer_user/hardening/{0}"' -f $check.Label) -ForegroundColor Red
             $integrityFail = $true
         } else {
             Write-Host "  [OK]  $($check.Label)" -ForegroundColor Green

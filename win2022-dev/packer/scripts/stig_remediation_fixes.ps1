@@ -386,5 +386,5 @@ if ($ErrorCount -eq 0) {
 } else {
     Write-Host "  $ErrorCount item(s) need attention (see WARN messages above)." -ForegroundColor Yellow
 }
-
+$global:LASTEXITCODE = 0
 exit $ErrorCount

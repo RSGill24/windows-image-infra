@@ -194,8 +194,8 @@ build {
     destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
   }
   provisioner "file" {
-  source      = "${var.hardening_source_dir}/install.msi"
-  destination = "${var.hardening_target_dir}/install.msi"
+  source      = "${var.hardening_source_dir}/InstallRoot.msi"
+  destination = "${var.hardening_target_dir}/InstallRoot.msi"
 }
 
   # Step 3.5: Fix Script Encoding (CRLF + UTF-8 BOM)

@@ -157,5 +157,5 @@ if ($ErrorCount -eq 0) {
 } else {
     Write-Host "  $ErrorCount policy/policies need manual attention." -ForegroundColor Yellow
 }
-
+$global:LASTEXITCODE = 0
 exit $ErrorCount

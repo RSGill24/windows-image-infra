@@ -138,16 +138,7 @@ build {
     elevated_password = var.packer_user_password
   }
 
-  # Step 3: Upload each hardening script individually with its full destination
-  # path. Do NOT use directory-mode upload (trailing slash on source) — it
-  # silently truncates large scripts over WinRM, causing parse errors like
-  # MissingEndCurlyBrace mid-build.
-  #
-  # NOTE: WindowsServer-2022-MS-2.7.org.pamdata.xml is NOT uploaded here.
-  # It does not exist at build time — install_dsc_deps.ps1 generates it
-  # dynamically on the VM from the PowerSTIG module's bundled default XML
-  # and then applies the PAM overrides defined in that script.
-
+  # Step 3: Upload each hardening script individually with its full destination path.
   provisioner "file" {
     source      = "${var.hardening_source_dir}/run_all.ps1"
     destination = "${var.hardening_target_dir}/run_all.ps1"
@@ -203,9 +194,27 @@ build {
     destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
   }
 
+  # Step 3.5: Fix Script Encoding (CRLF + UTF-8 BOM)
+  # Forces all uploaded scripts into the exact format WinRM requires,
+  # neutralizing any Git line-ending conversions (LF to CRLF) that break try/catch blocks.
+  provisioner "powershell" {
+    elevated_user     = "packer_user"
+    elevated_password = var.packer_user_password
+    inline = [
+      "Write-Host '--- Fixing File Encodings (CRLF + UTF-8 BOM) ---'",
+      "$targetDir = '${var.hardening_target_dir}'",
+      "Get-ChildItem -Path $targetDir -Filter *.ps1 | ForEach-Object {",
+      "  $content = [System.IO.File]::ReadAllText($_.FullName)",
+      "  $content = $content -replace \"`r`n\", \"`n\" -replace \"`n\", \"`r`n\"",
+      "  $utf8Bom = New-Object System.Text.UTF8Encoding($true)",
+      "  [System.IO.File]::WriteAllText($_.FullName, $content, $utf8Bom)",
+      "  Write-Host \"Normalized encoding for: $($_.Name)\"",
+      "}",
+      "Write-Host 'Encoding normalization complete.'"
+    ]
+  }
+
   # Step 4: Verify uploaded scripts are intact before running hardening.
-  # Catches WinRM truncation early with a clear error rather than a cryptic
-  # PowerShell parse failure mid-build.
   provisioner "powershell" {
     elevated_user     = "packer_user"
     elevated_password = var.packer_user_password
@@ -239,10 +248,6 @@ build {
   }
 
   # Step 5: Run the STIG hardening pipeline.
-  # FIX: 'execution_timeout' is not a valid argument for the powershell
-  # provisioner — the correct argument is 'timeout' (a duration string).
-  # Set to 85m, just under the 90m winrm_timeout, so Packer reports a
-  # clean timeout error rather than a confusing WinRM disconnect.
   provisioner "powershell" {
     inline = [
       "Set-Location '${var.hardening_target_dir}'",

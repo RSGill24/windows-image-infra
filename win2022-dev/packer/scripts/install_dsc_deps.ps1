@@ -1,9 +1,6 @@
 # install_dsc_deps.ps1
-# Installs PowerSTIG dependencies, copies modules to DSC LCM path,
-# generates org settings XML with PAM overrides.
+# Installs PowerSTIG dependencies and generates org settings XML with PAM overrides.
 # Safe for GCP Cloud Build / Packer pipelines.
-# FIX: Removes duplicate CertificateDsc module copies before installing
-#      to prevent "A second CIM class definition" DSC compilation errors.
 
 param (
     [string]$HardeningDir = $PSScriptRoot
@@ -14,8 +11,7 @@ Write-Host "=== Installing PowerSTIG dependencies ==="
 # -----------------------------------------------------------------------
 # Step 0: Import PowerSTIG and detect latest module
 # -----------------------------------------------------------------------
-$module = Get-Module PowerSTIG -ListAvailable |
-          Sort-Object Version -Descending | Select-Object -First 1
+$module = Get-Module PowerSTIG -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
 
 if (-not $module) {
     Write-Error "PowerSTIG module not found. Run install_PowerSTIG.ps1 first."
@@ -27,75 +23,49 @@ $systemModulePath = "C:\Program Files\WindowsPowerShell\Modules"
 $dscSystemPath    = "C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 
 # -----------------------------------------------------------------------
-# FIX 1: Remove duplicate module copies from BOTH paths before installing
-# This prevents "A second CIM class definition for DSC_CertificateImport"
-# errors that occur when CertificateDsc 5.0.0 exists in both:
-#   C:\Program Files\WindowsPowerShell\Modules\CertificateDsc\5.0.0
-#   C:\Windows\system32\WindowsPowerShell\v1.0\Modules\CertificateDsc\5.0.0
+# Step 1: Aggressively purge duplicate modules from BOTH paths.
+# The base image may have pre-installed DSC modules locked by TrustedInstaller.
+# Leaving clones in System32 causes DSC to throw fatal 
+# "A second CIM class definition" errors during MOF compilation.
 # -----------------------------------------------------------------------
-Write-Host "--- Removing duplicate/stale module copies to prevent CIM conflicts..."
+Write-Host "--- Removing duplicate modules to prevent CIM conflicts..."
 
 foreach ($dep in $module.RequiredModules) {
-    # Remove from Program Files path (we will re-install cleanly via Install-Module)
-    $pfVersionPath = Join-Path $systemModulePath "$($dep.Name)\$($dep.Version)"
-    if (Test-Path $pfVersionPath) {
-        Write-Host "  Removing stale copy: $pfVersionPath"
-        Remove-Item $pfVersionPath -Recurse -Force -ErrorAction SilentlyContinue
+    
+    # 1. Purge from System32 completely (bypassing TrustedInstaller)
+    $dscDepPath = Join-Path $dscSystemPath $dep.Name
+    if (Test-Path $dscDepPath) {
+        Write-Host "  Nuking conflicting System32 path: $dscDepPath" -ForegroundColor Yellow
+        takeown.exe /F $dscDepPath /R /D Y | Out-Null
+        icacls.exe $dscDepPath /grant "Administrators:(OI)(CI)F" /T /Q | Out-Null
+        Remove-Item $dscDepPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    
+    # 2. Purge from Program Files (removes older versions if present)
+    $pfDepPath = Join-Path $systemModulePath $dep.Name
+    if (Test-Path $pfDepPath) {
+        Write-Host "  Removing old Program Files path: $pfDepPath"
+        Remove-Item $pfDepPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # Remove from system32 DSC path (we will re-copy after Install-Module)
-    $dscVersionPath = Join-Path $dscSystemPath "$($dep.Name)\$($dep.Version)"
-    if (Test-Path $dscVersionPath) {
-        Write-Host "  Removing stale DSC copy: $dscVersionPath"
-        Remove-Item $dscVersionPath -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    # 3. Install cleanly into Program Files
+    Write-Host "--- Installing: $($dep.Name) $($dep.Version)"
+    Install-Module -Name $dep.Name -RequiredVersion $dep.Version -Scope AllUsers -Force -AllowClobber
 }
 
-# Also remove stale PowerSTIG copy from DSC system32 path
-$pstigDscPath = Join-Path $dscSystemPath "PowerSTIG\$($module.Version)"
+# Also purge PowerSTIG from System32 if it got copied there during a previous run
+$pstigDscPath = Join-Path $dscSystemPath "PowerSTIG"
 if (Test-Path $pstigDscPath) {
-    Write-Host "  Removing stale PowerSTIG DSC copy: $pstigDscPath"
+    Write-Host "  Nuking conflicting PowerSTIG System32 path: $pstigDscPath" -ForegroundColor Yellow
+    takeown.exe /F $pstigDscPath /R /D Y | Out-Null
+    icacls.exe $pstigDscPath /grant "Administrators:(OI)(CI)F" /T /Q | Out-Null
     Remove-Item $pstigDscPath -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host "  Duplicate cleanup complete."
 
 # -----------------------------------------------------------------------
-# Step 1: Install each dependency fresh and copy to DSC LCM system32 path
-# -----------------------------------------------------------------------
-foreach ($dep in $module.RequiredModules) {
-    Write-Host "--- Installing: $($dep.Name) $($dep.Version)"
-    Install-Module -Name $dep.Name `
-                   -RequiredVersion $dep.Version `
-                   -Scope AllUsers `
-                   -Force `
-                   -AllowClobber
-
-    $srcPath = Join-Path $systemModulePath "$($dep.Name)\$($dep.Version)"
-    $dstDir  = Join-Path $dscSystemPath    $dep.Name
-    $dstPath = Join-Path $dstDir           $dep.Version
-
-    if (Test-Path $srcPath) {
-        if (!(Test-Path $dstDir)) { New-Item -Path $dstDir -ItemType Directory -Force | Out-Null }
-        Write-Host "    Copying to DSC path: $dstPath"
-        Copy-Item -Path $srcPath -Destination $dstPath -Recurse -Force
-    } else {
-        Write-Warning "    Source not found at $srcPath -- skipping copy"
-    }
-}
-
-# -----------------------------------------------------------------------
-# Step 2: Copy PowerSTIG itself into the DSC LCM system32 path
-# -----------------------------------------------------------------------
-$pstigSrc    = $module.ModuleBase
-$pstigDstDir = Join-Path $dscSystemPath "PowerSTIG"
-$pstigDst    = Join-Path $pstigDstDir   $module.Version
-if (!(Test-Path $pstigDstDir)) { New-Item -Path $pstigDstDir -ItemType Directory -Force | Out-Null }
-Copy-Item -Path $pstigSrc -Destination $pstigDst -Recurse -Force
-Write-Host "Copied PowerSTIG module to DSC path: $pstigDst"
-
-# -----------------------------------------------------------------------
-# Step 3: Find the .org.default.xml inside the installed module
+# Step 2: Find the .org.default.xml inside the installed module
 # -----------------------------------------------------------------------
 $stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
 Write-Host "--- Searching for org.default.xml in: $stigDataPath"
@@ -113,8 +83,7 @@ if (-not $defaultOrgFile) {
 Write-Host "Found org.default.xml: $($defaultOrgFile.FullName)"
 
 # -----------------------------------------------------------------------
-# Step 4: Copy the default XML to the hardening dir and apply PAM overrides
-# Dynamic filename -- picks up whatever version is installed (2.7, 3.0, etc.)
+# Step 3: Copy the default XML to the hardening dir and apply PAM overrides
 # -----------------------------------------------------------------------
 $outputOrgXml = Join-Path $HardeningDir ($defaultOrgFile.Name -replace '\.org\.default\.xml', '.org.pamdata.xml')
 Copy-Item -Path $defaultOrgFile.FullName -Destination $outputOrgXml -Force
@@ -124,19 +93,16 @@ Write-Host "Copied XML to: $outputOrgXml"
 
 Write-Host "--- Applying PAM org setting overrides..."
 
-# FIX 2: Corrected override values to match STIG requirements exactly.
-# Previously V-254291 was set to 13 (below STIG minimum of 14) and
-# V-254290 comment said 1 but value was 10. Both corrected here.
 $overrides = @{
     "V-254248" = @{ ServiceName="WinDefend";  StartupType="Automatic" }
     "V-254265" = @{ ServiceName="MpsSvc";     StartupType="Automatic" }
-    "V-254285" = @{ PolicyValue="15" }   # Account lockout duration >= 15 min
-    "V-254286" = @{ PolicyValue="3"  }   # Account lockout threshold <= 3
-    "V-254287" = @{ PolicyValue="15" }   # Reset lockout counter after >= 15 min
-    "V-254288" = @{ PolicyValue="24" }   # Password history = 24
-    "V-254289" = @{ PolicyValue="60" }   # Max password age = 60 days
-    "V-254290" = @{ PolicyValue="1"  }   # Min password age = 1 day  (FIX: was 10)
-    "V-254291" = @{ PolicyValue="15" }   # Min password length = 15  (FIX: was 13, STIG min is 14)
+    "V-254285" = @{ PolicyValue="15" }   
+    "V-254286" = @{ PolicyValue="3"  }   
+    "V-254287" = @{ PolicyValue="15" }   
+    "V-254288" = @{ PolicyValue="24" }   
+    "V-254289" = @{ PolicyValue="60" }   
+    "V-254290" = @{ PolicyValue="1"  }   
+    "V-254291" = @{ PolicyValue="15" }   
 }
 
 foreach ($vid in $overrides.Keys) {
@@ -145,8 +111,7 @@ foreach ($vid in $overrides.Keys) {
         foreach ($attr in $overrides[$vid].Keys) {
             $node.SetAttribute($attr, $overrides[$vid][$attr])
         }
-        Write-Host "  Set $vid overrides:"
-        $overrides[$vid].GetEnumerator() | ForEach-Object { Write-Host "    $($_.Key) = $($_.Value)" }
+        Write-Host "  Set $vid overrides"
     } else {
         Write-Warning "  $vid not found in XML — skipping"
     }
@@ -157,11 +122,9 @@ $orgXml.Save($outputOrgXml)
 Write-Host "Org settings XML saved to: $outputOrgXml"
 
 # -----------------------------------------------------------------------
-# Step 5: Verify DSC resources — confirm no duplicate CIM errors remain
+# Step 4: Verify DSC resources
 # -----------------------------------------------------------------------
 Write-Host "--- Verifying DSC resources..."
-
-# Force a fresh module load to surface any remaining CIM conflicts early
 $dscResources = Get-DscResource -Module PowerSTIG -ErrorAction SilentlyContinue
 if ($dscResources) {
     $dscResources | Select-Object -First 5 | ForEach-Object {
@@ -171,4 +134,5 @@ if ($dscResources) {
     Write-Warning "  No DSC resources returned — check for CIM class conflicts in event log"
 }
 
-Write-Host "=== Dependencies installed successfully. ==="
+Write-Host "=== Dependencies installed successfully ==="
+exit 0

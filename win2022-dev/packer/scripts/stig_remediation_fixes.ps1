@@ -88,7 +88,9 @@ Write-Section "CAT II: V-254258 — Passwords must be configured to expire"
 # The scan found 'robert_johnson' with PasswordExpires=False.
 # We set all enabled local accounts (excluding service/system accounts) to expire.
 
-$excludeAccounts = @('DefaultAccount', 'WDAGUtilityAccount', 'Guest')
+# Exclude system accounts AND Packer build accounts — packer_user must keep
+# its session alive for WinRM cleanup after this script runs.
+$excludeAccounts = @('DefaultAccount', 'WDAGUtilityAccount', 'Guest', 'packer_user', 'packer', 'WinRMUser')
 
 Get-CimInstance -Class Win32_Useraccount `
     -Filter "PasswordExpires=False and LocalAccount=True and Disabled=False" |
@@ -568,8 +570,8 @@ Write-Host @"
   RULES FIXED IN THIS SCRIPT:
     [SCRIPTED]  V-254446  CAT I  — Blank password network logon (registry)
     [SCRIPTED]  V-254289  CAT II — Max password age = 60 days
-    [SCRIPTED]  V-254290  CAT II — Min password age = 10 day
-    [SCRIPTED]  V-254291  CAT II — Min password length = 13
+    [SCRIPTED]  V-254290  CAT II — Min password age = 1 day
+    [SCRIPTED]  V-254291  CAT II — Min password length = 15
     [SCRIPTED]  V-254292  CAT II — Password complexity enabled
     [SCRIPTED]  V-254242  CAT II — App account password length (covered by local policy)
     [SCRIPTED]  V-254258  CAT II — Passwords configured to expire (robert_johnson)

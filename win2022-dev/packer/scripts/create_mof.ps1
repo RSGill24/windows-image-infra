@@ -15,6 +15,45 @@
 Write-Host "=== create_mof.ps1 starting ==="
 
 # -----------------------------------------------------------------------
+# PRE-COMPILATION CIM CONFLICT CLEANUP
+# Aggressively destroys out-of-band DSC modules baked into System32.
+# If these exist alongside the Program Files copies, DSC compilation fails.
+# -----------------------------------------------------------------------
+Write-Host "--- Scanning for duplicate System32 modules ---"
+$sys32Dsc = "C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
+$conflictingModules = @(
+    "AuditPolicyDsc", 
+    "GPRegistryPolicyDsc", 
+    "PSDscResources", 
+    "WindowsDefenderDsc", 
+    "SecurityPolicyDsc", 
+    "AuditSystemDsc", 
+    "CertificateDsc", 
+    "PowerSTIG"
+)
+
+foreach ($mod in $conflictingModules) {
+    $badPath = Join-Path $sys32Dsc $mod
+    if (Test-Path $badPath) {
+        Write-Host "  [!] Found conflict. Force deleting: $badPath" -ForegroundColor Yellow
+        
+        # Strip TrustedInstaller protections using native Windows tools
+        takeown.exe /F $badPath /R /D Y | Out-Null
+        icacls.exe $badPath /grant "Administrators:(OI)(CI)F" /T /Q | Out-Null
+        
+        # Nuke the folder
+        Remove-Item -Path $badPath -Recurse -Force -ErrorAction SilentlyContinue
+        
+        if (Test-Path $badPath) {
+            Write-Warning "  FAILED to delete $badPath. CIM conflicts may occur."
+        } else {
+            Write-Host "  Successfully removed $badPath" -ForegroundColor Green
+        }
+    }
+}
+Write-Host "--- Cleanup complete ---"
+
+# -----------------------------------------------------------------------
 # Ensuring all module paths are in PSModulePath
 # -----------------------------------------------------------------------
 $requiredPaths = @(
@@ -175,3 +214,6 @@ if ($mofSize -lt 50000) {
 }
 
 Write-Host "=== DSC configuration compiled successfully ==="
+
+# Force clean exit code
+exit 0

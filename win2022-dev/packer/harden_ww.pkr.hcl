@@ -193,6 +193,10 @@ build {
     source      = "${var.hardening_source_dir}/repair_winrm_for_packer.ps1"
     destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
   }
+  provisioner "file" {
+  source      = "${var.hardening_source_dir}/install.msi"
+  destination = "${var.hardening_target_dir}/install.msi"
+}
 
   # Step 3.5: Fix Script Encoding (CRLF + UTF-8 BOM)
   # Forces all uploaded scripts into the exact format WinRM requires,

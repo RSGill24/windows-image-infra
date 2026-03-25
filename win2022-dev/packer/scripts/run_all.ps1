@@ -36,6 +36,11 @@ Invoke-Step "$scriptDir\services_stig.ps1"              "Services STIG fixes"
 Invoke-Step "$scriptDir\account_policy.ps1"             "Account policy fixes"
 Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"     "Targeted STIG remediation (22 failures)"
 
+# 5. Repair WinRM LAST — must run after all STIG hardening so Packer
+#    can reconnect to upload its cleanup script and capture the image.
+#    This does NOT undo STIG controls — it only restores Packer's auth.
+Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1"   "Repair WinRM for Packer (post-hardening)"
+
 # 5. Final DSC compliance audit
 Write-Host "`n--- Final DSC Compliance Audit ---" -ForegroundColor Yellow
 $results    = Test-DscConfiguration -Detailed

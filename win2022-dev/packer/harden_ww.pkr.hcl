@@ -176,10 +176,28 @@ build {
     source      = "${var.hardening_source_dir}/InstallRoot.msi"
     destination = "${var.hardening_target_dir}/InstallRoot.msi"
   }
-  provisioner "file" {
-  source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
-  destination = "C:/DoD_Certs"
-  }
+  # Step 3.x: Recursively upload DoD PKI folder
+  provisioner "powershell" {
+  elevated_user     = "packer_user"
+  elevated_password = var.packer_user_password
+  inline = [
+    "$sourceDir = '${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303'",
+    "$targetDir = 'C:/DoD_Certs'",
+ 
+    "# Create target root directory if missing",
+    "if (-Not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force }",
+
+    "# Recursively copy files",
+    "Get-ChildItem -Path $sourceDir -Recurse -File | ForEach-Object {",
+    "  $relativePath = $_.FullName.Substring($sourceDir.Length + 1)",
+    "  $destPath = Join-Path $targetDir $relativePath",
+    "  $destFolder = Split-Path $destPath -Parent",
+    "  if (-Not (Test-Path $destFolder)) { New-Item -ItemType Directory -Path $destFolder -Force }",
+    "  Copy-Item -Path $_.FullName -Destination $destPath -Force",
+    "  Write-Host \"Uploaded: $relativePath\"",
+    "}"
+  ]
+}
 
   # FIX: script is named audit.ps1 on disk -- upload as audit.ps1.
   # run_all.ps1 calls "$scriptDir\audit.ps1" so the filename must match exactly.

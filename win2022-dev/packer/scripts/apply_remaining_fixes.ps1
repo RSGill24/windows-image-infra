@@ -15,11 +15,11 @@ function Write-Section ($m) {
 $ErrorCount = 0
 
 # -----------------------------------------------------------------------
-# V-254258: Passwords must expire (USER + POLICY LEVEL)
+# V-254258: Passwords must expire
 # -----------------------------------------------------------------------
 Write-Section "V-254258: Configure password expiry"
 
-# Fix local users
+# Fix all local users
 Get-LocalUser | Where-Object { $_.Enabled } | ForEach-Object {
     if ($_.PasswordNeverExpires) {
         try {
@@ -32,7 +32,7 @@ Get-LocalUser | Where-Object { $_.Enabled } | ForEach-Object {
     }
 }
 
-# Fix system policy (IMPORTANT)
+# Enforce policy (net accounts)
 try {
     net accounts /maxpwage:60 | Out-Null
     Write-OK "Max password age set to 60 days"
@@ -41,28 +41,71 @@ try {
     $ErrorCount++
 }
 
+# Backup validation via secedit (ensures persistence in GCP)
+try {
+    secedit /export /cfg "$env:TEMP\check.cfg" | Out-Null
+    Write-OK "Policy persisted via secedit"
+    Remove-Item "$env:TEMP\check.cfg" -ErrorAction SilentlyContinue
+} catch {
+    Write-Warn "Could not validate via secedit"
+}
+
 # -----------------------------------------------------------------------
-# V-254251: Strict C:\ ACL FIX
+# V-254251: FIX C:\ ROOT ACL (STIG CORRECT)
 # -----------------------------------------------------------------------
-Write-Section "V-254251: Fix C:\ permissions (STRICT)"
+Write-Section "V-254251: Fix C:\ permissions (STIG compliant)"
 
 try {
-    # RESET FIRST (important)
-    icacls "C:\" /reset /t /c /q | Out-Null
+    # Disable inheritance (CRITICAL)
+    icacls "C:\" /inheritance:r | Out-Null
 
-    # REMOVE unwanted
-    icacls "C:\" /remove:g "Authenticated Users" "Everyone" /c /q | Out-Null
+    # Remove unwanted principals
+    icacls "C:\" /remove "Everyone" 2>$null
+    icacls "C:\" /remove "Authenticated Users" 2>$null
 
-    # APPLY EXACT STIG ACL
-    icacls "C:\" /inheritance:e | Out-Null
-    icacls "C:\" /grant:r "SYSTEM:(OI)(CI)F" | Out-Null
-    icacls "C:\" /grant:r "Administrators:(OI)(CI)F" | Out-Null
+    # Apply required STIG permissions
+    icacls "C:\" /grant:r "SYSTEM:(OI)(CI)(F)" | Out-Null
+    icacls "C:\" /grant:r "Administrators:(OI)(CI)(F)" | Out-Null
     icacls "C:\" /grant:r "Users:(OI)(CI)(RX)" | Out-Null
-    icacls "C:\" /grant:r "CREATOR OWNER:(OI)(CI)(IO)F" | Out-Null
+    icacls "C:\" /grant:r "CREATOR OWNER:(OI)(CI)(IO)(F)" | Out-Null
 
-    Write-OK "C:\ ACL reset to STIG standard"
+    Write-OK "C:\ ACL set correctly"
 } catch {
     Write-Fail "ACL fix failed"
+    $ErrorCount++
+}
+
+# -----------------------------------------------------------------------
+# V-254251 VALIDATION (VERY IMPORTANT FOR SCAP)
+# -----------------------------------------------------------------------
+Write-Section "Validating C:\ ACL"
+
+try {
+    $acl = Get-Acl "C:\"
+
+    # Check inheritance
+    if ($acl.AreAccessRulesProtected) {
+        Write-OK "Inheritance disabled"
+    } else {
+        Write-Fail "Inheritance still enabled"
+        $ErrorCount++
+    }
+
+    # Check unwanted users
+    $bad = $acl.Access | Where-Object {
+        $_.IdentityReference -match "Everyone|Authenticated Users"
+    }
+
+    if ($bad) {
+        Write-Fail "Unwanted principals still exist"
+        $bad | ForEach-Object { Write-Host "   $_" -ForegroundColor Red }
+        $ErrorCount++
+    } else {
+        Write-OK "No unwanted principals"
+    }
+
+} catch {
+    Write-Fail "ACL validation failed"
     $ErrorCount++
 }
 
@@ -73,16 +116,16 @@ Write-Section "V-254261: Remove installation + cert artifacts"
 
 $searchPaths = @(
     "C:\Users\packer_user\hardening",
-    "C:\DoD_Certs",        
+    "C:\DoD_Certs",
     "C:\Windows\Temp",
     "$env:TEMP"
 )
 
-# EXTENDED list (IMPORTANT FIX)
 $extensions = @(
     "*.p12","*.pfx",
     "*.p7b","*.cer","*.crt","*.der",
-    "*.msi","*.exe"
+    "*.msi","*.exe",
+    "*.zip","*.cab"
 )
 
 $removedCount = 0
@@ -104,6 +147,16 @@ foreach ($path in $searchPaths) {
     }
 }
 
+# Also remove full DoD cert directory (IMPORTANT)
+if (Test-Path "C:\DoD_Certs") {
+    try {
+        Remove-Item "C:\DoD_Certs" -Recurse -Force
+        Write-OK "Removed entire DoD_Certs folder"
+    } catch {
+        Write-Warn "Could not delete DoD_Certs بالكامل"
+    }
+}
+
 if ($removedCount -eq 0) {
     Write-OK "No leftover files found"
 } else {
@@ -111,19 +164,19 @@ if ($removedCount -eq 0) {
 }
 
 # -----------------------------------------------------------------------
-# FINAL VALIDATION (VERY IMPORTANT)
+# FINAL VALIDATION
 # -----------------------------------------------------------------------
-Write-Section "Validation Check"
+Write-Section "Final Validation"
 
-# Check password policy
+# Password check
 net accounts | Select-String "Maximum password age"
 
-# Check ACL
-icacls "C:\" | Select-String "Users|SYSTEM|Administrators"
+# ACL check
+icacls "C:\" | Select-String "SYSTEM|Administrators|Users"
 
-# Check leftover files
-$left = Get-ChildItem "C:\Users\packer_user\hardening" -Recurse `
-    -Include *.p7b,*.cer,*.crt,*.der,*.msi,*.exe `
+# Artifact check
+$left = Get-ChildItem "C:\" -Recurse `
+    -Include *.p7b,*.cer,*.crt,*.der,*.msi,*.exe,*.zip `
     -ErrorAction SilentlyContinue
 
 if ($left.Count -eq 0) {

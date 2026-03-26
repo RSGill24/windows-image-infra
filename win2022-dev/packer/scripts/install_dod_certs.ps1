@@ -1,56 +1,74 @@
-# ===============================================================
-# Import and Verify DoD PKCS7 Certificates
-# ===============================================================
+# ===============================
+# DoD Certificates Import Script
+# ===============================
+# Paths
+$MainP7B = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der.p7b"
+$ExternalFolder = "C:\Users\packer_user\hardening\DoD._Approval_External"
 
-$P7BPath = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der.p7b"
-
-Function Import-CertsToStore {
+# Function to import certificates to a store
+function Import-CertsToStore {
     param (
-        [Parameter(Mandatory=$true)][System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$Certificates,
-        [Parameter(Mandatory=$true)][string]$StoreName
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$Certificates,
+
+        [Parameter(Mandatory)]
+        [string]$StoreName
     )
 
-    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store $StoreName, "LocalMachine"
+    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($StoreName, "LocalMachine")
     $store.Open("ReadWrite")
+
     foreach ($cert in $Certificates) {
-        if (-not ($store.Certificates | Where-Object { $_.Thumbprint -eq $cert.Thumbprint })) {
+        if (-not $store.Certificates.Find("FindByThumbprint", $cert.Thumbprint, $false)) {
             $store.Add($cert)
         }
     }
+
     $store.Close()
 }
 
-# Load certificates from P7B
+# Import main P7B
+Write-Host "`nProcessing main P7B file: $MainP7B"
 $collection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-try {
-    $collection.Import($P7BPath)
-} catch {
-    Write-Error "Failed to load P7B file: $_"
-    exit 1
-}
+$collection.Import($MainP7B)
 
-# Separate Root and Intermediate certs
-$roots = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-$intermediates = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+$rootCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+$intermediateCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
 
 foreach ($cert in $collection) {
     if ($cert.Subject -eq $cert.Issuer) {
-        $roots.Add($cert)
+        $rootCerts.Add($cert)
     } else {
-        $intermediates.Add($cert)
+        $intermediateCerts.Add($cert)
     }
 }
 
-# Import certs
-Import-CertsToStore -Certificates $roots -StoreName "Root"
-Import-CertsToStore -Certificates $intermediates -StoreName "CA"
+Import-CertsToStore -Certificates $rootCerts -StoreName "Root"
+Import-CertsToStore -Certificates $intermediateCerts -StoreName "CA"
 
+# Import external approval certificates if folder exists
+if (Test-Path $ExternalFolder) {
+    Write-Host "`nProcessing external approval certificates from: $ExternalFolder"
+    $externalFiles = Get-ChildItem -Path $ExternalFolder -Filter *.cer -File
+    $externalCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+
+    foreach ($file in $externalFiles) {
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($file.FullName)
+        $externalCerts.Add($cert)
+    }
+
+    Import-CertsToStore -Certificates $externalCerts -StoreName "Root"
+    Import-CertsToStore -Certificates $externalCerts -StoreName "CA"
+}
+
+# ===============================
 # Verification
-$rootStore = New-Object System.Security.Cryptography.X509Certificates.X509Store "Root","LocalMachine"
+# ===============================
+$rootStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","LocalMachine")
 $rootStore.Open("ReadOnly")
-$caStore = New-Object System.Security.Cryptography.X509Certificates.X509Store "CA","LocalMachine"
+$caStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("CA","LocalMachine")
 $caStore.Open("ReadOnly")
-$disallowedStore = New-Object System.Security.Cryptography.X509Certificates.X509Store "Disallowed","LocalMachine"
+$disallowedStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("Disallowed","LocalMachine")
 $disallowedStore.Open("ReadOnly")
 
 Write-Host "`n--- Verification ---"
@@ -61,7 +79,7 @@ Write-Host "Total Disallowed Certs: $($disallowedStore.Certificates.Count)"
 if ($disallowedStore.Certificates.Count -eq 0) {
     Write-Host "`nDisallowed store is clean ✅"
 } else {
-    Write-Host "`nDisallowed store contains certificates ⚠️"
+    Write-Host "`nWarning: Disallowed store has certs!"
 }
 
 $rootStore.Close()

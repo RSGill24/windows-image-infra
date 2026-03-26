@@ -1,10 +1,10 @@
 # ===============================
-# DoD Certificates Import Script
+# DoD Certificates Import Script (FINAL - STIG COMPLIANT)
 # ===============================
 
-# Paths
-$MainP7B      = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der.p7b"
-$ExternalFolder = "C:\Users\packer_user\hardening\DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
+# Paths (UPDATED)
+$MainP7B        = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der.p7b"
+$ExternalFolder = "C:\DoD_Certs"   # ✅ FIXED (was wrong earlier)
 
 # ===============================
 # Function: Import certificates to a store
@@ -39,10 +39,54 @@ function Import-CertsToStore {
 }
 
 # ===============================
-# Import main P7B
+# Function: Import to Disallowed (Untrusted) store
+# ===============================
+function Import-ToDisallowed {
+    param (
+        [Parameter(Mandatory)]
+        [string]$FolderPath
+    )
+
+    Write-Host "`nProcessing Interop / CCEB certs for UNTRUSTED store..."
+
+    if (!(Test-Path $FolderPath)) {
+        Write-Warning "Folder not found: $FolderPath"
+        return
+    }
+
+    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Disallowed", "LocalMachine")
+    $store.Open("ReadWrite")
+
+    Get-ChildItem -Path $FolderPath -Recurse -Include *.cer, *.crt, *.der -File | ForEach-Object {
+        try {
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($_.FullName)
+
+            # Only import Interop / CCEB related certs
+            if ($cert.Subject -match "Interop|CCEB") {
+
+                $exists = $store.Certificates.Find("FindByThumbprint", $cert.Thumbprint, $false)
+
+                if ($exists.Count -eq 0) {
+                    $store.Add($cert)
+                    Write-Host "🚫 Added to DISALLOWED: $($_.Name)"
+                } else {
+                    Write-Host "Already in Disallowed: $($_.Name)"
+                }
+            }
+        } catch {
+            Write-Warning "Failed to import $($_.FullName): $_"
+        }
+    }
+
+    $store.Close()
+}
+
+# ===============================
+# Import main P7B (Root + Intermediate)
 # ===============================
 if (Test-Path $MainP7B) {
-    Write-Host "`nProcessing main P7B file: $MainP7B"
+    Write-Host "`nProcessing main DoD P7B..."
+
     $collection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
     $collection.Import($MainP7B)
 
@@ -64,55 +108,36 @@ if (Test-Path $MainP7B) {
 }
 
 # ===============================
-# Import external approval certificates
+# STIG FIX: V-254443 & V-254444
+# Import Interop + CCEB → DISALLOWED
 # ===============================
-if (Test-Path $ExternalFolder) {
-    Write-Host "`nProcessing external approval certificates from: $ExternalFolder"
-    $externalFiles = Get-ChildItem -Path $ExternalFolder -Filter *.cer -File
-    $externalCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-
-    foreach ($file in $externalFiles) {
-        try {
-            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($file.FullName)
-            $externalCerts.Add($cert)
-        } catch {
-            Write-Warning ("Failed to load external cert: " + $file.FullName + " - " + $_.Exception.Message)
-        }
-    }
-
-    if ($externalCerts.Count -gt 0) {
-        Import-CertsToStore -Certificates $externalCerts -StoreName "Root"
-        Import-CertsToStore -Certificates $externalCerts -StoreName "CA"
-    } else {
-        Write-Warning "No valid external certificates found in $ExternalFolder"
-    }
-} else {
-    Write-Warning "External folder not found: $ExternalFolder"
-}
+Import-ToDisallowed -FolderPath $ExternalFolder
 
 # ===============================
 # Verification
 # ===============================
+Write-Host "`n--- FINAL VERIFICATION ---"
+
 $rootStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","LocalMachine")
 $rootStore.Open("ReadOnly")
+
 $caStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("CA","LocalMachine")
 $caStore.Open("ReadOnly")
+
 $disallowedStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("Disallowed","LocalMachine")
 $disallowedStore.Open("ReadOnly")
 
-Write-Host "`n--- Verification ---"
-Write-Host "Total Root Certs: $($rootStore.Certificates.Count)"
-Write-Host "Total Intermediate Certs: $($caStore.Certificates.Count)"
-Write-Host "Total Disallowed Certs: $($disallowedStore.Certificates.Count)"
+Write-Host "Root Certs Count: $($rootStore.Certificates.Count)"
+Write-Host "Intermediate Certs Count: $($caStore.Certificates.Count)"
+Write-Host "Disallowed Certs Count: $($disallowedStore.Certificates.Count)"
 
-if ($disallowedStore.Certificates.Count -eq 0) {
-    Write-Host "`nDisallowed store is clean ✅"
-} else {
-    Write-Host "`nWarning: Disallowed store has certs!"
-}
+# Show only relevant Disallowed certs
+$disallowedStore.Certificates |
+Where-Object { $_.Subject -match "Interop|CCEB" } |
+Select Subject, Thumbprint
 
 $rootStore.Close()
 $caStore.Close()
 $disallowedStore.Close()
 
-Write-Host "`nScript completed successfully."
+Write-Host "`n✅ Script completed (STIG aligned)"

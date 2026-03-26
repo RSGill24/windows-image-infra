@@ -1,0 +1,4 @@
+# ── Use WinRM password injected by Cloud Run ─────────────────
+echo "Using WinRM password injected by Cloud Run..."
+PACKER_PW="${WINRM_SECRET}"
+export PACKER_PW

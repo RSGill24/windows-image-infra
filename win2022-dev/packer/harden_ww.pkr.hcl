@@ -178,7 +178,7 @@ build {
   }
   provisioner "file" {
   source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
-  destination = "${var.hardening_target_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
+  destination = "C:/DoD_Certs"
   }
 
   # FIX: script is named audit.ps1 on disk -- upload as audit.ps1.

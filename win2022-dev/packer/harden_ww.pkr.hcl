@@ -177,24 +177,19 @@ build {
     destination = "${var.hardening_target_dir}/InstallRoot.msi"
   }
   # Step 3.x: Recursively upload DoD PKI folder
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303/"
+    destination = "C:/DoD_Certs"
+  }
   provisioner "powershell" {
   elevated_user     = "packer_user"
   elevated_password = var.packer_user_password
   inline = [
-    "$sourceDir = '${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303'",
-    "$targetDir = 'C:/DoD_Certs'",
- 
-    "# Create target root directory if missing",
-    "if (-Not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force }",
+    "Write-Host 'Importing DoD certs into Untrusted store...'",
 
-    "# Recursively copy files",
-    "Get-ChildItem -Path $sourceDir -Recurse -File | ForEach-Object {",
-    "  $relativePath = $_.FullName.Substring($sourceDir.Length + 1)",
-    "  $destPath = Join-Path $targetDir $relativePath",
-    "  $destFolder = Split-Path $destPath -Parent",
-    "  if (-Not (Test-Path $destFolder)) { New-Item -ItemType Directory -Path $destFolder -Force }",
-    "  Copy-Item -Path $_.FullName -Destination $destPath -Force",
-    "  Write-Host \"Uploaded: $relativePath\"",
+    "Get-ChildItem -Path 'C:\\DoD_Certs' -Recurse -Include *.cer, *.crt, *.der | ForEach-Object {",
+    "  Import-Certificate -FilePath $_.FullName -CertStoreLocation 'Cert:\\LocalMachine\\Disallowed' | Out-Null",
+    "  Write-Host \"Imported: $($_.Name)\"",
     "}"
   ]
 }

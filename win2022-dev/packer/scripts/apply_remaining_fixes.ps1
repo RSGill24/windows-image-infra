@@ -1,11 +1,4 @@
 #Requires -RunAsAdministrator
-<#
-.SYNOPSIS
-    Fixes remaining STIG failures:
-      V-254251 - C:\ root directory permissions
-      V-254258 - Passwords must be configured to expire
-      V-254261 - Software certificate installation files removed
-#>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
@@ -22,105 +15,133 @@ function Write-Section ($m) {
 $ErrorCount = 0
 
 # -----------------------------------------------------------------------
-# V-254258: All enabled local accounts must have password expiry enabled
+# V-254258: Passwords must expire (USER + POLICY LEVEL)
 # -----------------------------------------------------------------------
-Write-Section "V-254258: Configure passwords to expire"
+Write-Section "V-254258: Configure password expiry"
 
-Get-LocalUser | Where-Object { $_.Enabled -eq $true } | ForEach-Object {
+# Fix local users
+Get-LocalUser | Where-Object { $_.Enabled } | ForEach-Object {
     if ($_.PasswordNeverExpires) {
         try {
             Set-LocalUser -Name $_.Name -PasswordNeverExpires $false
-            Write-OK "Password expiry enabled for: $($_.Name)"
+            Write-OK "Password expiry enabled: $($_.Name)"
         } catch {
-            Write-Fail "Could not set expiry for $($_.Name): $_"
+            Write-Fail "Failed: $($_.Name)"
             $ErrorCount++
         }
-    } else {
-        Write-OK "$($_.Name): already set to expire"
     }
 }
 
-# -----------------------------------------------------------------------
-# V-254251: C:\ root directory permissions must conform to STIG minimum
-# Required ACL:
-#   SYSTEM          - Full Control (OI)(CI)
-#   Administrators  - Full Control (OI)(CI)
-#   Users           - Read & Execute (OI)(CI)
-#   CREATOR OWNER   - Full Control (OI)(CI)(IO) -- subfolders/files only
-# -----------------------------------------------------------------------
-Write-Section "V-254251: Reset C:\ root directory permissions"
-
+# Fix system policy (IMPORTANT)
 try {
-    # Remove non-standard ACEs (Authenticated Users, Everyone, etc.)
-    Write-Host "  Removing non-standard ACEs..."
-    icacls "C:\" /remove:g "Authenticated Users" /c /q 2>&1 | Out-Null
-    icacls "C:\" /remove:g "Everyone" /c /q 2>&1 | Out-Null
-
-    # Grant required ACEs -- use /grant:r to replace (not add) existing entries
-    Write-Host "  Applying required ACEs..."
-    icacls "C:\" /grant:r "SYSTEM:(OI)(CI)F"          /c /q 2>&1 | Out-Null
-    icacls "C:\" /grant:r "Administrators:(OI)(CI)F"   /c /q 2>&1 | Out-Null
-    icacls "C:\" /grant:r "Users:(OI)(CI)(RX)"         /c /q 2>&1 | Out-Null
-    icacls "C:\" /grant:r "CREATOR OWNER:(OI)(CI)(IO)F" /c /q 2>&1 | Out-Null
-
-    # Verify
-    $aclOutput = icacls "C:\" 2>&1
-    Write-Host "  Current C:\ ACL:" -ForegroundColor Gray
-    $aclOutput | Select-String "(SYSTEM|Administrators|Users|CREATOR)" |
-        ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
-
-    Write-OK "C:\ permissions applied"
+    net accounts /maxpwage:60 | Out-Null
+    Write-OK "Max password age set to 60 days"
 } catch {
-    Write-Fail "Failed to set C:\ permissions: $_"
+    Write-Fail "Failed to set password policy"
     $ErrorCount++
 }
 
 # -----------------------------------------------------------------------
-# V-254261: Remove software certificate installation files (.p12, .pfx)
-# Scan common locations where these may exist
+# V-254251: Strict C:\ ACL FIX
 # -----------------------------------------------------------------------
-Write-Section "V-254261: Remove software certificate files (.p12, .pfx)"
+Write-Section "V-254251: Fix C:\ permissions (STRICT)"
+
+try {
+    # RESET FIRST (important)
+    icacls "C:\" /reset /t /c /q | Out-Null
+
+    # REMOVE unwanted
+    icacls "C:\" /remove:g "Authenticated Users" "Everyone" /c /q | Out-Null
+
+    # APPLY EXACT STIG ACL
+    icacls "C:\" /inheritance:e | Out-Null
+    icacls "C:\" /grant:r "SYSTEM:(OI)(CI)F" | Out-Null
+    icacls "C:\" /grant:r "Administrators:(OI)(CI)F" | Out-Null
+    icacls "C:\" /grant:r "Users:(OI)(CI)(RX)" | Out-Null
+    icacls "C:\" /grant:r "CREATOR OWNER:(OI)(CI)(IO)F" | Out-Null
+
+    Write-OK "C:\ ACL reset to STIG standard"
+} catch {
+    Write-Fail "ACL fix failed"
+    $ErrorCount++
+}
+
+# -----------------------------------------------------------------------
+# V-254261: Remove ALL certificate/install artifacts
+# -----------------------------------------------------------------------
+Write-Section "V-254261: Remove installation + cert artifacts"
 
 $searchPaths = @(
-    "C:\",
-    "C:\Users",
-    "C:\Temp",
+    "C:\Users\packer_user\hardening",
+    "C:\DoD_Certs",        
     "C:\Windows\Temp",
     "$env:TEMP"
 )
-$extensions = @("*.p12", "*.pfx")
+
+# EXTENDED list (IMPORTANT FIX)
+$extensions = @(
+    "*.p12","*.pfx",
+    "*.p7b","*.cer","*.crt","*.der",
+    "*.msi","*.exe"
+)
+
 $removedCount = 0
 
 foreach ($path in $searchPaths) {
     if (!(Test-Path $path)) { continue }
+
     foreach ($ext in $extensions) {
         Get-ChildItem -Path $path -Filter $ext -Recurse -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                try {
-                    Remove-Item -Path $_.FullName -Force -ErrorAction Stop
-                    Write-OK "Removed: $($_.FullName)"
-                    $removedCount++
-                } catch {
-                    Write-Warn "Could not remove $($_.FullName): $_"
-                }
+        ForEach-Object {
+            try {
+                Remove-Item $_.FullName -Force -ErrorAction Stop
+                Write-OK "Removed: $($_.FullName)"
+                $removedCount++
+            } catch {
+                Write-Warn "Could not remove: $($_.FullName)"
             }
+        }
     }
 }
 
 if ($removedCount -eq 0) {
-    Write-OK "No .p12 or .pfx files found -- already clean"
+    Write-OK "No leftover files found"
 } else {
-    Write-OK "Removed $removedCount certificate file(s)"
+    Write-OK "Total removed files: $removedCount"
 }
 
 # -----------------------------------------------------------------------
-# Summary
+# FINAL VALIDATION (VERY IMPORTANT)
 # -----------------------------------------------------------------------
-Write-Section "Remaining Fixes Summary"
-if ($ErrorCount -eq 0) {
-    Write-Host "  All remaining fixes applied successfully." -ForegroundColor Green
+Write-Section "Validation Check"
+
+# Check password policy
+net accounts | Select-String "Maximum password age"
+
+# Check ACL
+icacls "C:\" | Select-String "Users|SYSTEM|Administrators"
+
+# Check leftover files
+$left = Get-ChildItem "C:\Users\packer_user\hardening" -Recurse `
+    -Include *.p7b,*.cer,*.crt,*.der,*.msi,*.exe `
+    -ErrorAction SilentlyContinue
+
+if ($left.Count -eq 0) {
+    Write-OK "No leftover cert/install files"
 } else {
-    Write-Host "  $ErrorCount fix(es) need manual attention." -ForegroundColor Yellow
+    Write-Fail "Still found leftover files"
+    $ErrorCount++
+}
+
+# -----------------------------------------------------------------------
+# SUMMARY
+# -----------------------------------------------------------------------
+Write-Section "SUMMARY"
+
+if ($ErrorCount -eq 0) {
+    Write-Host "ALL STIG FIXES APPLIED ✅" -ForegroundColor Green
+} else {
+    Write-Host "$ErrorCount issues remain ⚠️" -ForegroundColor Yellow
 }
 
 exit $ErrorCount

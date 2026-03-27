@@ -177,9 +177,9 @@ build {
     destination = "${var.hardening_target_dir}/InstallRoot.msi"
   }
   # Step 3.x: Recursively upload DoD PKI folder
-  provisioner "file" {
-    source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
-    destination = "C:/DoD_Certs"
+  # provisioner "file" {
+  #  source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
+  # destination = "C:/DoD_Certs"
   }
  # provisioner "powershell" {
  # elevated_user     = "packer_user"

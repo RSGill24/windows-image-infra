@@ -103,8 +103,6 @@ $overrides = @{
     "V-254289" = @{ PolicyValue="60" }   
     "V-254290" = @{ PolicyValue="1"  }   
     "V-254291" = @{ PolicyValue="15" }
-    "V-254447" = @{ NewName = "AdminRenamed" }
-    "V-254448" = @{ NewName = "GuestRenamed" }
 }
 
 foreach ($vid in $overrides.Keys) {

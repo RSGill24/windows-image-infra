@@ -4,7 +4,7 @@
 
 # Paths (UPDATED)
 $MainP7B        = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der.p7b"
-$ExternalFolder = "C:\DoD_Certs"   # ✅ FIXED (was wrong earlier)
+# $ExternalFolder = "C:\DoD_Certs"   # ✅ FIXED (was wrong earlier)
 
 # ===============================
 # Function: Import certificates to a store

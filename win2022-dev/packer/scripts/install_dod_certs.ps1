@@ -3,8 +3,8 @@
 # ===============================
 
 # Paths (UPDATED)
-$MainP7B        = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der.p7b"
-# $ExternalFolder = "C:\DoD_Certs"   # ✅ FIXED (was wrong earlier)
+$MainP7B = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der.p7b"
+# ExternalFolder section removed/commented out
 
 # ===============================
 # Function: Import certificates to a store
@@ -13,7 +13,6 @@ function Import-CertsToStore {
     param (
         [Parameter(Mandatory)]
         [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$Certificates,
-
         [Parameter(Mandatory)]
         [string]$StoreName
     )
@@ -32,49 +31,6 @@ function Import-CertsToStore {
             }
         } catch {
             Write-Warning ("Failed to import " + $cert.Subject + " to " + $StoreName + ": " + $_.Exception.Message)
-        }
-    }
-
-    $store.Close()
-}
-
-# ===============================
-# Function: Import to Disallowed (Untrusted) store
-# ===============================
-function Import-ToDisallowed {
-    param (
-        [Parameter(Mandatory)]
-        [string]$FolderPath
-    )
-
-    Write-Host "`nProcessing Interop / CCEB certs for UNTRUSTED store..."
-
-    if (!(Test-Path $FolderPath)) {
-        Write-Warning "Folder not found: $FolderPath"
-        return
-    }
-
-    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Disallowed", "LocalMachine")
-    $store.Open("ReadWrite")
-
-    Get-ChildItem -Path $FolderPath -Recurse -Include *.cer, *.crt, *.der -File | ForEach-Object {
-        try {
-            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($_.FullName)
-
-            # Only import Interop / CCEB related certs
-            if ($cert.Subject -match "Interop|CCEB") {
-
-                $exists = $store.Certificates.Find("FindByThumbprint", $cert.Thumbprint, $false)
-
-                if ($exists.Count -eq 0) {
-                    $store.Add($cert)
-                    Write-Host "🚫 Added to DISALLOWED: $($_.Name)"
-                } else {
-                    Write-Host "Already in Disallowed: $($_.Name)"
-                }
-            }
-        } catch {
-            Write-Warning "Failed to import $($_.FullName): $_"
         }
     }
 
@@ -108,10 +64,9 @@ if (Test-Path $MainP7B) {
 }
 
 # ===============================
-# STIG FIX: V-254443 & V-254444
-# Import Interop + CCEB → DISALLOWED
+# Disallowed certs import removed/commented out
 # ===============================
-Import-ToDisallowed -FolderPath $ExternalFolder
+# Import-ToDisallowed -FolderPath $ExternalFolder
 
 # ===============================
 # Verification
@@ -131,7 +86,7 @@ Write-Host "Root Certs Count: $($rootStore.Certificates.Count)"
 Write-Host "Intermediate Certs Count: $($caStore.Certificates.Count)"
 Write-Host "Disallowed Certs Count: $($disallowedStore.Certificates.Count)"
 
-# Show only relevant Disallowed certs
+# Show only relevant Disallowed certs (optional, may be empty now)
 $disallowedStore.Certificates |
 Where-Object { $_.Subject -match "Interop|CCEB" } |
 Select Subject, Thumbprint
@@ -140,4 +95,4 @@ $rootStore.Close()
 $caStore.Close()
 $disallowedStore.Close()
 
-Write-Host "`n✅ Script completed (STIG aligned)"
+Write-Host "`n✅ Script completed (STIG aligned except Disallowed certs)"

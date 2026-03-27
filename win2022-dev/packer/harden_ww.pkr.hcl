@@ -180,7 +180,7 @@ build {
   # provisioner "file" {
   #  source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
   # destination = "C:/DoD_Certs"
-  }
+ # }
  # provisioner "powershell" {
  # elevated_user     = "packer_user"
  # elevated_password = var.packer_user_password

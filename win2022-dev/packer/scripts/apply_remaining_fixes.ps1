@@ -114,16 +114,50 @@ try {
 # -----------------------------------------------------------------------
 Write-Section "V-254261: Remove installation + cert artifacts"
 
+# -----------------------------------------------------------------------
+# Kill processes that may lock files
+# -----------------------------------------------------------------------
+Get-Process msiexec -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# -----------------------------------------------------------------------
+# IMPORTANT: Add your actual hardening dir if different
+# -----------------------------------------------------------------------
 $searchPaths = @(
     "C:\Users\packer_user\hardening",
+    "C:\Users\packer_user\Desktop",
     "C:\DoD_Certs",
     "C:\Windows\Temp",
     "$env:TEMP"
 )
 
+# -----------------------------------------------------------------------
+# PRIORITY: .p7b files (explicit handling)
+# -----------------------------------------------------------------------
+Write-Host "Removing .p7b files explicitly..."
+
+foreach ($path in $searchPaths) {
+    if (!(Test-Path $path)) { continue }
+
+    Get-ChildItem -Path $path -Recurse -Include *.p7b -Force -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        try {
+            takeown /F $_.FullName /A /R /D Y | Out-Null
+            icacls $_.FullName /grant Administrators:F /T /Q | Out-Null
+
+            Remove-Item $_.FullName -Force -ErrorAction Stop
+            Write-OK "Removed P7B: $($_.FullName)"
+        } catch {
+            Write-Warn "Could not remove P7B: $($_.FullName)"
+        }
+    }
+}
+
+# -----------------------------------------------------------------------
+# OTHER FILE TYPES
+# -----------------------------------------------------------------------
 $extensions = @(
     "*.p12","*.pfx",
-    "*.p7b","*.cer","*.crt","*.der",
+    "*.cer","*.crt","*.der",
     "*.msi","*.exe",
     "*.zip","*.cab"
 )
@@ -134,10 +168,14 @@ foreach ($path in $searchPaths) {
     if (!(Test-Path $path)) { continue }
 
     foreach ($ext in $extensions) {
-        Get-ChildItem -Path $path -Filter $ext -Recurse -ErrorAction SilentlyContinue |
+        Get-ChildItem -Path $path -Filter $ext -Recurse -Force -ErrorAction SilentlyContinue |
         ForEach-Object {
             try {
+                takeown /F $_.FullName /A /R /D Y | Out-Null
+                icacls $_.FullName /grant Administrators:F /T /Q | Out-Null
+
                 Remove-Item $_.FullName -Force -ErrorAction Stop
+
                 Write-OK "Removed: $($_.FullName)"
                 $removedCount++
             } catch {
@@ -147,21 +185,68 @@ foreach ($path in $searchPaths) {
     }
 }
 
-# Also remove full DoD cert directory (IMPORTANT)
+# -----------------------------------------------------------------------
+# Remove entire DoD cert directory (CRITICAL)
+# -----------------------------------------------------------------------
 if (Test-Path "C:\DoD_Certs") {
     try {
-        Remove-Item "C:\DoD_Certs" -Recurse -Force
+        takeown /F "C:\DoD_Certs" /R /D Y | Out-Null
+        icacls "C:\DoD_Certs" /grant Administrators:F /T /Q | Out-Null
+        Remove-Item "C:\DoD_Certs" -Recurse -Force -ErrorAction Stop
         Write-OK "Removed entire DoD_Certs folder"
     } catch {
-        Write-Warn "Could not delete DoD_Certs بالكامل"
+        Write-Warn "Could not delete DoD_Certs"
     }
 }
 
-if ($removedCount -eq 0) {
-    Write-OK "No leftover files found"
+# -----------------------------------------------------------------------
+# FINAL VERIFICATION (ONLY .p7b — STIG critical)
+# -----------------------------------------------------------------------
+Write-Host "Verifying .p7b cleanup..."
+
+$p7bLeft = Get-ChildItem C:\ -Recurse -Include *.p7b -Force -ErrorAction SilentlyContinue
+
+if ($p7bLeft.Count -eq 0) {
+    Write-OK "No .p7b files remaining"
 } else {
-    Write-OK "Total removed files: $removedCount"
+    Write-Fail ".p7b files still exist:"
+    $p7bLeft | Select-Object -First 10 | ForEach-Object {
+        Write-Host "  $_" -ForegroundColor Red
+    }
 }
+
+# -----------------------------------------------------------------------
+# V-254447 & V-254448: Rename Administrator and Guest accounts
+# -----------------------------------------------------------------------
+Write-Section "V-254447 & V-254448: Rename built-in accounts"
+
+try {
+    $admin = Get-LocalUser | Where-Object SID -like "*-500"
+    if ($admin.Name -eq "Administrator") {
+        Rename-LocalUser -Name "Administrator" -NewName "AdminRenamed"
+        Write-OK "Administrator renamed to AdminRenamed"
+    } else {
+        Write-OK "Administrator already renamed to: $($admin.Name)"
+    }
+} catch {
+    Write-Fail "Failed to rename Administrator"
+    $ErrorCount++
+}
+
+try {
+    $guest = Get-LocalUser | Where-Object SID -like "*-501"
+    if ($guest.Name -eq "Guest") {
+        Rename-LocalUser -Name "Guest" -NewName "GuestRenamed"
+        Write-OK "Guest renamed to GuestRenamed"
+    } else {
+        Write-OK "Guest already renamed to: $($guest.Name)"
+    }
+} catch {
+    Write-Fail "Failed to rename Guest"
+    $ErrorCount++
+}
+
+
 
 # -----------------------------------------------------------------------
 # FINAL VALIDATION

@@ -178,21 +178,21 @@ build {
   }
   # Step 3.x: Recursively upload DoD PKI folder
   provisioner "file" {
-    source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303/"
+    source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
     destination = "C:/DoD_Certs"
   }
-  provisioner "powershell" {
-  elevated_user     = "packer_user"
-  elevated_password = var.packer_user_password
-  inline = [
-    "Write-Host 'Importing DoD certs into Untrusted store...'",
+ # provisioner "powershell" {
+ # elevated_user     = "packer_user"
+ # elevated_password = var.packer_user_password
+ # inline = [
+ #   "Write-Host 'Importing DoD certs into Untrusted store...'",
 
-    "Get-ChildItem -Path 'C:\\DoD_Certs' -Recurse -Include *.cer, *.crt, *.der | ForEach-Object {",
-    "  Import-Certificate -FilePath $_.FullName -CertStoreLocation 'Cert:\\LocalMachine\\Disallowed' | Out-Null",
-    "  Write-Host \"Imported: $($_.Name)\"",
-    "}"
-  ]
-}
+ #   "Get-ChildItem -Path 'C:\\DoD_Certs' -Recurse -Include *.cer, *.crt, *.der | ForEach-Object {",
+ #   "  Import-Certificate -FilePath $_.FullName -CertStoreLocation 'Cert:\\LocalMachine\\Disallowed' | Out-Null",
+ #   "  Write-Host \"Imported: $($_.Name)\"",
+ #   "}"
+ # ]
+# }
 
   # FIX: script is named audit.ps1 on disk -- upload as audit.ps1.
   # run_all.ps1 calls "$scriptDir\audit.ps1" so the filename must match exactly.

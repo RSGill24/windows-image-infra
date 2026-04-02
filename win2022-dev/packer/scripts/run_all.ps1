@@ -158,7 +158,7 @@ Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"
 # -----------------------------------------------------------------------
 # STEP 4b -- Install Nessus Agent (from GCS)
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\install_nessus.ps1" "Install Nessus Agent (unactivated)" -AllowFailure
+Invoke-Step "$scriptDir\install_nessus.ps1" "Install Nessus Agent (unlinked)" -AllowFailure
 # -----------------------------------------------------------------------
 # STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)
 # -----------------------------------------------------------------------

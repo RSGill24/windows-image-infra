@@ -1,24 +1,36 @@
-# install_nessus_from_gcs.ps1
-# Downloads Nessus MSI from GCS and installs it silently
+# =========================================================
+# Install Nessus Agent from GCS (Production)
+# =========================================================
 
+Write-Host "=== Installing Nessus Agent ===" -ForegroundColor Cyan
 
-# Variables
-$bucketName = " org-sec-agents-bucket"
-$installerName = "NessusAgent-11.1.2-arm64.msi"
-$targetDir = "C:\Users\packer_user\hardening\agents"
-$installerPath = Join-Path $targetDir $installerName
+$bucketPath   = "gs://org-sec-agents-bucket/NessusAgent-11.1.2-x64.msi"
+$downloadPath = "C:\Users\packer_user\hardening\NessusAgent-11.1.2-x64.msi"
 
-# Create target directory
-if (!(Test-Path $targetDir)) {
-    New-Item -ItemType Directory -Path $targetDir -Force
+# Download
+gcloud storage cp $bucketPath $downloadPath
+
+if (!(Test-Path $downloadPath)) {
+    Write-Error "Download failed!"
+    exit 1
 }
 
-# Download installer from GCS
-Write-Host "Downloading $installerName from gs://$bucketName/ ..."
-gsutil cp "gs://$bucketName/$installerName" $installerPath
+# Validate size
+$fileSize = (Get-Item $downloadPath).Length
+if ($fileSize -lt 10000000) {
+    Write-Error "Downloaded file is invalid!"
+    exit 1
+}
 
-# Install silently without activation
-Write-Host "Installing Nessus agent..."
-Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
+# Install
+Start-Process msiexec.exe -ArgumentList "/i `"$downloadPath`" /quiet /norestart" -Wait
 
-Write-Host "Nessus installation complete (unactivated)."
+# Verify
+$service = Get-Service -Name "Tenable Nessus Agent" -ErrorAction SilentlyContinue
+
+if (-not $service) {
+    Write-Error "Nessus installation failed!"
+    exit 1
+}
+
+Write-Host "Nessus Agent installed successfully." -ForegroundColor Green

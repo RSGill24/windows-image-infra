@@ -166,6 +166,11 @@ build {
     source      = "${var.hardening_source_dir}/stig_remediation_fixes.ps1"
     destination = "${var.hardening_target_dir}/stig_remediation_fixes.ps1"
   }
+  
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/install_nessus.ps1"
+    destination = "${var.hardening_target_dir}/install_nessus.ps1"
+  }
 
   provisioner "file" {
     source      = "${var.hardening_source_dir}/repair_winrm_for_packer.ps1"

@@ -107,4 +107,4 @@ try {
 }
 
 Write-Host "`n=== WinRM repair complete — Packer should reconnect successfully ===" -ForegroundColor Green
-exit 0
+

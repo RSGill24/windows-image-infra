@@ -135,4 +135,4 @@ if ($dscResources) {
 }
 
 Write-Host "=== Dependencies installed successfully ==="
-exit 0
+

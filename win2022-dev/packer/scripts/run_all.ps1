@@ -126,7 +126,7 @@ Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-25
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
 Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
-
+Invoke-Step "$scriptDir\restore_winrm_post_dsc.ps1" "Restore WinRM immediately after DSC"
 # -----------------------------------------------------------------------
 # STEP 4 -- Post-DSC targeted fixes (must all run AFTER apply_mof.ps1)
 # -----------------------------------------------------------------------

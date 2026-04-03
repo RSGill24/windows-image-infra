@@ -2,19 +2,24 @@
 <#
 .SYNOPSIS
     Main STIG hardening entry point for Packer/GCP builds.
-    Orchestrates all hardening scripts in the correct order.
 
 .NOTES
-    Script execution order matters:
-    1. PowerSTIG + dependencies must be installed before DSC MOF creation
-    2. DoD certs must be installed before DSC MOF (so DSC cert checks pass)
-    3. DSC MOF must be created before it is applied
-    4. account_policy.ps1 runs AFTER apply_mof.ps1 (DSC cannot undo secedit writes)
-    5. stig_remediation_fixes.ps1 runs AFTER apply_mof.ps1 (same reason)
-    6. audit.ps1 runs AFTER apply_mof.ps1 (V-278942 to V-278947)
-    7. apply_remaining_fixes.ps1 runs AFTER apply_mof.ps1 (V-254251/258/261)
-    8. install_nessus.ps1 runs AFTER all STIG fixes, BEFORE WinRM repair
-    9. repair_winrm_for_packer.ps1 runs LAST (must not be undone by any STIG script)
+    Script execution order:
+    1.  install_PowerSTIG.ps1         — install PowerSTIG module
+    2.  install_dsc_deps.ps1          — remove CIM duplicates
+    3.  install_dod_certs.ps1         — DoD PKI certs (V-254442/443/444)
+    4.  create_mof.ps1                — compile DSC MOF
+    5.  apply_mof.ps1                 — apply DSC MOF (breaks WinRM via secedit)
+    *** Packer reconnects here via separate provisioner block ***
+    6.  restore_winrm_post_dsc.ps1    — rebuild HTTPS listener, restore auth
+    7.  registry_stig.ps1             — registry fixes
+    8.  services_stig.ps1             — services fixes (adds WinRM rules before firewall)
+    9.  account_policy.ps1            — password/lockout policy
+    10. audit.ps1                     — audit subcategory policy
+    11. install_nessus.ps1            — Nessus agent (unlinked)
+    12. apply_remaining_fixes.ps1     — V-254251/258/261
+    13. stig_remediation_fixes.ps1    — targeted STIG remediation
+    14. repair_winrm_for_packer.ps1   — final WinRM repair (LAST)
 #>
 
 Set-StrictMode -Version Latest
@@ -27,7 +32,7 @@ $scriptDir   = $PSScriptRoot
 $globalFails = 0
 
 # -----------------------------------------------------------------------
-# Helper: Run a script step and abort pipeline on failure
+# Helper: Run a script step
 # -----------------------------------------------------------------------
 function Invoke-Step {
     param(
@@ -60,7 +65,7 @@ function Invoke-Step {
     $exitCode = $global:LASTEXITCODE
 
     if ($stepFailed -and -not $AllowFailure) {
-        Write-Error "$Label FAILED with exit code $exitCode -- aborting hardening pipeline"
+        Write-Error "$Label FAILED with exit code $exitCode -- aborting pipeline"
         exit $exitCode
     } elseif ($stepFailed -and $AllowFailure) {
         Write-Warning "$Label completed with warnings (exit code: $exitCode) -- continuing"
@@ -71,18 +76,19 @@ function Invoke-Step {
 }
 
 # -----------------------------------------------------------------------
-# PRE-FLIGHT: Verify critical scripts are not truncated
+# PRE-FLIGHT: Script integrity checks
 # -----------------------------------------------------------------------
 Write-Host "`n--- Pre-flight: Script integrity checks ---" -ForegroundColor Yellow
 
 $integrityChecks = @(
-    @{ Path = "$scriptDir\install_dod_certs.ps1";      MinLines = 50;  Label = "install_dod_certs.ps1"     }
-    @{ Path = "$scriptDir\stig_remediation_fixes.ps1"; MinLines = 100; Label = "stig_remediation_fixes.ps1" }
-    @{ Path = "$scriptDir\install_dsc_deps.ps1";       MinLines = 50;  Label = "install_dsc_deps.ps1"      }
-    @{ Path = "$scriptDir\create_mof.ps1";             MinLines = 50;  Label = "create_mof.ps1"            }
-    @{ Path = "$scriptDir\audit.ps1";                  MinLines = 30;  Label = "audit.ps1"                 }
-    @{ Path = "$scriptDir\apply_remaining_fixes.ps1";  MinLines = 30;  Label = "apply_remaining_fixes.ps1" }
-    @{ Path = "$scriptDir\install_nessus.ps1";         MinLines = 30;  Label = "install_nessus.ps1"        }
+    @{ Path = "$scriptDir\install_dod_certs.ps1";         MinLines = 50;  Label = "install_dod_certs.ps1"         }
+    @{ Path = "$scriptDir\stig_remediation_fixes.ps1";    MinLines = 100; Label = "stig_remediation_fixes.ps1"    }
+    @{ Path = "$scriptDir\install_dsc_deps.ps1";          MinLines = 50;  Label = "install_dsc_deps.ps1"          }
+    @{ Path = "$scriptDir\create_mof.ps1";                MinLines = 50;  Label = "create_mof.ps1"                }
+    @{ Path = "$scriptDir\audit.ps1";                     MinLines = 30;  Label = "audit.ps1"                     }
+    @{ Path = "$scriptDir\apply_remaining_fixes.ps1";     MinLines = 30;  Label = "apply_remaining_fixes.ps1"     }
+    @{ Path = "$scriptDir\install_nessus.ps1";            MinLines = 30;  Label = "install_nessus.ps1"            }
+    @{ Path = "$scriptDir\restore_winrm_post_dsc.ps1";    MinLines = 30;  Label = "restore_winrm_post_dsc.ps1"   }
 )
 
 $integrityFail = $false
@@ -95,62 +101,72 @@ foreach ($check in $integrityChecks) {
         Write-Host "  $($check.Label): $lineCount lines | SHA256: $($hash.Substring(0,16))..." -ForegroundColor Gray
 
         if ($lineCount -lt $check.MinLines) {
-            Write-Host "  [FAIL] $($check.Label) appears TRUNCATED ($lineCount lines, expected >= $($check.MinLines))" -ForegroundColor Red
+            Write-Host "  [FAIL] $($check.Label) TRUNCATED ($lineCount lines, expected >= $($check.MinLines))" -ForegroundColor Red
             $integrityFail = $true
         } else {
             Write-Host "  [OK]  $($check.Label)" -ForegroundColor Green
         }
     } else {
-        Write-Warning "  Script not found (will be caught later): $($check.Path)"
+        Write-Warning "  Script not found: $($check.Path)"
     }
 }
 
 if ($integrityFail) {
-    Write-Error "One or more scripts appear truncated. Fix the Packer file provisioner and retry."
+    Write-Error "One or more scripts appear truncated."
     exit 1
 }
 
 # -----------------------------------------------------------------------
 # STEP 1 -- Install PowerSTIG and DSC dependencies
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\install_PowerSTIG.ps1"   "Install PowerSTIG"
-Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (removes CIM duplicates)"
+Invoke-Step "$scriptDir\install_PowerSTIG.ps1"        "Install PowerSTIG"
+Invoke-Step "$scriptDir\install_dsc_deps.ps1"         "Install DSC dependencies"
 
 # -----------------------------------------------------------------------
-# STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
+# STEP 2 -- Install DoD Certificates
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-254442/443/444)" -AllowFailure
+Invoke-Step "$scriptDir\install_dod_certs.ps1"        "Install DoD Certificates (V-254442/443/444)"   -AllowFailure
 
 # -----------------------------------------------------------------------
-# STEP 3 -- Create and apply the DSC MOF
+# STEP 3 -- Create DSC MOF
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
-Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
+Invoke-Step "$scriptDir\create_mof.ps1"               "Create DSC MOF"
 
 # -----------------------------------------------------------------------
-# STEP 4 -- Post-DSC targeted fixes (must all run AFTER apply_mof.ps1)
+# STEP 4 -- Apply DSC MOF
+# NOTE: apply_mof.ps1 will break WinRM via secedit/AccountPolicy.
+# Packer will lose the connection after this step exits.
+# restore_winrm_post_dsc.ps1 runs in the NEXT Packer provisioner block.
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\registry_stig.ps1"           "Registry STIG fixes"                             -AllowFailure
-Invoke-Step "$scriptDir\services_stig.ps1"           "Services STIG fixes"                             -AllowFailure
-Invoke-Step "$scriptDir\account_policy.ps1"          "Account Policy (net accounts + secedit)"
-Invoke-Step "$scriptDir\audit.ps1"                   "Audit Subcategory Policy (V-278942 to V-278947)" -AllowFailure
-Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"   "Remaining STIG fixes (V-254251/258/261)"         -AllowFailure
-Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"                       -AllowFailure
+Invoke-Step "$scriptDir\apply_mof.ps1"                "Apply DSC MOF"
 
 # -----------------------------------------------------------------------
-# STEP 4b -- Install Nessus Agent (after all STIG fixes are final)
-# Agent is installed unlinked. Client activates on first boot.
+# STEP 5 -- Restore WinRM after DSC (Packer reconnects before this runs)
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\install_nessus.ps1"          "Install Nessus Agent (unlinked)"                 -AllowFailure
+Invoke-Step "$scriptDir\restore_winrm_post_dsc.ps1"   "Restore WinRM after DSC"
 
 # -----------------------------------------------------------------------
-# STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)
-# Removes GPO registry overrides written by STIG, then restores WinRM auth.
+# STEP 6 -- Post-DSC targeted fixes
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"
+Invoke-Step "$scriptDir\registry_stig.ps1"            "Registry STIG fixes"                           -AllowFailure
+Invoke-Step "$scriptDir\services_stig.ps1"            "Services STIG fixes"                           -AllowFailure
+Invoke-Step "$scriptDir\account_policy.ps1"           "Account Policy (net accounts + secedit)"
+Invoke-Step "$scriptDir\audit.ps1"                    "Audit Subcategory Policy (V-278942 to V-278947)"-AllowFailure
+Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"    "Remaining STIG fixes (V-254251/258/261)"        -AllowFailure
+Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"   "Targeted STIG remediation"                     -AllowFailure
 
 # -----------------------------------------------------------------------
-# STEP 6 -- Final DSC compliance audit
+# STEP 7 -- Install Nessus Agent (unlinked)
+# -----------------------------------------------------------------------
+Invoke-Step "$scriptDir\install_nessus.ps1"           "Install Nessus Agent (unlinked)"               -AllowFailure
+
+# -----------------------------------------------------------------------
+# STEP 8 -- Final WinRM repair (MUST be last)
+# -----------------------------------------------------------------------
+Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1"  "Repair WinRM for Packer (LAST step)"
+
+# -----------------------------------------------------------------------
+# STEP 9 -- Final DSC compliance audit
 # -----------------------------------------------------------------------
 Write-Host "`n--- Final DSC Compliance Audit ---" -ForegroundColor Yellow
 
@@ -176,7 +192,6 @@ try {
     Write-Host "  Report saved:   $reportPath" -ForegroundColor Cyan
 
     if ($failCount -gt 0) {
-        Write-Host "`n  DSC resources NOT in desired state:" -ForegroundColor Yellow
         $results.ResourcesNotInDesiredState | ForEach-Object {
             Write-Host "    FAIL: $($_.ResourceId)" -ForegroundColor Yellow
         }
@@ -184,7 +199,7 @@ try {
     }
 } catch {
     Write-Warning "DSC compliance audit failed: $_"
-    Write-Warning "This is non-fatal -- the image will still be captured."
+    Write-Warning "Non-fatal — image will still be captured."
 }
 
 # -----------------------------------------------------------------------
@@ -195,7 +210,7 @@ Write-Host "  End time:        $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -Foreg
 Write-Host "  Pipeline issues: $globalFails" -ForegroundColor $(if ($globalFails -eq 0) { 'Green' } else { 'Yellow' })
 
 if ($globalFails -gt 0) {
-    Write-Host "  Review WARN messages above and the DSC audit CSV for details." -ForegroundColor Yellow
+    Write-Host "  Review WARN messages above and DSC audit CSV for details." -ForegroundColor Yellow
 }
 
 Write-Host "==========================================" -ForegroundColor Cyan

@@ -13,12 +13,8 @@
     5. stig_remediation_fixes.ps1 runs AFTER apply_mof.ps1 (same reason)
     6. audit.ps1 runs AFTER apply_mof.ps1 (V-278942 to V-278947)
     7. apply_remaining_fixes.ps1 runs AFTER apply_mof.ps1 (V-254251/258/261)
-    8. repair_winrm_for_packer.ps1 runs LAST (must not be undone by any STIG script)
-
-    FIX: Integrity check corrected to use 'audit.ps1' (the actual filename)
-         instead of 'apply_audit_policy.ps1' which does not exist on disk.
-         This was causing the pre-flight check to error with MISSING even
-         though audit.ps1 was uploaded correctly by Packer.
+    8. install_nessus.ps1 runs AFTER all STIG fixes, BEFORE WinRM repair
+    9. repair_winrm_for_packer.ps1 runs LAST (must not be undone by any STIG script)
 #>
 
 Set-StrictMode -Version Latest
@@ -76,7 +72,6 @@ function Invoke-Step {
 
 # -----------------------------------------------------------------------
 # PRE-FLIGHT: Verify critical scripts are not truncated
-# FIX: Uses 'audit.ps1' (actual filename) not 'apply_audit_policy.ps1'
 # -----------------------------------------------------------------------
 Write-Host "`n--- Pre-flight: Script integrity checks ---" -ForegroundColor Yellow
 
@@ -87,6 +82,7 @@ $integrityChecks = @(
     @{ Path = "$scriptDir\create_mof.ps1";             MinLines = 50;  Label = "create_mof.ps1"            }
     @{ Path = "$scriptDir\audit.ps1";                  MinLines = 30;  Label = "audit.ps1"                 }
     @{ Path = "$scriptDir\apply_remaining_fixes.ps1";  MinLines = 30;  Label = "apply_remaining_fixes.ps1" }
+    @{ Path = "$scriptDir\install_nessus.ps1";         MinLines = 30;  Label = "install_nessus.ps1"        }
 )
 
 $integrityFail = $false
@@ -122,7 +118,6 @@ Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (remo
 
 # -----------------------------------------------------------------------
 # STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
-# Must run BEFORE create_mof.ps1 so DSC certificate checks find certs installed.
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-254442/443/444)" -AllowFailure
 
@@ -133,32 +128,24 @@ Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
 Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
 
 # -----------------------------------------------------------------------
-# STEP 4 -- Post-DSC targeted fixes
-# All scripts below MUST run AFTER apply_mof.ps1.
-# DSC cannot undo secedit/registry/auditpol writes -- running these after
-# DSC ensures they are the final state baked into the image.
+# STEP 4 -- Post-DSC targeted fixes (must all run AFTER apply_mof.ps1)
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\registry_stig.ps1"           "Registry STIG fixes"                             -AllowFailure
 Invoke-Step "$scriptDir\services_stig.ps1"           "Services STIG fixes"                             -AllowFailure
-
-# V-254285/286/287/288/289/290/291/292 -- password and lockout policy
 Invoke-Step "$scriptDir\account_policy.ps1"          "Account Policy (net accounts + secedit)"
-
-# V-278942/943/944/945/946/947 -- audit file system, handle manipulation, registry
-# FIX: script is named audit.ps1 not apply_audit_policy.ps1
 Invoke-Step "$scriptDir\audit.ps1"                   "Audit Subcategory Policy (V-278942 to V-278947)" -AllowFailure
-
-
-# V-254251/258/261 -- C:\ permissions, password expiry, cert file removal
 Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"   "Remaining STIG fixes (V-254251/258/261)"         -AllowFailure
-
-# Broader targeted fixes for remaining SCAP failures
 Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"                       -AllowFailure
 
+# -----------------------------------------------------------------------
+# STEP 4b -- Install Nessus Agent (after all STIG fixes are final)
+# Agent is installed unlinked. Client activates on first boot.
+# -----------------------------------------------------------------------
+Invoke-Step "$scriptDir\install_nessus.ps1"          "Install Nessus Agent (unlinked)"                 -AllowFailure
 
- Invoke-Step "$scriptDir\install_nessus.ps1"
 # -----------------------------------------------------------------------
 # STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)
+# Removes GPO registry overrides written by STIG, then restores WinRM auth.
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"
 

@@ -176,6 +176,10 @@ build {
     source      = "${var.hardening_source_dir}/repair_winrm_for_packer.ps1"
     destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
   }
+  provisioner "file" {
+  source      = "${var.hardening_source_dir}/restore_winrm_post_dsc.ps1"
+  destination = "${var.hardening_target_dir}/restore_winrm_post_dsc.ps1"
+  }
 
   provisioner "file" {
     source      = "${var.hardening_source_dir}/InstallRoot.msi"

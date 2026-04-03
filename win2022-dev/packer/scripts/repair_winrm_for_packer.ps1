@@ -5,17 +5,19 @@
     Must be the LAST script Packer runs before image capture.
 
 .NOTES
-    STIG hardening changes registry keys and account policies that break
-    the WinRM session Packer uses to upload its cleanup script (HTTP 401).
-    This script restores just enough WinRM capability for Packer to finish
-    without undoing any STIG controls.
+    STIG hardening writes GPO registry keys under:
+        HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service
+    These GPO keys OVERRIDE the WSMan:\ provider settings, which is why
+    Set-Item WSMan:\localhost\Service\Auth\Basic has no effect — the policy
+    key silently wins. This script removes those GPO overrides first, then
+    restores WinRM auth settings so Packer can finish its cleanup upload.
 
-    The image is captured AFTER this runs — these settings are baked in.
-    On first boot from the image, run_post_sysprep.ps1 re-locks WinRM down.
+    The image is captured AFTER this runs.
+    On first boot, run_post_sysprep.ps1 re-locks WinRM down.
 #>
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Continue'   # Don't abort on non-fatal WinRM errors
+$ErrorActionPreference = 'Continue'
 
 function Write-Section ($msg) {
     Write-Host "`n========================================" -ForegroundColor Cyan
@@ -27,31 +29,70 @@ function Write-Fixed ($msg) { Write-Host "  [FIX]   $msg" -ForegroundColor Yello
 function Write-Info  ($msg) { Write-Host "  [INFO]  $msg" -ForegroundColor Gray   }
 
 # -----------------------------------------------------------------------
-# 1. Re-enable WinRM Basic Auth (STIG may have disabled it)
-#    This is needed for Packer's winrm communicator to authenticate.
+# 1. Remove GPO registry overrides FIRST
+#    These live under \Policies\ and silently override WSMan:\ settings.
+#    Must be cleared before any Set-Item WSMan:\ calls will take effect.
 # -----------------------------------------------------------------------
-Write-Section "Restore WinRM authentication for Packer"
+Write-Section "Remove GPO WinRM policy registry overrides"
 
-$winrmAuthPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service"
-$winrmBasicPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Service"
+$policyServicePath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service"
+$policyClientPath  = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client"
 
-# Re-enable Basic auth at the WinRM service level
+$serviceKeys = @(
+    "AllowBasic",
+    "AllowUnencrypted",
+    "DisableRunAs",
+    "AllowCredSSP",
+    "AllowKerberos",
+    "AllowNegotiate"
+)
+
+$clientKeys = @(
+    "AllowBasic",
+    "AllowUnencrypted",
+    "AllowCredSSP",
+    "AllowKerberos",
+    "AllowNegotiate"
+)
+
+if (Test-Path $policyServicePath) {
+    foreach ($key in $serviceKeys) {
+        Remove-ItemProperty -Path $policyServicePath -Name $key -ErrorAction SilentlyContinue
+        Write-Fixed "Removed GPO policy key: WinRM\Service\$key"
+    }
+} else {
+    Write-Info "No GPO WinRM\Service policy path found — skipping"
+}
+
+if (Test-Path $policyClientPath) {
+    foreach ($key in $clientKeys) {
+        Remove-ItemProperty -Path $policyClientPath -Name $key -ErrorAction SilentlyContinue
+        Write-Fixed "Removed GPO policy key: WinRM\Client\$key"
+    }
+} else {
+    Write-Info "No GPO WinRM\Client policy path found — skipping"
+}
+
+# -----------------------------------------------------------------------
+# 2. Restore WinRM auth via WSMan provider
+#    Now that GPO overrides are gone, these Set-Item calls will actually stick.
+# -----------------------------------------------------------------------
+Write-Section "Restore WinRM authentication settings"
+
 try {
-    Set-Item -Path "WSMan:\localhost\Service\Auth\Basic" -Value $true -Force
+    Set-Item -Path "WSMan:\localhost\Service\Auth\Basic"      -Value $true -Force
     Write-Fixed "WinRM Basic auth re-enabled"
 } catch {
     Write-Info "WSMan Basic auth (non-fatal): $_"
 }
 
-# Re-enable Negotiate (NTLM/Kerberos) auth — Packer falls back to this
 try {
-    Set-Item -Path "WSMan:\localhost\Service\Auth\Negotiate" -Value $true -Force
+    Set-Item -Path "WSMan:\localhost\Service\Auth\Negotiate"  -Value $true -Force
     Write-Fixed "WinRM Negotiate auth re-enabled"
 } catch {
     Write-Info "WSMan Negotiate auth (non-fatal): $_"
 }
 
-# Allow unencrypted traffic on the WinRM HTTP listener (Packer default)
 try {
     Set-Item -Path "WSMan:\localhost\Service\AllowUnencrypted" -Value $true -Force
     Write-Fixed "WinRM AllowUnencrypted = true"
@@ -59,21 +100,24 @@ try {
     Write-Info "AllowUnencrypted (non-fatal): $_"
 }
 
-# Remove any Group Policy WinRM overrides that block Basic auth
-if (Test-Path $winrmAuthPath) {
-    try {
-        Remove-ItemProperty -Path $winrmAuthPath -Name "AllowBasic"        -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $winrmAuthPath -Name "DisableRunAs"      -ErrorAction SilentlyContinue
-        Write-Fixed "Removed GPO WinRM auth restrictions"
-    } catch {
-        Write-Info "GPO WinRM cleanup (non-fatal): $_"
-    }
+try {
+    Set-Item -Path "WSMan:\localhost\Client\Auth\Basic"       -Value $true -Force
+    Write-Fixed "WinRM Client Basic auth re-enabled"
+} catch {
+    Write-Info "WSMan Client Basic auth (non-fatal): $_"
+}
+
+try {
+    Set-Item -Path "WSMan:\localhost\Client\AllowUnencrypted" -Value $true -Force
+    Write-Fixed "WinRM Client AllowUnencrypted = true"
+} catch {
+    Write-Info "WSMan Client AllowUnencrypted (non-fatal): $_"
 }
 
 # -----------------------------------------------------------------------
-# 2. Ensure packer_user account is not affected by password policy changes
-#    The STIG fix sets PasswordExpires=True for all accounts — exclude
-#    packer_user so the active session token stays valid.
+# 3. Ensure packer_user account password does not expire
+#    STIG account_policy.ps1 sets PasswordExpires=True for all accounts.
+#    packer_user is a build-time account only — expiry does not apply.
 # -----------------------------------------------------------------------
 Write-Section "Protect packer_user account from STIG account policy changes"
 
@@ -84,9 +128,6 @@ foreach ($acct in $packerAccounts) {
     if (-not $user) { continue }
 
     try {
-        # Set password to never expire for the build account
-        # This is intentional — packer_user is a build-time account only,
-        # not a persistent user account, so STIG password expiry does not apply.
         $adsiUser = [ADSI]"WinNT://./$acct,user"
         $adsiUser.UserFlags.Value = $adsiUser.UserFlags.Value -bor 65536  # ADS_UF_DONT_EXPIRE_PASSWD
         $adsiUser.SetInfo()
@@ -97,7 +138,7 @@ foreach ($acct in $packerAccounts) {
 }
 
 # -----------------------------------------------------------------------
-# 3. Restart WinRM service to pick up all changes
+# 4. Restart WinRM to pick up all changes
 # -----------------------------------------------------------------------
 Write-Section "Restart WinRM service"
 
@@ -115,9 +156,9 @@ try {
 }
 
 # -----------------------------------------------------------------------
-# 4. Verify WinRM is listening
+# 5. Verify WinRM listener and auth config
 # -----------------------------------------------------------------------
-Write-Section "Verify WinRM listener"
+Write-Section "Verify WinRM listener and auth"
 
 try {
     $listeners = Get-WSManInstance -ResourceURI winrm/config/listener -SelectorSet @{} -Enumerate
@@ -125,13 +166,22 @@ try {
         Write-OK "WinRM listener: $($l.Transport) on port $($l.Port)"
     }
 } catch {
-    # Fallback check
     $netstat = netstat -an | Select-String ":5985|:5986"
     if ($netstat) {
-        Write-OK "WinRM port confirmed open:`n$netstat"
+        Write-OK "WinRM port confirmed open: $netstat"
     } else {
-        Write-Info "Could not confirm WinRM listener — Packer may still connect"
+        Write-Info "Could not confirm WinRM listener"
     }
+}
+
+# Show current auth state for log visibility
+try {
+    $auth = Get-Item "WSMan:\localhost\Service\Auth"
+    $auth | Get-ChildItem | ForEach-Object {
+        Write-Info "WinRM Auth\$($_.Name) = $($_.Value)"
+    }
+} catch {
+    Write-Info "Could not read WSMan auth state (non-fatal)"
 }
 
 Write-Host "`n=== WinRM repair complete — Packer should reconnect successfully ===" -ForegroundColor Green

@@ -1,15 +1,14 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Restores WinRM HTTPS after DSC breaks it.
-    Must run in a SEPARATE Packer provisioner block after apply_mof.ps1.
+    Restores WinRM HTTPS immediately after DSC/secedit breaks it.
+    Called by run_all.ps1 right after apply_mof.ps1 exits.
 
 .NOTES
-    DSC AccountPolicy resource calls secedit internally which resets the
-    security policy database and wipes WinRM auth settings + HTTPS listener.
-    Packer auto-retries the WinRM connection (winrm_timeout = 90m), so by
-    the time this script runs in the next provisioner block, we just need
-    to ensure WinRM is fully restored before the rest of the pipeline runs.
+    By the time this script runs, secedit has completed (apply_mof.ps1
+    polls LCM until Idle + 15s buffer). WinRM auth and HTTPS listener
+    are broken. This script rebuilds them before the rest of the pipeline
+    continues.
 #>
 
 Set-StrictMode -Version Latest
@@ -24,25 +23,24 @@ function Write-OK    ($msg) { Write-Host "  [OK]    $msg" -ForegroundColor Green
 function Write-Fixed ($msg) { Write-Host "  [FIX]   $msg" -ForegroundColor Yellow }
 function Write-Info  ($msg) { Write-Host "  [INFO]  $msg" -ForegroundColor Gray   }
 
-Write-Host "=== Restoring WinRM HTTPS after DSC ===" -ForegroundColor Cyan
+Write-Host "=== Restoring WinRM HTTPS after DSC/secedit ===" -ForegroundColor Cyan
 
 # -----------------------------------------------------------------------
-# 1. Remove GPO policy overrides written by DSC/secedit
+# 1. Remove GPO policy overrides written by secedit
 # -----------------------------------------------------------------------
 Write-Section "Remove GPO WinRM policy overrides"
 
-$policyPaths = @(
+foreach ($path in @(
     "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service",
     "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client"
-)
-foreach ($path in $policyPaths) {
+)) {
     if (Test-Path $path) {
         foreach ($key in @("AllowBasic","AllowUnencrypted","DisableRunAs","AllowCredSSP","AllowKerberos","AllowNegotiate")) {
             Remove-ItemProperty -Path $path -Name $key -ErrorAction SilentlyContinue
         }
         Write-Fixed "Removed GPO overrides: $path"
     } else {
-        Write-Info "Not present: $path"
+        Write-Info "Not present (OK): $path"
     }
 }
 
@@ -65,7 +63,7 @@ try {
              -CertificateThumbPrint $thumb `
              -Force | Out-Null
 
-    Write-OK "HTTPS listener rebuilt on port 5986 (cert: $thumb)"
+    Write-OK "HTTPS listener rebuilt (cert: $thumb)"
 } catch {
     Write-Warning "HTTPS listener rebuild failed: $_"
 }
@@ -75,7 +73,7 @@ try {
 # -----------------------------------------------------------------------
 Write-Section "Restore WSMan auth settings"
 
-$settings = @(
+foreach ($s in @(
     @{ Path = "WSMan:\localhost\Service\Auth\Basic";       Value = $true    },
     @{ Path = "WSMan:\localhost\Service\Auth\Negotiate";   Value = $true    },
     @{ Path = "WSMan:\localhost\Service\Auth\Certificate"; Value = $true    },
@@ -83,8 +81,7 @@ $settings = @(
     @{ Path = "WSMan:\localhost\Client\Auth\Basic";        Value = $true    },
     @{ Path = "WSMan:\localhost\Client\AllowUnencrypted";  Value = $false   },
     @{ Path = "WSMan:\localhost\MaxTimeoutms";             Value = 1800000  }
-)
-foreach ($s in $settings) {
+)) {
     try {
         Set-Item -Path $s.Path -Value $s.Value -Force
         Write-Fixed "$($s.Path) = $($s.Value)"
@@ -94,18 +91,24 @@ foreach ($s in $settings) {
 }
 
 # -----------------------------------------------------------------------
-# 4. Ensure WinRM HTTPS firewall rule exists
+# 4. Ensure WinRM firewall rules exist
 # -----------------------------------------------------------------------
 Write-Section "Ensure WinRM firewall rules"
 
-foreach ($rule in @(@{Name="WinRM-HTTPS";Port=5986}, @{Name="WinRM-HTTP";Port=5985})) {
-    $existing = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
-    if (-not $existing) {
-        netsh advfirewall firewall add rule name="$($rule.Name)" dir=in action=allow protocol=TCP localport=$($rule.Port)
-        Write-Fixed "Firewall rule added: $($rule.Name) port $($rule.Port)"
-    } else {
-        Write-OK "Firewall rule exists: $($rule.Name)"
-    }
+foreach ($rule in @(
+    @{ Name = "WinRM-HTTPS"; Port = 5986 },
+    @{ Name = "WinRM-HTTP";  Port = 5985 }
+)) {
+    Remove-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
+    New-NetFirewallRule `
+        -DisplayName $rule.Name `
+        -Direction   Inbound `
+        -Action      Allow `
+        -Protocol    TCP `
+        -LocalPort   $rule.Port `
+        -Profile     Any `
+        -ErrorAction SilentlyContinue | Out-Null
+    Write-Fixed "Firewall rule: $($rule.Name) port $($rule.Port)"
 }
 
 # -----------------------------------------------------------------------
@@ -122,7 +125,7 @@ foreach ($acct in @('packer_user', 'packer', 'WinRMUser')) {
         $adsiUser.SetInfo()
         Write-Fixed "Password expiry disabled: $acct"
     } catch {
-        Write-Info "Could not update $acct (non-fatal): $_"
+        Write-Info "Could not update $acct: $_"
     }
 }
 
@@ -136,7 +139,7 @@ try {
     Start-Sleep -Seconds 5
     Write-OK "WinRM service: $((Get-Service WinRM).Status)"
 } catch {
-    Write-Warning "WinRM restart failed: $_"
+    Write-Warning "WinRM restart: $_"
 }
 
 $port = netstat -an | Select-String ":5986"
@@ -146,5 +149,5 @@ if ($port) {
     Write-Warning "Port 5986 not detected"
 }
 
-Write-Host "`n=== WinRM restore complete — pipeline can continue ===" -ForegroundColor Green
+Write-Host "`n=== WinRM restore complete ===" -ForegroundColor Green
 exit 0

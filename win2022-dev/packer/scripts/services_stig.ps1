@@ -76,4 +76,3 @@ if ($port) {
 }
 
 Write-Host "=== Services STIG Fixed ==="
-exit 0

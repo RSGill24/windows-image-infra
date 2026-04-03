@@ -1,22 +1,17 @@
 # create_mof.ps1
 # Compiles a DSC MOF using PowerSTIG.
 #
-# FIX: Added all AccountPolicy STIG rules (V-254285 to V-254292) to SkipRule.
-#      DSC AccountPolicy resource calls secedit internally which resets the
-#      security policy database and kills the active WinRM session mid-build.
-#      These rules are handled correctly by account_policy.ps1 which runs
-#      AFTER DSC via net accounts + secedit in a controlled manner.
+# FIX: Added all UserRightRule IDs (V-254434 to V-254512) to SkipRule.
+#      DSC UserRightRule resource calls secedit internally, same as
+#      AccountPolicy. secedit resets the security policy database and
+#      kills the active WinRM session mid-build. All user rights rules
+#      are handled by stig_remediation_fixes.ps1 post-DSC.
 #
-# FIX: Removed all Exception entries that caused STIG regressions:
-#   - V-254446 ValueData='0'          was DISABLING blank-password protection (CAT I!)
-#   - V-254289 PolicyValue='0'        was setting max password age to NEVER
-#   - V-254290 PolicyValue='0'        was setting min password age to 0
-#   - V-254291 PolicyValue='0'        was setting min password length to 0
-#   - V-254292 PolicyValue='Disabled' was disabling password complexity
-#   - V-254501 Identity='Everyone'    was granting Everyone remote shutdown right
+# FIX: Added all AccountPolicy rules (V-254285 to V-254292) to SkipRule.
+#      Same secedit problem. Handled by account_policy.ps1 post-DSC.
 #
+# FIX: Removed all Exception entries that caused STIG regressions.
 # Only ISSO-approved exceptions remain: V-254439 and V-254435 (Guests group).
-# All password/lockout policy values are driven by the org.pamdata.xml file.
 
 Write-Host "=== create_mof.ps1 starting ==="
 
@@ -156,14 +151,12 @@ Configuration ApplyWindowsServerStig {
                 'V-254271',
 
                 # -------------------------------------------------------
-                # AccountPolicy rules — ALL skipped here.
-                # DSC AccountPolicy resource calls secedit internally.
-                # secedit resets the security policy database and kills
-                # the active WinRM session mid-build, preventing all
-                # subsequent scripts from running.
-                # These rules are fully handled by account_policy.ps1
-                # which runs AFTER DSC using net accounts + secedit
-                # in a controlled post-DSC step.
+                # AccountPolicy rules — skipped to prevent secedit from
+                # killing the WinRM session during DSC execution.
+                # DSC AccountPolicy resource calls secedit internally which
+                # resets the security policy database and terminates the
+                # active WinRM PowerShell process.
+                # All rules handled by account_policy.ps1 post-DSC.
                 # -------------------------------------------------------
                 'V-254285',   # Account lockout duration >= 15 min
                 'V-254286',   # Account lockout threshold <= 3
@@ -172,7 +165,43 @@ Configuration ApplyWindowsServerStig {
                 'V-254289',   # Maximum password age <= 60 days
                 'V-254290',   # Minimum password length >= 14
                 'V-254291',   # Password complexity = Enabled
-                'V-254292'    # Password history >= 24
+                'V-254292',   # Password history >= 24
+
+                # -------------------------------------------------------
+                # UserRightRule rules — skipped for the same reason.
+                # DSC UserRightRule resource also calls secedit internally.
+                # Full list sourced from WindowsServer-2022-MS-2.7.xml.
+                # All rules handled by stig_remediation_fixes.ps1 post-DSC.
+                # -------------------------------------------------------
+                'V-254434',   # Access this computer from the network
+                'V-254435',   # Deny access to this computer from the network
+                'V-254436',   # Deny log on as a batch job
+                'V-254437',   # Deny log on as a service
+                'V-254438',   # Deny log on locally
+                'V-254439',   # Deny log on through Remote Desktop Services
+                'V-254440',   # Enable computer and user accounts trusted for delegation
+                'V-254491',   # Access Credential Manager as a trusted caller
+                'V-254492',   # Act as part of the operating system
+                'V-254493',   # Allow log on locally
+                'V-254494',   # Back up files and directories
+                'V-254495',   # Create a pagefile
+                'V-254496',   # Create a token object
+                'V-254497',   # Create global objects
+                'V-254498',   # Create permanent shared objects
+                'V-254499',   # Create symbolic links
+                'V-254500',   # Debug programs
+                'V-254501',   # Force shutdown from a remote system
+                'V-254502',   # Generate security audits
+                'V-254503',   # Impersonate a client after authentication
+                'V-254504',   # Increase scheduling priority
+                'V-254505',   # Load and unload device drivers
+                'V-254506',   # Lock pages in memory
+                'V-254507',   # Manage auditing and security log
+                'V-254508',   # Modify firmware environment values
+                'V-254509',   # Perform volume maintenance tasks
+                'V-254510',   # Profile single process
+                'V-254511',   # Restore files and directories
+                'V-254512'    # Take ownership of files or other objects
             )
         }
     }

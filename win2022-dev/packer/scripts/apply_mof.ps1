@@ -2,16 +2,14 @@
 <#
 .SYNOPSIS
     Applies the compiled DSC MOF to enforce STIG controls.
-
 .NOTES
     FIX: Added explicit exit code detection using both $LASTEXITCODE and
          exception handling so failures are not silently swallowed.
     FIX: Added pre-application check to confirm the MOF exists and is
          not zero-length before calling Start-DscConfiguration.
-
+    FIX: Removed dead registry code that was incorrectly appended after
+         exit 0 — that code belongs in registry_stig.ps1 only.
     Run order: AFTER create_mof.ps1, BEFORE account_policy.ps1
-    (account_policy.ps1 re-applies policies that DSC may fail to set
-    due to the SCE database lock during Packer image builds)
 #>
 
 Set-StrictMode -Version Latest
@@ -21,8 +19,6 @@ Write-Host "=== Applying DSC configuration ==="
 
 # -----------------------------------------------------------------------
 # Resolve MOF path relative to this script's directory
-# $OutputPath from create_mof.ps1 does not carry over into a separate
-# script invocation — always resolve from $PSScriptRoot here.
 # -----------------------------------------------------------------------
 $OutputPath = Join-Path $PSScriptRoot "MOF"
 $mofFile    = Join-Path $OutputPath "localhost.mof"
@@ -55,24 +51,13 @@ Write-Host "Applying DSC configuration (this may take several minutes)..."
 
 try {
     Start-DscConfiguration -Path $OutputPath -Wait -Force -Verbose -ErrorAction Stop
-
     Write-Host "=== DSC configuration applied successfully ===" -ForegroundColor Green
-    
-    # Force clean exit code on success to prevent phantom exit code leaks
     exit 0
-
 } catch {
-    # Start-DscConfiguration throws on hard failures (e.g. MOF parse error,
-    # LCM not running). Individual resource failures are logged as verbose
-    # output but do NOT cause an exception — they are handled by
-    # account_policy.ps1 and stig_remediation_fixes.ps1 running afterward.
     Write-Warning "Start-DscConfiguration encountered an error: $_"
     Write-Warning "Individual resource failures (e.g. AccountPolicy SCE lock) are expected"
     Write-Warning "during Packer builds and will be corrected by account_policy.ps1."
     Write-Warning "Check the verbose output above for specific resource failures."
-
-    # Exit 0 intentionally — resource-level failures are non-fatal at this stage.
-    # Hard failures (LCM not running, MOF unreadable) will have already thrown above.
     Write-Host "=== DSC application completed with resource-level warnings ===" -ForegroundColor Yellow
     exit 0
 }

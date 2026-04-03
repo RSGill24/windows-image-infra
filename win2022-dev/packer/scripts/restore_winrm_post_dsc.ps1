@@ -113,4 +113,4 @@ if ($port) {
 }
 
 Write-Host "`n=== WinRM restore complete ===" -ForegroundColor Green
-exit 0
+

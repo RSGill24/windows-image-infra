@@ -92,4 +92,4 @@ Write-Host "Waiting 15s for secedit policy flush..."
 Start-Sleep -Seconds 15
 
 Write-Host "DSC complete. Proceeding to WinRM restore..." -ForegroundColor Cyan
-exit 0
+

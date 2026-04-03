@@ -122,42 +122,11 @@ Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (remo
 Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-254442/443/444)" -AllowFailure
 
 # -----------------------------------------------------------------------
-# STEP 3 -- Create and apply the DSC MOF (with WinRM Watchdog)
+# STEP 3 -- Create and apply the DSC MOF
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\create_mof.ps1" "Create DSC MOF"
+Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
+Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
 
-Write-Host "`n--- Starting WinRM Watchdog ---" -ForegroundColor Yellow
-Write-Host "  Protecting Packer's active connection from STIG disconnects..." -ForegroundColor Gray
-
-# Create a background script that aggressively forces WinRM to stay alive
-$watchdogScript = @"
-while (`$true) {
-    `$policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
-    if (Test-Path `$policyPath) {
-        Remove-ItemProperty -Path `$policyPath -Name 'AllowBasic' -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path `$policyPath -Name 'AllowUnencrypted' -ErrorAction SilentlyContinue
-    }
-    Set-Item -Path 'WSMan:\localhost\Service\Auth\Basic' -Value `$true -Force -ErrorAction SilentlyContinue
-    Set-Item -Path 'WSMan:\localhost\Service\Auth\Negotiate' -Value `$true -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-}
-"@
-$watchdogPath = "C:\Windows\Temp\winrm_watchdog.ps1"
-Set-Content -Path $watchdogPath -Value $watchdogScript
-
-# Launch the watchdog as a detached background process
-$watchdogProcess = Start-Process -FilePath "powershell.exe" -ArgumentList "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File $watchdogPath" -PassThru
-
-# Now apply the MOF. The watchdog will protect the connection while this runs.
-Invoke-Step "$scriptDir\apply_mof.ps1" "Apply DSC MOF"
-
-Write-Host "`n--- Stopping WinRM Watchdog ---" -ForegroundColor Yellow
-# Kill the watchdog now that DSC is finished
-Stop-Process -Id $watchdogProcess.Id -Force -ErrorAction SilentlyContinue
-Remove-Item -Path $watchdogPath -Force -ErrorAction SilentlyContinue
-
-# Immediately apply the permanent WinRM restoration
-Invoke-Step "$scriptDir\restore_winrm_post_dsc.ps1" "Restore WinRM immediately after DSC"
 # -----------------------------------------------------------------------
 # STEP 4 -- Post-DSC targeted fixes (must all run AFTER apply_mof.ps1)
 # -----------------------------------------------------------------------

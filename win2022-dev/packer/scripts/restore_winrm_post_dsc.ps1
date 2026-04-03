@@ -3,12 +3,6 @@
 .SYNOPSIS
     Restores WinRM HTTPS immediately after DSC/secedit breaks it.
     Called by run_all.ps1 right after apply_mof.ps1 exits.
-
-.NOTES
-    By the time this script runs, secedit has completed (apply_mof.ps1
-    polls LCM until Idle + 15s buffer). WinRM auth and HTTPS listener
-    are broken. This script rebuilds them before the rest of the pipeline
-    continues.
 #>
 
 Set-StrictMode -Version Latest
@@ -45,31 +39,8 @@ foreach ($path in @(
 }
 
 # -----------------------------------------------------------------------
-# 2. Rebuild WinRM HTTPS listener on port 5986
-# -----------------------------------------------------------------------
-Write-Section "Rebuild WinRM HTTPS listener (port 5986)"
-
-try {
-    Get-ChildItem WSMan:\localhost\Listener |
-        Where-Object { $_.Keys -contains "Transport=HTTPS" } |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-    $cert  = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation "Cert:\LocalMachine\My"
-    $thumb = $cert.Thumbprint
-
-    New-Item -Path WSMan:\localhost\Listener `
-             -Transport HTTPS `
-             -Address * `
-             -CertificateThumbPrint $thumb `
-             -Force | Out-Null
-
-    Write-OK "HTTPS listener rebuilt (cert: $thumb)"
-} catch {
-    Write-Warning "HTTPS listener rebuild failed: $_"
-}
-
-# -----------------------------------------------------------------------
-# 3. Restore WSMan auth settings
+# 2. Restore WSMan auth settings 
+#    (Listener rebuild removed to prevent dropping active session)
 # -----------------------------------------------------------------------
 Write-Section "Restore WSMan auth settings"
 
@@ -91,7 +62,7 @@ foreach ($s in @(
 }
 
 # -----------------------------------------------------------------------
-# 4. Ensure WinRM firewall rules exist
+# 3. Ensure WinRM firewall rules exist
 # -----------------------------------------------------------------------
 Write-Section "Ensure WinRM firewall rules"
 
@@ -112,7 +83,7 @@ foreach ($rule in @(
 }
 
 # -----------------------------------------------------------------------
-# 5. Protect packer_user from STIG password expiry
+# 4. Protect packer_user from STIG password expiry
 # -----------------------------------------------------------------------
 Write-Section "Protect packer_user account"
 
@@ -130,17 +101,9 @@ foreach ($acct in @('packer_user', 'packer', 'WinRMUser')) {
 }
 
 # -----------------------------------------------------------------------
-# 6. Restart WinRM and verify port 5986
+# 5. Verify port 5986 (Restart-Service removed to preserve connection)
 # -----------------------------------------------------------------------
-Write-Section "Restart WinRM and verify"
-
-try {
-    Restart-Service -Name WinRM -Force
-    Start-Sleep -Seconds 5
-    Write-OK "WinRM service: $((Get-Service WinRM).Status)"
-} catch {
-    Write-Warning "WinRM restart: $_"
-}
+Write-Section "Verify WinRM Port"
 
 $port = netstat -an | Select-String ":5986"
 if ($port) {

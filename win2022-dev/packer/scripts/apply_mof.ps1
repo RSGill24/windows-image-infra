@@ -20,6 +20,20 @@ if ($mofSize -lt 10000) {
     exit 1
 }
 
+# -----------------------------------------------------------------------
+# FIX: Set RefreshRequired = 0 before DSC runs.
+# PowerSTIG's RefreshRegistryPolicy resource checks this key — if it is 0
+# it skips the gpupdate /force call. gpupdate resets WinRM auth and kills
+# the active Packer session, preventing all post-DSC scripts from running.
+# -----------------------------------------------------------------------
+Write-Host "Setting RefreshRequired = 0 to prevent gpupdate during DSC..."
+$gpStatePath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\State\Machine"
+if (-not (Test-Path $gpStatePath)) {
+    New-Item -Path $gpStatePath -Force | Out-Null
+}
+Set-ItemProperty -Path $gpStatePath -Name "RefreshRequired" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+Write-Host "RefreshRequired = 0 set." -ForegroundColor Green
+
 Write-Host "Applying DSC configuration (this may take several minutes)..."
 
 try {

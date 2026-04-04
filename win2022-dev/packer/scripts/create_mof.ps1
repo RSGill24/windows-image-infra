@@ -1,34 +1,26 @@
 # create_mof.ps1
 # Compiles a DSC MOF using PowerSTIG.
 #
-# FIX: Removed all Exception entries that caused STIG regressions:
-#   - V-254446 ValueData='0'         was DISABLING blank-password protection (CAT I!)
-#   - V-254289 PolicyValue='0'       was setting max password age to NEVER
-#   - V-254290 PolicyValue='0'       was setting min password age to 0
-#   - V-254291 PolicyValue='0'       was setting min password length to 0
-#   - V-254292 PolicyValue='Disabled' was disabling password complexity
-#   - V-254501 Identity='Everyone'   was granting Everyone remote shutdown right
-#
+# FIX: Added all UserRightRule IDs (V-254434 to V-254512) to SkipRule.
+# FIX: Added all AccountPolicy rules (V-254285 to V-254292) to SkipRule.
+# FIX: Removed all Exception entries that caused STIG regressions.
 # Only ISSO-approved exceptions remain: V-254439 and V-254435 (Guests group).
-# All password/lockout policy values are driven by the org.pamdata.xml file.
 
 Write-Host "=== create_mof.ps1 starting ==="
 
 # -----------------------------------------------------------------------
 # PRE-COMPILATION CIM CONFLICT CLEANUP
-# Aggressively destroys out-of-band DSC modules baked into System32.
-# If these exist alongside the Program Files copies, DSC compilation fails.
 # -----------------------------------------------------------------------
 Write-Host "--- Scanning for duplicate System32 modules ---"
 $sys32Dsc = "C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 $conflictingModules = @(
-    "AuditPolicyDsc", 
-    "GPRegistryPolicyDsc", 
-    "PSDscResources", 
-    "WindowsDefenderDsc", 
-    "SecurityPolicyDsc", 
-    "AuditSystemDsc", 
-    "CertificateDsc", 
+    "AuditPolicyDsc",
+    "GPRegistryPolicyDsc",
+    "PSDscResources",
+    "WindowsDefenderDsc",
+    "SecurityPolicyDsc",
+    "AuditSystemDsc",
+    "CertificateDsc",
     "PowerSTIG"
 )
 
@@ -36,14 +28,9 @@ foreach ($mod in $conflictingModules) {
     $badPath = Join-Path $sys32Dsc $mod
     if (Test-Path $badPath) {
         Write-Host "  [!] Found conflict. Force deleting: $badPath" -ForegroundColor Yellow
-        
-        # Strip TrustedInstaller protections using native Windows tools
         takeown.exe /F $badPath /R /D Y | Out-Null
         icacls.exe $badPath /grant "Administrators:(OI)(CI)F" /T /Q | Out-Null
-        
-        # Nuke the folder
         Remove-Item -Path $badPath -Recurse -Force -ErrorAction SilentlyContinue
-        
         if (Test-Path $badPath) {
             Write-Warning "  FAILED to delete $badPath. CIM conflicts may occur."
         } else {
@@ -142,32 +129,26 @@ Configuration ApplyWindowsServerStig {
             StigVersion = '$stigVersionString'
             OrgSettings = '$safeOrgSettings'
 
-            # ---------------------------------------------------------------
-            # EXCEPTION RULES — ISSO-APPROVED DEVIATIONS ONLY
-            # ---------------------------------------------------------------
-            # All password policy, lockout policy, and security option values
-            # are driven by OrgSettings (pamdata.xml). Do NOT add exceptions
-            # for those rules here — exceptions override pamdata.xml and will
-            # cause SCAP failures.
-            #
-            # REMOVED exceptions that caused SCAP failures:
-            #   V-254446 ValueData='0'          -> Disabled blank-password protection (CAT I)
-            #   V-254289 PolicyValue='0'         -> Max password age = NEVER
-            #   V-254290 PolicyValue='0'         -> Min password age = 0
-            #   V-254291 PolicyValue='0'         -> Min password length = 0
-            #   V-254292 PolicyValue='Disabled'  -> Disabled password complexity
-            #   V-254501 Identity='Everyone'     -> Granted Everyone remote shutdown
-            # ---------------------------------------------------------------
             Exception = @{
-                # V-254439: Deny log on as a service — Guests only
                 'V-254439' = @{ 'Identity' = 'Guests' }
-                # V-254435: Deny log on as a batch job — Guests only
                 'V-254435' = @{ 'Identity' = 'Guests' }
             }
 
             SkipRule = @(
                 'V-254254.c',
-                'V-254271'
+                'V-254271',
+
+                # AccountPolicy — handled by account_policy.ps1
+                'V-254285', 'V-254286', 'V-254287', 'V-254288',
+                'V-254289', 'V-254290', 'V-254291', 'V-254292',
+
+                # UserRightRule — handled by stig_remediation_fixes.ps1
+                'V-254434', 'V-254435', 'V-254436', 'V-254437', 'V-254438',
+                'V-254439', 'V-254440', 'V-254491', 'V-254492', 'V-254493',
+                'V-254494', 'V-254495', 'V-254496', 'V-254497', 'V-254498',
+                'V-254499', 'V-254500', 'V-254501', 'V-254502', 'V-254503',
+                'V-254504', 'V-254505', 'V-254506', 'V-254507', 'V-254508',
+                'V-254509', 'V-254510', 'V-254511', 'V-254512'
             )
         }
     }
@@ -180,8 +161,7 @@ Set-Content -Path $tempScript -Value $scriptContent -Encoding UTF8
 Write-Host "Generated temporary DSC config script: $tempScript"
 
 # -----------------------------------------------------------------------
-# Spawn a fresh PowerShell process to compile the MOF.
-# A new process avoids CIM class caching issues from the current session.
+# Spawn a fresh PowerShell process to compile the MOF
 # -----------------------------------------------------------------------
 Write-Host "=== Generating MOF... ==="
 $result = Start-Process powershell `
@@ -204,16 +184,12 @@ if (!(Test-Path $mofFile)) {
     exit 1
 }
 
-# Display MOF size as a quick sanity check (a truncated/empty MOF is a red flag)
 $mofSize = (Get-Item $mofFile).Length
 Write-Host "MOF generated: $mofFile (size: $mofSize bytes)"
 
 if ($mofSize -lt 50000) {
     Write-Warning "MOF file is unusually small ($mofSize bytes). Expected > 50 KB."
-    Write-Warning "This may indicate that many STIG rules were skipped or the compilation was incomplete."
 }
 
 Write-Host "=== DSC configuration compiled successfully ==="
-
-# Force clean exit code
 exit 0

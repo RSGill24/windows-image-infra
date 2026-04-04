@@ -1,10 +1,4 @@
 #Requires -RunAsAdministrator
-<#
-.SYNOPSIS
-    Repairs WinRM connectivity after STIG hardening for Packer GCP builds.
-    Must be the LAST script Packer runs before image capture.
-#>
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 
@@ -17,94 +11,109 @@ function Write-OK    ($msg) { Write-Host "  [OK]    $msg" -ForegroundColor Green
 function Write-Fixed ($msg) { Write-Host "  [FIX]   $msg" -ForegroundColor Yellow }
 function Write-Info  ($msg) { Write-Host "  [INFO]  $msg" -ForegroundColor Gray   }
 
-# -----------------------------------------------------------------------
-# 1. Remove GPO registry overrides FIRST
-# -----------------------------------------------------------------------
-Write-Section "Remove GPO WinRM policy registry overrides"
+Write-Section "Remove GPO WinRM policy overrides"
 
-$policyServicePath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service"
-$policyClientPath  = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client"
-
-$serviceKeys = @("AllowBasic", "AllowUnencrypted", "DisableRunAs", "AllowCredSSP", "AllowKerberos", "AllowNegotiate")
-$clientKeys  = @("AllowBasic", "AllowUnencrypted", "AllowCredSSP", "AllowKerberos", "AllowNegotiate")
-
-if (Test-Path $policyServicePath) {
-    foreach ($key in $serviceKeys) {
-        Remove-ItemProperty -Path $policyServicePath -Name $key -ErrorAction SilentlyContinue
-        Write-Fixed "Removed GPO policy key: WinRM\Service\$key"
+foreach ($path in @(
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service",
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client"
+)) {
+    if (Test-Path $path) {
+        foreach ($key in @("AllowBasic","AllowUnencrypted","DisableRunAs","AllowCredSSP","AllowKerberos","AllowNegotiate")) {
+            Remove-ItemProperty -Path $path -Name $key -ErrorAction SilentlyContinue
+        }
+        Write-Fixed "Removed GPO overrides: $path"
     }
-} else {
-    Write-Info "No GPO WinRM\Service policy path found — skipping"
 }
 
-if (Test-Path $policyClientPath) {
-    foreach ($key in $clientKeys) {
-        Remove-ItemProperty -Path $policyClientPath -Name $key -ErrorAction SilentlyContinue
-        Write-Fixed "Removed GPO policy key: WinRM\Client\$key"
-    }
-} else {
-    Write-Info "No GPO WinRM\Client policy path found — skipping"
+Write-Section "Rebuild WinRM HTTPS listener (port 5986)"
+
+try {
+    Get-ChildItem WSMan:\localhost\Listener |
+        Where-Object { $_.Keys -contains "Transport=HTTPS" } |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+    $cert  = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation "Cert:\LocalMachine\My"
+    $thumb = $cert.Thumbprint
+
+    New-Item -Path WSMan:\localhost\Listener `
+             -Transport HTTPS `
+             -Address * `
+             -CertificateThumbPrint $thumb `
+             -Force | Out-Null
+
+    Write-OK "HTTPS listener rebuilt (cert: $thumb)"
+} catch {
+    Write-Warning "HTTPS listener rebuild failed: $_"
 }
 
-# -----------------------------------------------------------------------
-# 2. Restore WinRM auth via WSMan provider
-# -----------------------------------------------------------------------
-Write-Section "Restore WinRM authentication settings"
+Write-Section "Restore WSMan auth settings"
 
-try { Set-Item -Path "WSMan:\localhost\Service\Auth\Basic"      -Value $true -Force; Write-Fixed "WinRM Basic auth re-enabled" } catch { Write-Info "WSMan Basic auth: $_" }
-try { Set-Item -Path "WSMan:\localhost\Service\Auth\Negotiate"  -Value $true -Force; Write-Fixed "WinRM Negotiate auth re-enabled" } catch { Write-Info "WSMan Negotiate auth: $_" }
-try { Set-Item -Path "WSMan:\localhost\Service\AllowUnencrypted" -Value $true -Force; Write-Fixed "WinRM AllowUnencrypted = true" } catch { Write-Info "AllowUnencrypted: $_" }
-try { Set-Item -Path "WSMan:\localhost\Client\Auth\Basic"       -Value $true -Force; Write-Fixed "WinRM Client Basic auth re-enabled" } catch { Write-Info "WSMan Client Basic auth: $_" }
-try { Set-Item -Path "WSMan:\localhost\Client\AllowUnencrypted" -Value $true -Force; Write-Fixed "WinRM Client AllowUnencrypted = true" } catch { Write-Info "WSMan Client AllowUnencrypted: $_" }
+foreach ($s in @(
+    @{ Path = "WSMan:\localhost\Service\Auth\Basic";       Value = $true    },
+    @{ Path = "WSMan:\localhost\Service\Auth\Negotiate";   Value = $true    },
+    @{ Path = "WSMan:\localhost\Service\Auth\Certificate"; Value = $true    },
+    @{ Path = "WSMan:\localhost\Service\AllowUnencrypted"; Value = $false   },
+    @{ Path = "WSMan:\localhost\Client\Auth\Basic";        Value = $true    },
+    @{ Path = "WSMan:\localhost\Client\AllowUnencrypted";  Value = $false   },
+    @{ Path = "WSMan:\localhost\MaxTimeoutms";             Value = 1800000  }
+)) {
+    try {
+        Set-Item -Path $s.Path -Value $s.Value -Force
+        Write-Fixed "$($s.Path) = $($s.Value)"
+    } catch {
+        Write-Info "$($s.Path) (non-fatal): $_"
+    }
+}
 
-# -----------------------------------------------------------------------
-# 3. Ensure packer_user account password does not expire
-# -----------------------------------------------------------------------
-Write-Section "Protect packer_user account from STIG account policy changes"
+Write-Section "Ensure WinRM firewall rules"
 
-$packerAccounts = @('packer_user', 'packer', 'WinRMUser')
+foreach ($rule in @(
+    @{ Name = "WinRM-HTTPS"; Port = 5986 },
+    @{ Name = "WinRM-HTTP";  Port = 5985 }
+)) {
+    Remove-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
+    New-NetFirewallRule `
+        -DisplayName $rule.Name `
+        -Direction   Inbound `
+        -Action      Allow `
+        -Protocol    TCP `
+        -LocalPort   $rule.Port `
+        -Profile     Any `
+        -ErrorAction SilentlyContinue | Out-Null
+    Write-Fixed "Firewall rule: $($rule.Name) port $($rule.Port)"
+}
 
-foreach ($acct in $packerAccounts) {
+Write-Section "Protect packer_user account"
+
+foreach ($acct in @('packer_user', 'packer', 'WinRMUser')) {
     $user = Get-LocalUser -Name $acct -ErrorAction SilentlyContinue
     if (-not $user) { continue }
-
     try {
         $adsiUser = [ADSI]"WinNT://./$acct,user"
-        $adsiUser.UserFlags.Value = $adsiUser.UserFlags.Value -bor 65536  # ADS_UF_DONT_EXPIRE_PASSWD
+        $adsiUser.UserFlags.Value = $adsiUser.UserFlags.Value -bor 65536
         $adsiUser.SetInfo()
-        Write-Fixed "Password expiry disabled for build account: $acct"
+        Write-Fixed "Password expiry disabled: $acct"
     } catch {
-        Write-Info "Could not update $acct (non-fatal): $_"
+        Write-Info "Could not update $acct: $_"
     }
 }
 
-# -----------------------------------------------------------------------
-# 4. Verify WinRM listener and auth config (Restart-Service removed)
-# -----------------------------------------------------------------------
-Write-Section "Verify WinRM listener and auth"
+Write-Section "Restart WinRM and verify"
 
 try {
-    $listeners = Get-WSManInstance -ResourceURI winrm/config/listener -SelectorSet @{} -Enumerate
-    foreach ($l in $listeners) {
-        Write-OK "WinRM listener: $($l.Transport) on port $($l.Port)"
-    }
+    Restart-Service -Name WinRM -Force
+    Start-Sleep -Seconds 5
+    Write-OK "WinRM service: $((Get-Service WinRM).Status)"
 } catch {
-    $netstat = netstat -an | Select-String ":5985|:5986"
-    if ($netstat) {
-        Write-OK "WinRM port confirmed open: $netstat"
-    } else {
-        Write-Info "Could not confirm WinRM listener"
-    }
+    Write-Warning "WinRM restart: $_"
 }
 
-try {
-    $auth = Get-Item "WSMan:\localhost\Service\Auth"
-    $auth | Get-ChildItem | ForEach-Object {
-        Write-Info "WinRM Auth\$($_.Name) = $($_.Value)"
-    }
-} catch {
-    Write-Info "Could not read WSMan auth state (non-fatal)"
+$port = netstat -an | Select-String ":5986"
+if ($port) {
+    Write-OK "Port 5986 listening" -ForegroundColor Green
+} else {
+    Write-Warning "Port 5986 not detected"
 }
 
-Write-Host "`n=== WinRM repair complete — Packer should reconnect successfully ===" -ForegroundColor Green
-
+Write-Host "`n=== WinRM repair complete ===" -ForegroundColor Green
+exit 0

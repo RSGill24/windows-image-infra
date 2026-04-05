@@ -259,53 +259,6 @@ try {
 }
 
 # ============================================================
-# CAT II: V-254251 — C:\ root directory permissions
-# ============================================================
-
-Write-Section "CAT II: V-254251 — C:\ root directory ACL"
-
-try {
-    $acl     = Get-Acl -Path "C:\"
-    $rights  = [System.Security.AccessControl.FileSystemRights]
-    $inherit = [System.Security.AccessControl.InheritanceFlags]
-    $prop    = [System.Security.AccessControl.PropagationFlags]
-    $allow   = [System.Security.AccessControl.AccessControlType]::Allow
-
-    $acl.SetAccessRuleProtection($false, $false)
-    $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "NT AUTHORITY\SYSTEM", $rights::FullControl,
-        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Administrators", $rights::FullControl,
-        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", $rights::ReadAndExecute,
-        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", $rights::CreateDirectories,
-        $inherit::ContainerInherit, $prop::None, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", $rights::CreateFiles,
-        $inherit::ContainerInherit, $prop::InheritOnly, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "CREATOR OWNER", $rights::FullControl,
-        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::InheritOnly, $allow)))
-
-    Set-Acl -Path "C:\" -AclObject $acl
-    Write-Fixed "C:\ ACL reset to STIG-required defaults"
-} catch {
-    Write-Warn "Failed to set C:\ ACL: $_"
-    $ErrorCount++
-}
-
-# ============================================================
 # CAT II: V-278942 to V-278947 — Advanced Audit Policy (Object Access)
 # ============================================================
 

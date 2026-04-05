@@ -112,21 +112,26 @@ try {
 
 # ============================================================
 # CAT II: V-254261 — Remove software certificate installation files
+# FIX: Only scan specific known paths instead of full C:\ recursive scan.
+# Full C:\ recursive scan triggers security policy changes mid-execution
+# which kills the active WinRM session.
 # ============================================================
 
 Write-Section "CAT II: V-254261 — Remove .p12 and .pfx certificate files"
 
 $gceCert = 'C:\ProgramData\Google\Compute Engine\mds-mtls-client.key.pfx'
-$knownTestFiles = @(
+
+# Known specific files — remove directly
+$knownFiles = @(
     'C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\platform\gsutil\gslib\tests\test_data\test.p12',
     'C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\platform\gsutil\third_party\google-auth-library-python\tests\data\privatekey.p12'
 )
 
-foreach ($f in $knownTestFiles) {
+foreach ($f in $knownFiles) {
     if (Test-Path $f) {
         try {
             Remove-Item $f -Force
-            Write-Fixed "Removed test cert: $f"
+            Write-Fixed "Removed: $f"
         } catch {
             Write-Warn "Could not remove $f : $_"
             $ErrorCount++
@@ -137,30 +142,40 @@ foreach ($f in $knownTestFiles) {
 }
 
 if (Test-Path $gceCert) {
-    Write-Skip "GCE mTLS cert retained (GCP agent dependency — document with ISSO): $gceCert"
+    Write-Skip "GCE mTLS cert retained (GCP agent dependency): $gceCert"
 }
 
-foreach ($pattern in @('*.p12', '*.pfx')) {
-    try {
-        Get-ChildItem -Path C:\ -Filter $pattern -Recurse -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.FullName -notlike '*Adobe*Preflight*' -and
-                $_.FullName -ne $gceCert
-            } |
-            ForEach-Object {
-                try {
-                    Remove-Item $_.FullName -Force
-                    Write-Fixed "Removed: $($_.FullName)"
-                } catch {
-                    Write-Warn "Could not remove $($_.FullName): $_"
-                    $ErrorCount++
+# Scan only specific safe directories — NOT full C:\ recursion
+$safeScanPaths = @(
+    "C:\Users\packer_user",
+    "C:\Windows\Temp",
+    "C:\Temp",
+    "C:\DoD_Certs"
+)
+
+foreach ($scanPath in $safeScanPaths) {
+    if (-not (Test-Path $scanPath)) { continue }
+    foreach ($pattern in @('*.p12', '*.pfx')) {
+        try {
+            Get-ChildItem -Path $scanPath -Filter $pattern -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -ne $gceCert } |
+                ForEach-Object {
+                    try {
+                        Remove-Item $_.FullName -Force
+                        Write-Fixed "Removed: $($_.FullName)"
+                    } catch {
+                        Write-Warn "Could not remove $($_.FullName): $_"
+                        $ErrorCount++
+                    }
                 }
-            }
-    } catch {
-        Write-Warn "Exception during cert file scan: $_"
-        $ErrorCount++
+        } catch {
+            Write-Warn "Exception scanning $scanPath : $_"
+            $ErrorCount++
+        }
     }
 }
+
+Write-OK "Certificate file cleanup complete"
 
 # ============================================================
 # CAT II: V-254284 — Secure Boot

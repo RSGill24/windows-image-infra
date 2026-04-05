@@ -24,14 +24,11 @@ $dscSystemPath    = "C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 
 # -----------------------------------------------------------------------
 # Step 1: Aggressively purge duplicate modules from BOTH paths.
-# The base image may have pre-installed DSC modules locked by TrustedInstaller.
-# Leaving clones in System32 causes DSC to throw fatal 
-# "A second CIM class definition" errors during MOF compilation.
 # -----------------------------------------------------------------------
 Write-Host "--- Removing duplicate modules to prevent CIM conflicts..."
 
 foreach ($dep in $module.RequiredModules) {
-    
+
     # 1. Purge from System32 completely (bypassing TrustedInstaller)
     $dscDepPath = Join-Path $dscSystemPath $dep.Name
     if (Test-Path $dscDepPath) {
@@ -40,7 +37,7 @@ foreach ($dep in $module.RequiredModules) {
         icacls.exe $dscDepPath /grant "Administrators:(OI)(CI)F" /T /Q | Out-Null
         Remove-Item $dscDepPath -Recurse -Force -ErrorAction SilentlyContinue
     }
-    
+
     # 2. Purge from Program Files (removes older versions if present)
     $pfDepPath = Join-Path $systemModulePath $dep.Name
     if (Test-Path $pfDepPath) {
@@ -96,12 +93,12 @@ Write-Host "--- Applying PAM org setting overrides..."
 $overrides = @{
     "V-254248" = @{ ServiceName="WinDefend";  StartupType="Automatic" }
     "V-254265" = @{ ServiceName="MpsSvc";     StartupType="Automatic" }
-    "V-254285" = @{ PolicyValue="15" }   
-    "V-254286" = @{ PolicyValue="3"  }   
-    "V-254287" = @{ PolicyValue="15" }   
-    "V-254288" = @{ PolicyValue="24" }   
-    "V-254289" = @{ PolicyValue="60" }   
-    "V-254290" = @{ PolicyValue="1"  }   
+    "V-254285" = @{ PolicyValue="15" }
+    "V-254286" = @{ PolicyValue="3"  }
+    "V-254287" = @{ PolicyValue="15" }
+    "V-254288" = @{ PolicyValue="24" }
+    "V-254289" = @{ PolicyValue="60" }
+    "V-254290" = @{ PolicyValue="1"  }
     "V-254291" = @{ PolicyValue="15" }
 }
 
@@ -117,7 +114,6 @@ foreach ($vid in $overrides.Keys) {
     }
 }
 
-# Save the final XML
 $orgXml.Save($outputOrgXml)
 Write-Host "Org settings XML saved to: $outputOrgXml"
 
@@ -134,5 +130,55 @@ if ($dscResources) {
     Write-Warning "  No DSC resources returned — check for CIM class conflicts in event log"
 }
 
-Write-Host "=== Dependencies installed successfully ==="
+# -----------------------------------------------------------------------
+# Step 5: Patch GPRegistryPolicyDsc to disable gpupdate
+#
+# PowerSTIG's RefreshRegistryPolicy resource calls gpupdate /force at the
+# end of every DSC run. gpupdate resets WinRM auth settings and kills the
+# active Packer WinRM session, preventing all post-DSC scripts from running.
+# This patch replaces the gpupdate call with a no-op string so the resource
+# completes without breaking the connection.
+#
+# The patch is version-aware — if the file path changes (module update),
+# it will warn instead of silently failing.
+# -----------------------------------------------------------------------
+Write-Host "--- Patching GPRegistryPolicyDsc to disable gpupdate..." -ForegroundColor Yellow
 
+$gpRegModule  = Get-Module GPRegistryPolicyDsc -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
+$patchFile    = $null
+
+if ($gpRegModule) {
+    $patchFile = Join-Path $gpRegModule.ModuleBase `
+        "DSCResources\MSFT_RefreshRegistryPolicy\MSFT_RefreshRegistryPolicy.psm1"
+}
+
+if ($patchFile -and (Test-Path $patchFile)) {
+    $content = Get-Content $patchFile -Raw
+
+    if ($content -match 'PATCHED') {
+        Write-Host "  [OK] Already patched — skipping" -ForegroundColor Green
+    } else {
+        # Backup original
+        Copy-Item $patchFile "$patchFile.bak" -Force
+        Write-Host "  Backup saved: $patchFile.bak"
+
+        # Replace gpupdate call with no-op
+        $content = $content -replace `
+            "\`$gpupdateResult = Invoke-Command -ScriptBlock \{'N','N' \| gpupdate\.exe /force\}", `
+            '$gpupdateResult = "Skipped for Packer build" # PATCHED: gpupdate disabled to preserve WinRM session'
+
+        Set-Content $patchFile $content -Encoding UTF8
+
+        # Verify
+        if ((Get-Content $patchFile -Raw) -match 'PATCHED') {
+            Write-Host "  [OK] GPRegistryPolicyDsc patched successfully" -ForegroundColor Green
+        } else {
+            Write-Warning "  Patch may not have applied — verify manually: $patchFile"
+        }
+    }
+} else {
+    Write-Warning "  GPRegistryPolicyDsc psm1 not found — module version may have changed"
+    Write-Warning "  Run: Get-ChildItem 'C:\Program Files\WindowsPowerShell\Modules\GPRegistryPolicyDsc' -Recurse -Filter '*.psm1'"
+}
+
+Write-Host "=== Dependencies installed successfully ==="

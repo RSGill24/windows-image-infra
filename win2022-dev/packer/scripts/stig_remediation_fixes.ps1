@@ -6,7 +6,7 @@
 #>
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Continue'   # Don't abort on individual rule failures
+$ErrorActionPreference = 'Continue'
 
 function Write-Section {
     param([string]$msg)
@@ -174,7 +174,6 @@ try {
         Write-OK "Secure Boot is already enabled"
     } else {
         Write-Warn "Secure Boot is OFF — enable in GCP Shielded VM config."
-        Write-Warn "  In Packer HCL: shielded_instance_config { enable_secure_boot = true }"
     }
 } catch {
     Write-Warn "Could not query Secure Boot state: $_"
@@ -204,7 +203,6 @@ foreach ($cc in $certChecks) {
             Write-OK "[$($cc.Rule)] $($cc.Name)"
         } else {
             Write-Warn "[$($cc.Rule)] MISSING: $($cc.Name)"
-            Write-Warn "  -> Run install_dod_certs.ps1 or use InstallRoot/FBCA tools from https://cyber.mil/pki-pke"
             $ErrorCount++
         }
     } catch {
@@ -258,47 +256,6 @@ try {
 } catch {
     Write-Warn "Failed to rename Guest: $_"
     $ErrorCount++
-}
-
-# ============================================================
-# CAT II: V-254501 — Force shutdown from remote system — Administrators only
-# ============================================================
-
-Write-Section "CAT II: V-254501 — SeRemoteShutdownPrivilege = Administrators only"
-
-$seceditCfg2 = "$env:TEMP\stig_userrights.cfg"
-$seceditDb2  = "$env:TEMP\stig_userrights.sdb"
-
-Remove-Item $seceditCfg2 -ErrorAction SilentlyContinue
-Remove-Item $seceditDb2  -ErrorAction SilentlyContinue
-
-try {
-    secedit /export /areas USER_RIGHTS /cfg $seceditCfg2 /quiet
-    if (Test-Path $seceditCfg2) {
-        $ucfg = Get-Content $seceditCfg2 -Raw
-        if ($ucfg -match 'SeRemoteShutdownPrivilege') {
-            $ucfg = $ucfg -replace 'SeRemoteShutdownPrivilege\s*=\s*[^\r\n]*', 'SeRemoteShutdownPrivilege = *S-1-5-32-544'
-        } else {
-            $ucfg = $ucfg -replace '(\[Privilege Rights\])', "`$1`r`nSeRemoteShutdownPrivilege = *S-1-5-32-544"
-        }
-        $ucfg | Set-Content $seceditCfg2 -Encoding Unicode
-        secedit /configure /db $seceditDb2 /cfg $seceditCfg2 /areas USER_RIGHTS /quiet
-        if ($LASTEXITCODE -eq 0) {
-            Write-Fixed "SeRemoteShutdownPrivilege restricted to Administrators only"
-        } else {
-            Write-Warn "secedit USER_RIGHTS returned exit code $LASTEXITCODE"
-            $ErrorCount++
-        }
-    } else {
-        Write-Warn "secedit export failed for USER_RIGHTS — cannot set SeRemoteShutdownPrivilege"
-        $ErrorCount++
-    }
-} catch {
-    Write-Warn "Exception setting SeRemoteShutdownPrivilege: $_"
-    $ErrorCount++
-} finally {
-    Remove-Item $seceditCfg2 -ErrorAction SilentlyContinue
-    Remove-Item $seceditDb2  -ErrorAction SilentlyContinue
 }
 
 # ============================================================

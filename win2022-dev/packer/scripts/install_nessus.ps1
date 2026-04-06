@@ -11,14 +11,17 @@ $serviceName   = "Tenable Nessus Agent"
 # ----------------------------
 # 1. Uninstall existing
 # FIX: Registry check instead of Win32_Product.
-# Win32_Product triggers Windows Installer consistency check on ALL
-# installed products which resets security policy and kills WinRM.
+# FIX: Added -not [string]::IsNullOrEmpty($_.DisplayName) guard —
+#      some registry keys don't have DisplayName property and throw.
 # ----------------------------
 Write-Host "[1/5] Checking for existing Nessus Agent..." -ForegroundColor Yellow
 
 $nessusReg = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" `
     -ErrorAction SilentlyContinue |
-    Where-Object { $_.DisplayName -like "*Nessus Agent*" } |
+    Where-Object {
+        -not [string]::IsNullOrEmpty($_.DisplayName) -and
+        $_.DisplayName -like "*Nessus Agent*"
+    } |
     Select-Object -First 1
 
 if ($nessusReg) {

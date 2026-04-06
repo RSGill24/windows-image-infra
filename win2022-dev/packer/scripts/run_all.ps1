@@ -114,15 +114,15 @@ Invoke-Step "$scriptDir\audit.ps1"                    "Audit Subcategory Policy"
 Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"    "Remaining STIG fixes"            -AllowFailure
 Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"   "Targeted STIG remediation"       -AllowFailure
 
-# -----------------------------------------------------------------------
-# STEP 5 -- Install Nessus Agent
-# -----------------------------------------------------------------------
+# # -----------------------------------------------------------------------
+# # STEP 5 -- Install Nessus Agent
+# # -----------------------------------------------------------------------
 
 
-# -----------------------------------------------------------------------
-# STEP 6 -- Final WinRM repair
-# -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1"  "Repair WinRM for Packer (LAST)"
+# # -----------------------------------------------------------------------
+# # STEP 6 -- Final WinRM repair
+# # -----------------------------------------------------------------------
+# Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1"  "Repair WinRM for Packer (LAST)"
 
 # -----------------------------------------------------------------------
 # STEP 7 -- DSC compliance audit

@@ -92,7 +92,7 @@ if ($integrityFail) {
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\install_PowerSTIG.ps1"        "Install PowerSTIG"
 Invoke-Step "$scriptDir\install_dsc_deps.ps1"         "Install DSC dependencies"
-
+Invoke-Step "$scriptDir\install_nessus.ps1"           "Install Nessus Agent (unlinked)" -AllowFailure
 # -----------------------------------------------------------------------
 # STEP 2 -- Install DoD Certificates
 # -----------------------------------------------------------------------
@@ -117,7 +117,7 @@ Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"   "Targeted STIG remediation
 # -----------------------------------------------------------------------
 # STEP 5 -- Install Nessus Agent
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\install_nessus.ps1"           "Install Nessus Agent (unlinked)" -AllowFailure
+
 
 # -----------------------------------------------------------------------
 # STEP 6 -- Final WinRM repair

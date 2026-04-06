@@ -43,7 +43,7 @@ try {
 
     Write-OK "HTTPS listener rebuilt (cert: $thumb)"
 } catch {
-    Write-Warning "HTTPS listener rebuild failed: $_"
+    Write-Warning "HTTPS listener rebuild failed: $($_.Exception.Message)"
 }
 
 Write-Section "Restore WSMan auth settings"
@@ -61,7 +61,7 @@ foreach ($s in @(
         Set-Item -Path $s.Path -Value $s.Value -Force
         Write-Fixed "$($s.Path) = $($s.Value)"
     } catch {
-        Write-Info "$($s.Path) (non-fatal): $_"
+        Write-Info "$($s.Path) (non-fatal): $($_.Exception.Message)"
     }
 }
 
@@ -94,7 +94,7 @@ foreach ($acct in @('packer_user', 'packer', 'WinRMUser')) {
         $adsiUser.SetInfo()
         Write-Fixed "Password expiry disabled: $acct"
     } catch {
-        Write-Info "Could not update $acct: $_"
+        Write-Info "Could not update ${acct}: $($_.Exception.Message)"
     }
 }
 
@@ -105,7 +105,7 @@ try {
     Start-Sleep -Seconds 5
     Write-OK "WinRM service: $((Get-Service WinRM).Status)"
 } catch {
-    Write-Warning "WinRM restart: $_"
+    Write-Warning "WinRM restart: $($_.Exception.Message)"
 }
 
 $port = netstat -an | Select-String ":5986"

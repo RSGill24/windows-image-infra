@@ -10,34 +10,46 @@ $serviceName   = "Tenable Nessus Agent"
 
 # ----------------------------
 # 1. Uninstall existing
-# FIX: Registry check instead of Win32_Product.
-# FIX: Added -not [string]::IsNullOrEmpty($_.DisplayName) guard —
-#      some registry keys don't have DisplayName property and throw.
+# FIX: Use try/catch loop instead of Where-Object with property access.
+# StrictMode throws even inside Where-Object when property doesn't exist.
 # ----------------------------
 Write-Host "[1/5] Checking for existing Nessus Agent..." -ForegroundColor Yellow
 
-$nessusReg = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" `
-    -ErrorAction SilentlyContinue |
-    Where-Object {
-        -not [string]::IsNullOrEmpty($_.DisplayName) -and
-        $_.DisplayName -like "*Nessus Agent*"
-    } |
-    Select-Object -First 1
+$nessusReg = $null
+$regEntries = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" `
+    -ErrorAction SilentlyContinue
+
+foreach ($entry in $regEntries) {
+    try {
+        $name = $entry.DisplayName
+        if ($name -like "*Nessus Agent*") {
+            $nessusReg = $entry
+            break
+        }
+    } catch {
+        # Some registry keys don't have DisplayName — skip silently
+    }
+}
 
 if ($nessusReg) {
     Write-Host "Found: $($nessusReg.DisplayName) — uninstalling via msiexec..." -ForegroundColor Yellow
     Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
 
-    if ($nessusReg.UninstallString -match '\{[A-Z0-9\-]+\}') {
-        $productCode = $matches[0]
-        $proc = Start-Process msiexec.exe -ArgumentList "/x $productCode /quiet /norestart" -Wait -PassThru
-        if ($proc.ExitCode -eq 0) {
-            Write-Host "Uninstall complete." -ForegroundColor Green
+    try {
+        $uninstallStr = $nessusReg.UninstallString
+        if ($uninstallStr -match '\{[A-Z0-9\-]+\}') {
+            $productCode = $matches[0]
+            $proc = Start-Process msiexec.exe -ArgumentList "/x $productCode /quiet /norestart" -Wait -PassThru
+            if ($proc.ExitCode -eq 0) {
+                Write-Host "Uninstall complete." -ForegroundColor Green
+            } else {
+                Write-Warning "Uninstall returned code $($proc.ExitCode) — continuing anyway."
+            }
         } else {
-            Write-Warning "Uninstall returned code $($proc.ExitCode) — continuing anyway."
+            Write-Warning "Could not parse product code — skipping uninstall, continuing."
         }
-    } else {
-        Write-Warning "Could not parse product code — skipping uninstall, continuing."
+    } catch {
+        Write-Warning "Uninstall exception: $($_.Exception.Message) — continuing."
     }
 } else {
     Write-Host "No existing Nessus Agent found. Fresh install." -ForegroundColor Cyan

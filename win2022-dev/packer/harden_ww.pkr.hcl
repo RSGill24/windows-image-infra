@@ -180,7 +180,10 @@ build {
   source      = "${var.hardening_source_dir}/restore_winrm_post_dsc.ps1"
   destination = "${var.hardening_target_dir}/restore_winrm_post_dsc.ps1"
   }
-
+  provisioner "file" {
+  source      = "${var.hardening_source_dir}/install_bigfix.ps1"
+  destination = "${var.hardening_target_dir}/install_bigfix.ps1"
+  }
   provisioner "file" {
     source      = "${var.hardening_source_dir}/InstallRoot.msi"
     destination = "${var.hardening_target_dir}/InstallRoot.msi"

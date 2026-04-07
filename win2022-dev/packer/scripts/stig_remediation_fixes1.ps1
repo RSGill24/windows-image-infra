@@ -178,68 +178,68 @@ try {
     else { Log "  [FAIL] ConsentPromptBehaviorAdmin=$v1, PromptOnSecureDesktop=$v2" "Red" }
 } catch { Log "  [ERROR] $($_.Exception.Message)" "Red" }
 
-# ==============================================================
-# FIX 3 — PRE-SECEDIT RDP SAFETY BLOCK
-# ==============================================================
-Log "`n[SAFETY] Pre-secedit: ensuring RDP access is preserved..." "Cyan"
-try {
-    net localgroup "Remote Desktop Users" Administrators /add 2>$null | Out-Null
-    Log "  [OK] Administrators added to Remote Desktop Users group" "Green"
-} catch { Log "  [WARN] $($_.Exception.Message)" "Yellow" }
+# # ==============================================================
+# # FIX 3 — PRE-SECEDIT RDP SAFETY BLOCK
+# # ==============================================================
+# Log "`n[SAFETY] Pre-secedit: ensuring RDP access is preserved..." "Cyan"
+# try {
+#     net localgroup "Remote Desktop Users" Administrators /add 2>$null | Out-Null
+#     Log "  [OK] Administrators added to Remote Desktop Users group" "Green"
+# } catch { Log "  [WARN] $($_.Exception.Message)" "Yellow" }
 
-# ==============================================================
-# USER RIGHTS ASSIGNMENTS via secedit
-# ==============================================================
-Log "`n[CAT II] Configuring User Rights Assignments via secedit..." "Yellow"
+# # ==============================================================
+# # USER RIGHTS ASSIGNMENTS via secedit
+# # ==============================================================
+# Log "`n[CAT II] Configuring User Rights Assignments via secedit..." "Yellow"
 
-$infPath = "C:\Windows\Temp\stig_rights.inf"
-$sdbPath = "C:\Windows\Temp\stig_rights.sdb"
-$logSec  = "C:\Windows\Temp\stig_secedit.log"
+# $infPath = "C:\Windows\Temp\stig_rights.inf"
+# $sdbPath = "C:\Windows\Temp\stig_rights.sdb"
+# $logSec  = "C:\Windows\Temp\stig_secedit.log"
 
-if (Test-Path $sdbPath) { Remove-Item $sdbPath -Force }
+# if (Test-Path $sdbPath) { Remove-Item $sdbPath -Force }
 
-$infContent = @"
-[Unicode]
-Unicode=yes
-[Version]
-signature="`$CHICAGO`$"
-Revision=1
-[Privilege Rights]
+# $infContent = @"
+# [Unicode]
+# Unicode=yes
+# [Version]
+# signature="`$CHICAGO`$"
+# Revision=1
+# [Privilege Rights]
 
-SeNetworkLogonRight = *S-1-5-32-544,*S-1-5-11
-SeDenyNetworkLogonRight = *S-1-5-32-546,*S-1-5-113
-SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555
-SeDenyRemoteInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
-SeInteractiveLogonRight = *S-1-5-32-544
-SeDenyInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
-SeDenyBatchLogonRight = *S-1-5-32-546,*S-1-5-113
-SeBackupPrivilege = *S-1-5-32-544
-SeIncreaseBasePriorityPrivilege = *S-1-5-32-544,*S-1-5-90-0
-SeRestorePrivilege = *S-1-5-32-544
-"@
+# SeNetworkLogonRight = *S-1-5-32-544,*S-1-5-11
+# SeDenyNetworkLogonRight = *S-1-5-32-546,*S-1-5-113
+# SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555
+# SeDenyRemoteInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
+# SeInteractiveLogonRight = *S-1-5-32-544
+# SeDenyInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
+# SeDenyBatchLogonRight = *S-1-5-32-546,*S-1-5-113
+# SeBackupPrivilege = *S-1-5-32-544
+# SeIncreaseBasePriorityPrivilege = *S-1-5-32-544,*S-1-5-90-0
+# SeRestorePrivilege = *S-1-5-32-544
+# "@
 
-[System.IO.File]::WriteAllText($infPath, $infContent, [System.Text.UTF8Encoding]::new($false))
-Log "  Security template written to $infPath" "White"
+# [System.IO.File]::WriteAllText($infPath, $infContent, [System.Text.UTF8Encoding]::new($false))
+# Log "  Security template written to $infPath" "White"
 
-secedit /configure /db $sdbPath /cfg $infPath /overwrite /areas USER_RIGHTS /log $logSec /quiet
-$seceditExit = $LASTEXITCODE
-if ($seceditExit -eq 0) { Log "  [OK] secedit applied with exit code 0" "Green" }
-else { Log "  [WARN] secedit exit code: $seceditExit — review $logSec" "Yellow" }
+# secedit /configure /db $sdbPath /cfg $infPath /overwrite /areas USER_RIGHTS /log $logSec /quiet
+# $seceditExit = $LASTEXITCODE
+# if ($seceditExit -eq 0) { Log "  [OK] secedit applied with exit code 0" "Green" }
+# else { Log "  [WARN] secedit exit code: $seceditExit — review $logSec" "Yellow" }
 
-# ==============================================================
-# FIX 3 (cont.) — POST-SECEDIT RDP ENFORCEMENT
-# ==============================================================
-Log "`n[SAFETY] Post-secedit: re-asserting RDP access..." "Cyan"
-try {
-    net localgroup "Remote Desktop Users" Administrators /add 2>$null | Out-Null
-    Log "  [OK] Administrators in Remote Desktop Users group — confirmed" "Green"
+# # ==============================================================
+# # FIX 3 (cont.) — POST-SECEDIT RDP ENFORCEMENT
+# # ==============================================================
+# Log "`n[SAFETY] Post-secedit: re-asserting RDP access..." "Cyan"
+# try {
+#     net localgroup "Remote Desktop Users" Administrators /add 2>$null | Out-Null
+#     Log "  [OK] Administrators in Remote Desktop Users group — confirmed" "Green"
 
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Type DWord -Force
-    Log "  [OK] fDenyTSConnections = 0 (RDP enabled at registry)" "Green"
+#     Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Type DWord -Force
+#     Log "  [OK] fDenyTSConnections = 0 (RDP enabled at registry)" "Green"
 
-    Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-    Log "  [OK] Remote Desktop firewall rule enabled" "Green"
-} catch { Log "  [WARN] RDP post-secedit safety step: $($_.Exception.Message)" "Yellow" }
+#     Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+#     Log "  [OK] Remote Desktop firewall rule enabled" "Green"
+# } catch { Log "  [WARN] RDP post-secedit safety step: $($_.Exception.Message)" "Yellow" }
 
 # ==============================================================
 # V-254443 + V-254444 — DoD cross-certificates

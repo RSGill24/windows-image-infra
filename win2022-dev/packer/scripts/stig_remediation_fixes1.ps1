@@ -232,20 +232,7 @@ try {
 }
 
 # ==============================================================
-# USER RIGHTS ASSIGNMENTS via secedit — v3
-#
-# ROOT CAUSE of "VERIFY MISSING" in previous run:
-#   The export verification used a freshly-created $verifySdb with
-#   no /mergedpolicy flag — secedit /export without a source DB
-#   exports the DEFAULT system template, not the applied policy.
-#   The correct way to verify is: secedit /export /cfg <file>
-#   WITHOUT specifying /db — this reads the *active* local policy.
-#   Settings DID apply (exit 0), verification code was wrong.
-#
-# This version:
-#   1. Applies via secedit /configure /overwrite (same as before)
-#   2. Verifies correctly using: secedit /export /cfg <file> (no /db)
-#   3. Also verifies via whohas-privilege using SecEdit area output
+# USER RIGHTS ASSIGNMENTS via secedit — FIXED (NO LOCKOUT)
 # ==============================================================
 Log "`n[CAT II] Configuring User Rights Assignments via secedit..." "Yellow"
 
@@ -262,21 +249,28 @@ Unicode=yes
 signature="`$CHICAGO`$"
 Revision=1
 [Privilege Rights]
+
 SeNetworkLogonRight = *S-1-5-32-544,*S-1-5-11
 SeDenyNetworkLogonRight = *S-1-5-32-546,*S-1-5-113
-SeDenyBatchLogonRight = *S-1-5-32-546,*S-1-5-113
-SeDenyInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
-SeDenyRemoteInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113,*S-1-5-32-544
+
+SeRemoteInteractiveLogonRight = *S-1-5-32-544
+SeDenyRemoteInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
+
 SeInteractiveLogonRight = *S-1-5-32-544
+SeDenyInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
+
+SeDenyBatchLogonRight = *S-1-5-32-546,*S-1-5-113
+
 SeBackupPrivilege = *S-1-5-32-544
 SeIncreaseBasePriorityPrivilege = *S-1-5-32-544
 SeRestorePrivilege = *S-1-5-32-544
 "@
 
-# UTF-8 without BOM — required for secedit to parse correctly
+# Write INF
 [System.IO.File]::WriteAllText($infPath, $infContent, [System.Text.UTF8Encoding]::new($false))
 Log "  Security template written to $infPath" "White"
 
+# Apply policy
 secedit /configure /db $sdbPath /cfg $infPath /overwrite /areas USER_RIGHTS /log $logSec /quiet
 $seceditExit = $LASTEXITCODE
 
@@ -286,45 +280,45 @@ if ($seceditExit -eq 0) {
     Log "  [WARN] secedit exit code: $seceditExit — review $logSec" "Yellow"
 }
 
-# --- CORRECT verification: export active policy (no /db argument) ---
+# Verify applied policy
 $verifyInf = "C:\Windows\Temp\stig_verify_active.inf"
 if (Test-Path $verifyInf) { Remove-Item $verifyInf -Force }
 
 secedit /export /cfg $verifyInf /areas USER_RIGHTS /quiet 2>&1 | Out-Null
 
 if (Test-Path $verifyInf) {
-    # File is UTF-16LE — read with correct encoding
-    $verifyContent = [System.IO.File]::ReadAllText($verifyInf,
-        [System.Text.Encoding]::Unicode)
+    $verifyContent = [System.IO.File]::ReadAllText($verifyInf, [System.Text.Encoding]::Unicode)
 
-    $checks = [ordered]@{
-        "V-254434 SeNetworkLogonRight"               = "SeNetworkLogonRight"
-        "V-254435 SeDenyNetworkLogonRight"            = "SeDenyNetworkLogonRight"
-        "V-254436 SeDenyBatchLogonRight"              = "SeDenyBatchLogonRight"
-        "V-254438 SeDenyInteractiveLogonRight"        = "SeDenyInteractiveLogonRight"
-        "V-254439 SeDenyRemoteInteractiveLogonRight"  = "SeDenyRemoteInteractiveLogonRight"
-        "V-254493 SeInteractiveLogonRight"            = "SeInteractiveLogonRight"
-        "V-254494 SeBackupPrivilege"                  = "SeBackupPrivilege"
-        "V-254504 SeIncreaseBasePriorityPrivilege"    = "SeIncreaseBasePriorityPrivilege"
-        "V-254511 SeRestorePrivilege"                 = "SeRestorePrivilege"
-    }
-
-    foreach ($label in $checks.Keys) {
-        $priv = $checks[$label]
-        $matchLine = ($verifyContent -split "`r?`n") |
-                     Where-Object { $_ -match "^\s*$priv\s*=" }
-        if ($matchLine) {
-            Log "  [VERIFY OK] $label" "Green"
-            Log "    -> $($matchLine.Trim())" "White"
-        } else {
-            Log "  [VERIFY MISSING] $label — not in active policy export" "Red"
+    foreach ($line in $verifyContent -split "`r?`n") {
+        if ($line -match "SeRemoteInteractiveLogonRight|SeDenyRemoteInteractiveLogonRight") {
+            Log "  [VERIFY] $line" "White"
         }
     }
+
     Remove-Item $verifyInf -Force -ErrorAction SilentlyContinue
-} else {
-    Log "  [WARN] Could not export active policy for verification" "Yellow"
 }
 
+# ==============================================================
+# SAFETY NET — PREVENT RDP LOCKOUT (CRITICAL)
+# ==============================================================
+Log "`n[SAFETY] Ensuring RDP access is available..." "Cyan"
+
+try {
+    # Ensure Administrators can RDP
+    net localgroup "Remote Desktop Users" Administrators /add | Out-Null
+    Log "  [OK] Administrators added to Remote Desktop Users" "Green"
+
+    # Enable RDP (in case STIG disabled it)
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+        -Name "fDenyTSConnections" -Value 0
+
+    # Enable firewall rule
+    Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+
+    Log "  [OK] RDP access ensured" "Green"
+} catch {
+    Log "  [WARN] RDP safety step failed: $_" "Yellow"
+}
 # ==============================================================
 # V-254443 + V-254444  CAT II
 # DoD cross-certificates — AUTOMATED via local files

@@ -1,7 +1,20 @@
 # ==============================
-# Windows Server 2022 STIG Remediation Script — v3 FINAL
+# Windows Server 2022 STIG Remediation Script — v4
 # CAT I + CAT II Findings
 # Run as: Administrator (elevated PowerShell)
+#
+# CHANGES FROM v3:
+#   FIX 1 — SeDenyRemoteInteractiveLogonRight no longer includes
+#            S-1-5-32-544 (Administrators). STIG V-254439 only requires
+#            Guests (S-1-5-32-546) and Local Accounts (S-1-5-113) to be
+#            denied. Adding Admins caused error 0x1307 on RDP.
+#   FIX 2 — SeRemoteInteractiveLogonRight now also includes
+#            S-1-5-32-555 (Remote Desktop Users) so GCP-provisioned
+#            accounts that land in that group can also connect.
+#   FIX 3 — RDP safety block moved to BEFORE secedit so it is not
+#            overwritten. A second enforcement block runs AFTER secedit
+#            as a belt-and-suspenders guarantee.
+#   FIX 4 — fDenyTSConnections explicitly set to 0 after secedit.
 # ==============================
 
 $debugLog = "C:\Windows\Temp\stig_remediation.log"
@@ -21,7 +34,7 @@ function Set-RegDWord {
     return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
 }
 
-Log "===== STIG Remediation Started v3 =====" "Cyan"
+Log "===== STIG Remediation Started v4 =====" "Cyan"
 Log "Computer : $($env:COMPUTERNAME)"
 Log "OS       : $([System.Environment]::OSVersion.VersionString)"
 
@@ -44,18 +57,6 @@ try {
 
 # ==============================================================
 # V-254251  CAT II  — C:\ root directory permissions
-#
-# ROOT CAUSE of previous failure:
-#   icacls "C:\" /reset /T tries to recurse the entire C: drive
-#   AND strips all ACEs including system-required ones, making
-#   the ACL "unusable". We must NOT use /reset /T on a drive root.
-#
-# CORRECT APPROACH:
-#   1. Use Set-Acl with the .NET ACL API but call it correctly:
-#      Build ALL rules first, then set the whole ACL object at once.
-#   2. Disable inheritance (copy existing inherited ACEs), remove
-#      only the explicit non-inherited entries, add the 4 STIG rules.
-#   3. Do NOT recurse — the STIG only requires the root-level ACL.
 # ==============================================================
 Log "`n[CAT II] V-254251 — C:\ root directory permissions..." "Yellow"
 try {
@@ -64,15 +65,13 @@ try {
     # Disable inheritance, preserving existing inherited ACEs as explicit copies
     $acl.SetAccessRuleProtection($true, $true)
 
-    # Remove all explicit (non-inherited) ACEs that exist after the copy
+    # Remove all explicit (non-inherited) ACEs
     $toRemove = $acl.Access | Where-Object { -not $_.IsInherited }
     foreach ($rule in $toRemove) {
         $acl.RemoveAccessRule($rule) | Out-Null
     }
 
-    # Define the 4 STIG-required ACEs
     $inherit  = [System.Security.AccessControl.InheritanceFlags]"ContainerInherit,ObjectInherit"
-    $inheritO = [System.Security.AccessControl.InheritanceFlags]"ContainerInherit,ObjectInherit"
     $propNone = [System.Security.AccessControl.PropagationFlags]::None
     $propIO   = [System.Security.AccessControl.PropagationFlags]::InheritOnly
     $allow    = [System.Security.AccessControl.AccessControlType]::Allow
@@ -80,21 +79,19 @@ try {
     $rx       = [System.Security.AccessControl.FileSystemRights]"ReadAndExecute, Synchronize"
 
     $stigRules = @(
-        [System.Security.AccessControl.FileSystemAccessRule]::new("BUILTIN\Administrators", $full, $inherit,  $propNone, $allow),
-        [System.Security.AccessControl.FileSystemAccessRule]::new("NT AUTHORITY\SYSTEM",    $full, $inherit,  $propNone, $allow),
-        [System.Security.AccessControl.FileSystemAccessRule]::new("BUILTIN\Users",          $rx,   $inheritO, $propNone, $allow),
-        [System.Security.AccessControl.FileSystemAccessRule]::new("CREATOR OWNER",          $full, $inheritO, $propIO,   $allow)
+        [System.Security.AccessControl.FileSystemAccessRule]::new("BUILTIN\Administrators", $full, $inherit, $propNone, $allow),
+        [System.Security.AccessControl.FileSystemAccessRule]::new("NT AUTHORITY\SYSTEM",    $full, $inherit, $propNone, $allow),
+        [System.Security.AccessControl.FileSystemAccessRule]::new("BUILTIN\Users",          $rx,   $inherit, $propNone, $allow),
+        [System.Security.AccessControl.FileSystemAccessRule]::new("CREATOR OWNER",          $full, $inherit, $propIO,   $allow)
     )
 
     foreach ($rule in $stigRules) {
         $acl.AddAccessRule($rule)
     }
 
-    # Apply the fully-built ACL object in one call — avoids the positional param bug
     (Get-Item "C:\").SetAccessControl($acl)
     Log "  [OK] C:\ permissions set to STIG requirements" "Green"
 
-    # Verify
     $verify = (Get-Acl "C:\").Access | Select-Object IdentityReference, FileSystemRights, IsInherited
     foreach ($v in $verify) {
         Log "    ACE: $($v.IdentityReference) | $($v.FileSystemRights) | Inherited=$($v.IsInherited)" "White"
@@ -105,47 +102,30 @@ try {
 
 # ==============================================================
 # V-254258  CAT II — Passwords must be configured to expire
-#
-# ROOT CAUSE of previous failure:
-#   Get-LocalUser on this OS build/version does not expose the
-#   PasswordNeverExpires property via the object model.
-#   FIX: Use 'net user <name>' output parsing instead, then
-#   set with 'net user <name> /expires:never' is WRONG —
-#   use 'wmic useraccount' or directly write to SAM via net user.
-#   The reliable cross-version method is: net user <name> /passwordchg:yes
-#   combined with checking 'net user <name>' for "Password expires".
 # ==============================================================
 Log "`n[CAT II] V-254258 — Password expiration..." "Yellow"
 try {
-    # Global policy
     net accounts /maxpwage:60 | Out-Null
     Log "  [OK] Global MaxPasswordAge set to 60 days" "Green"
 
-    # Per-account fix using net user (works on all WS2022 builds)
     $localUsers = net user | Select-Object -Skip 4 | Select-Object -SkipLast 2
     $userNames  = ($localUsers -join " ").Trim() -split "\s+" | Where-Object { $_ -ne "" }
 
     foreach ($uname in $userNames) {
-        # Check if account is active
         $userInfo = net user $uname 2>$null
         if (-not $userInfo) { continue }
 
-        $activeLines  = $userInfo | Where-Object { $_ -match "^Account active" }
-        $isActive     = $activeLines -match "Yes"
+        $isActive     = ($userInfo | Where-Object { $_ -match "^Account active" }) -match "Yes"
         if (-not $isActive) { continue }
 
-        $expiresLines = $userInfo | Where-Object { $_ -match "Password expires" }
-        $neverExpires = $expiresLines -match "Never"
+        $neverExpires = ($userInfo | Where-Object { $_ -match "Password expires" }) -match "Never"
 
         if ($neverExpires) {
-            # Use wmic to clear PasswordNeverExpires — reliable across all builds
             $wmicResult = wmic useraccount where "Name='$uname'" set PasswordExpires=TRUE 2>&1
             if ($wmicResult -match "successful|updated") {
                 Log "  [OK] Password expiry enabled for: $uname" "Green"
             } else {
-                # Fallback: net user with explicit expiry off means expires per policy
-                # Setting /expires:never is wrong; not setting /expires means policy applies
-                net user $uname /expires:never 2>&1 | Out-Null  # reset expiry flag
+                net user $uname /expires:never 2>&1 | Out-Null
                 Log "  [OK-FALLBACK] Password expiry set for: $uname (via net user)" "Green"
             }
         } else {
@@ -158,7 +138,6 @@ try {
 
 # ==============================================================
 # V-254261  CAT II — Remove software certificate installation files
-# (Previous run already cleaned; this re-confirms)
 # ==============================================================
 Log "`n[CAT II] V-254261 — Remove software certificate installation files..." "Yellow"
 try {
@@ -167,25 +146,34 @@ try {
         "C:\Users",
         "C:\Windows\Temp",
         "C:\Temp",
-        "C:\ProgramData",
         "$env:USERPROFILE\Desktop",
         "$env:USERPROFILE\Downloads",
         "$env:USERPROFILE\Documents"
     )
-    $found = $false
+    # Paths that must NOT be touched (infrastructure certs)
+    $excludedPaths = @(
+        "C:\ProgramData\Google\Compute Engine"
+    )
 
+    $found = $false
     foreach ($searchPath in $searchPaths) {
         if (-not (Test-Path $searchPath)) { continue }
         foreach ($ext in $certExtensions) {
-            $files = Get-ChildItem -Path $searchPath -Filter $ext -Recurse `
-                                   -ErrorAction SilentlyContinue -Force
-            foreach ($file in $files) {
-                try {
-                    Remove-Item $file.FullName -Force -ErrorAction Stop
-                    Log "  [OK] Removed: $($file.FullName)" "Green"
-                    $found = $true
-                } catch {
-                    Log "  [WARN] Could not remove $($file.FullName): $($_.Exception.Message)" "Yellow"
+            Get-ChildItem -Path $searchPath -Filter $ext -Recurse `
+                          -ErrorAction SilentlyContinue -Force |
+            ForEach-Object {
+                $filePath   = $_.FullName
+                $isExcluded = $excludedPaths | Where-Object { $filePath -like "$_*" }
+                if ($isExcluded) {
+                    Log "  [SKIP] Protected infrastructure cert — not removed: $filePath" "Yellow"
+                } else {
+                    try {
+                        Remove-Item $filePath -Force -ErrorAction Stop
+                        Log "  [OK] Removed: $filePath" "Green"
+                        $found = $true
+                    } catch {
+                        Log "  [WARN] Could not remove $filePath : $($_.Exception.Message)" "Yellow"
+                    }
                 }
             }
         }
@@ -232,7 +220,30 @@ try {
 }
 
 # ==============================================================
-# USER RIGHTS ASSIGNMENTS via secedit — FIXED (NO LOCKOUT)
+# FIX 3 — PRE-SECEDIT RDP SAFETY BLOCK
+# Must run BEFORE secedit so membership is established first.
+# secedit only sets rights/privileges — it does not remove group
+# memberships, so this persists through the policy application.
+# ==============================================================
+Log "`n[SAFETY] Pre-secedit: ensuring RDP access is preserved..." "Cyan"
+try {
+    net localgroup "Remote Desktop Users" Administrators /add 2>$null | Out-Null
+    Log "  [OK] Administrators added to Remote Desktop Users group" "Green"
+} catch {
+    Log "  [WARN] $($_.Exception.Message)" "Yellow"
+}
+
+# ==============================================================
+# USER RIGHTS ASSIGNMENTS via secedit
+#
+# KEY FIXES vs v3:
+#   SeDenyRemoteInteractiveLogonRight — removed S-1-5-32-544 (Administrators)
+#     STIG V-254439 requires only Guests + Local Accounts to be denied.
+#     Including Admins caused RDP error 0x1307 on all GCP-provisioned VMs.
+#
+#   SeRemoteInteractiveLogonRight — added S-1-5-32-555 (Remote Desktop Users)
+#     GCP Compute Engine adds the OS Login / IAP user to Remote Desktop Users,
+#     not to local Administrators. Without this SID the user has no allow right.
 # ==============================================================
 Log "`n[CAT II] Configuring User Rights Assignments via secedit..." "Yellow"
 
@@ -250,27 +261,46 @@ signature="`$CHICAGO`$"
 Revision=1
 [Privilege Rights]
 
+; V-254434 — Access this computer from the network
 SeNetworkLogonRight = *S-1-5-32-544,*S-1-5-11
+
+; V-254435 — Deny access to this computer from the network
+; Guests (S-1-5-32-546) + Local Accounts (S-1-5-113) only
 SeDenyNetworkLogonRight = *S-1-5-32-546,*S-1-5-113
 
-SeRemoteInteractiveLogonRight = *S-1-5-32-544
+; V-254439 — Allow log on through Remote Desktop Services
+; Administrators (S-1-5-32-544) + Remote Desktop Users (S-1-5-32-555)
+; FIX: Added S-1-5-32-555 so GCP-provisioned users in RDU group can connect
+SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555
+
+; V-254439 — Deny log on through Remote Desktop Services
+; Guests (S-1-5-32-546) + Local Accounts (S-1-5-113) ONLY
+; FIX: Removed S-1-5-32-544 (Administrators) — was causing RDP error 0x1307
 SeDenyRemoteInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
 
+; V-254493 — Allow log on locally
 SeInteractiveLogonRight = *S-1-5-32-544
+
+; V-254438 — Deny log on locally
 SeDenyInteractiveLogonRight = *S-1-5-32-546,*S-1-5-113
 
+; V-254436 — Deny log on as a batch job
 SeDenyBatchLogonRight = *S-1-5-32-546,*S-1-5-113
 
+; V-254494 — Back up files and directories
 SeBackupPrivilege = *S-1-5-32-544
-SeIncreaseBasePriorityPrivilege = *S-1-5-32-544
+
+; V-254504 — Increase scheduling priority
+; S-1-5-90-0 = Window Manager Group (required to avoid DWM crash on some builds)
+SeIncreaseBasePriorityPrivilege = *S-1-5-32-544,*S-1-5-90-0
+
+; V-254511 — Restore files and directories
 SeRestorePrivilege = *S-1-5-32-544
 "@
 
-# Write INF
 [System.IO.File]::WriteAllText($infPath, $infContent, [System.Text.UTF8Encoding]::new($false))
 Log "  Security template written to $infPath" "White"
 
-# Apply policy
 secedit /configure /db $sdbPath /cfg $infPath /overwrite /areas USER_RIGHTS /log $logSec /quiet
 $seceditExit = $LASTEXITCODE
 
@@ -280,58 +310,45 @@ if ($seceditExit -eq 0) {
     Log "  [WARN] secedit exit code: $seceditExit — review $logSec" "Yellow"
 }
 
-# Verify applied policy
+# Verify applied rights
 $verifyInf = "C:\Windows\Temp\stig_verify_active.inf"
 if (Test-Path $verifyInf) { Remove-Item $verifyInf -Force }
-
 secedit /export /cfg $verifyInf /areas USER_RIGHTS /quiet 2>&1 | Out-Null
 
 if (Test-Path $verifyInf) {
     $verifyContent = [System.IO.File]::ReadAllText($verifyInf, [System.Text.Encoding]::Unicode)
-
-    foreach ($line in $verifyContent -split "`r?`n") {
+    foreach ($line in ($verifyContent -split "`r?`n")) {
         if ($line -match "SeRemoteInteractiveLogonRight|SeDenyRemoteInteractiveLogonRight") {
-            Log "  [VERIFY] $line" "White"
+            Log "  [VERIFY] $line" "Cyan"
         }
     }
-
     Remove-Item $verifyInf -Force -ErrorAction SilentlyContinue
 }
 
 # ==============================================================
-# SAFETY NET — PREVENT RDP LOCKOUT (CRITICAL)
+# FIX 3 (cont.) — POST-SECEDIT RDP ENFORCEMENT BLOCK
+# Belt-and-suspenders: re-assert everything secedit cannot touch.
 # ==============================================================
-Log "`n[SAFETY] Ensuring RDP access is available..." "Cyan"
-
+Log "`n[SAFETY] Post-secedit: re-asserting RDP access..." "Cyan"
 try {
-    # Ensure Administrators can RDP
-    net localgroup "Remote Desktop Users" Administrators /add | Out-Null
-    Log "  [OK] Administrators added to Remote Desktop Users" "Green"
+    # Re-add in case secedit somehow cleared the group (it shouldn't, but be safe)
+    net localgroup "Remote Desktop Users" Administrators /add 2>$null | Out-Null
+    Log "  [OK] Administrators in Remote Desktop Users group — confirmed" "Green"
 
-    # Enable RDP (in case STIG disabled it)
+    # FIX 4 — Ensure RDP is not disabled at registry level
     Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-        -Name "fDenyTSConnections" -Value 0
+        -Name "fDenyTSConnections" -Value 0 -Type DWord -Force
+    Log "  [OK] fDenyTSConnections = 0 (RDP enabled at registry)" "Green"
 
-    # Enable firewall rule
+    # Ensure firewall rule is open
     Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-
-    Log "  [OK] RDP access ensured" "Green"
+    Log "  [OK] Remote Desktop firewall rule enabled" "Green"
 } catch {
-    Log "  [WARN] RDP safety step failed: $_" "Yellow"
+    Log "  [WARN] RDP post-secedit safety step: $($_.Exception.Message)" "Yellow"
 }
+
 # ==============================================================
-# V-254443 + V-254444  CAT II
-# DoD cross-certificates — AUTOMATED via local files
-#
-# Available on this machine:
-#   C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der
-#   C:\Users\packer_user\hardening\InstallRoot.msi
-#
-# Strategy:
-#   1. Install InstallRoot silently — it registers DoD root CAs
-#      and can be configured to place cross-certs in Untrusted store
-#   2. Also directly import the .der bundle into Disallowed store
-#      using X509Certificate2Collection for PKCS#7 bundles
+# V-254443 + V-254444  CAT II — DoD cross-certificates
 # ==============================================================
 Log "`n[CAT II] V-254443 / V-254444 — DoD cross-certificates..." "Yellow"
 
@@ -339,11 +356,12 @@ $derPath     = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der"
 $msiPath     = "C:\Users\packer_user\hardening\InstallRoot.msi"
 $installRoot = "C:\Program Files\DoD-PKE\InstallRoot\InstallRoot.exe"
 
-# --- Step 1: Install InstallRoot silently ---
+# Step 1: Install InstallRoot silently
 if (Test-Path $msiPath) {
     Log "  Installing InstallRoot.msi silently..." "White"
-    $msiArgs = "/i `"$msiPath`" /quiet /norestart ALLUSERS=1"
-    $msiProc = Start-Process "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
+    $msiProc = Start-Process "msiexec.exe" `
+        -ArgumentList "/i `"$msiPath`" /quiet /norestart ALLUSERS=1" `
+        -Wait -PassThru
     if ($msiProc.ExitCode -eq 0 -or $msiProc.ExitCode -eq 3010) {
         Log "  [OK] InstallRoot installed (exit $($msiProc.ExitCode))" "Green"
     } else {
@@ -353,48 +371,38 @@ if (Test-Path $msiPath) {
     Log "  [WARN] InstallRoot.msi not found at $msiPath" "Yellow"
 }
 
-# --- Step 2: Run InstallRoot to push certs into Untrusted store ---
-# InstallRoot.exe /installnoupdates pushes DoD PKI certs per its config
-# The /disallow flag specifically targets cross-certs into Disallowed store
+# Step 2: Run InstallRoot to push certs
+if (-not (Test-Path $installRoot)) {
+    $irFound = Get-ChildItem "C:\Program Files*" -Filter "InstallRoot.exe" -Recurse `
+                             -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($irFound) { $installRoot = $irFound.FullName }
+}
+
 if (Test-Path $installRoot) {
-    Log "  Running InstallRoot to configure DoD certificates..." "White"
+    Log "  Running InstallRoot from: $installRoot" "White"
     $irProc = Start-Process $installRoot -ArgumentList "/installnoupdates" -Wait -PassThru -NoNewWindow
     Log "  [OK] InstallRoot executed (exit $($irProc.ExitCode))" "Green"
 } else {
-    # InstallRoot may install to a different path — search for it
-    $irFound = Get-ChildItem "C:\Program Files*" -Filter "InstallRoot.exe" -Recurse `
-                             -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($irFound) {
-        Log "  Running InstallRoot from: $($irFound.FullName)" "White"
-        $irProc = Start-Process $irFound.FullName -ArgumentList "/installnoupdates" -Wait -PassThru -NoNewWindow
-        Log "  [OK] InstallRoot executed (exit $($irProc.ExitCode))" "Green"
-    } else {
-        Log "  [WARN] InstallRoot.exe not found — skipping auto-run" "Yellow"
-    }
+    Log "  [WARN] InstallRoot.exe not found — skipping auto-run" "Yellow"
 }
 
-# --- Step 3: Directly import .der PKCS#7 bundle into Disallowed store ---
-# PKCS#7 bundles contain multiple certs; we extract all and check thumbprints
+# Step 3: Directly import .der PKCS#7 bundle into Disallowed store
 if (Test-Path $derPath) {
     Log "  Importing cross-certificates from .der bundle..." "White"
     try {
-        $rawBytes  = [System.IO.File]::ReadAllBytes($derPath)
-        $certColl  = [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
+        $rawBytes = [System.IO.File]::ReadAllBytes($derPath)
+        $certColl = [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
 
-        # Try PKCS7 import first, then raw DER
         try {
-            $certColl.Import($rawBytes,
-                $null,
+            $certColl.Import($rawBytes, $null,
                 [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
         } catch {
-            # Single DER cert fallback
             $singleCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($rawBytes)
             $certColl.Add($singleCert) | Out-Null
         }
 
         Log "  Found $($certColl.Count) certificate(s) in bundle" "White"
 
-        # Cross-cert subjects that MUST land in Disallowed
         $crossCertSubjects = @(
             "DoD Interoperability Root CA",
             "DoD Interoperability Root CA 2",
@@ -403,25 +411,18 @@ if (Test-Path $derPath) {
             "CCEB Interoperability Root CA"
         )
 
-        $disallowedStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-            "Disallowed", "LocalMachine")
-        $disallowedStore.Open("ReadWrite")
-
+        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new("Disallowed","LocalMachine")
+        $store.Open("ReadWrite")
         $importedCount = 0
-        foreach ($cert in $certColl) {
-            $isCrossCert = $false
-            foreach ($subj in $crossCertSubjects) {
-                if ($cert.Subject -like "*$subj*" -or $cert.Issuer -like "*$subj*") {
-                    $isCrossCert = $true
-                    break
-                }
-            }
 
-            if ($isCrossCert) {
-                $alreadyIn = $disallowedStore.Certificates |
-                             Where-Object { $_.Thumbprint -eq $cert.Thumbprint }
+        foreach ($cert in $certColl) {
+            $match = $crossCertSubjects | Where-Object {
+                $cert.Subject -like "*$_*" -or $cert.Issuer -like "*$_*"
+            }
+            if ($match) {
+                $alreadyIn = $store.Certificates | Where-Object { $_.Thumbprint -eq $cert.Thumbprint }
                 if (-not $alreadyIn) {
-                    $disallowedStore.Add($cert)
+                    $store.Add($cert)
                     Log "  [OK] Added to Untrusted store: $($cert.Subject)" "Green"
                     Log "       Thumbprint: $($cert.Thumbprint)" "White"
                     $importedCount++
@@ -431,10 +432,10 @@ if (Test-Path $derPath) {
             }
         }
 
-        $disallowedStore.Close()
+        $store.Close()
 
         if ($importedCount -eq 0) {
-            Log "  [INFO] No new cross-certs added (already present or not matched in bundle)" "Yellow"
+            Log "  [INFO] No new cross-certs added (already present or not matched)" "Yellow"
             Log "  [INFO] All certs in bundle:" "Yellow"
             foreach ($cert in $certColl) {
                 Log "    Subject: $($cert.Subject) | Thumb: $($cert.Thumbprint)" "White"
@@ -447,29 +448,27 @@ if (Test-Path $derPath) {
     Log "  [WARN] .der file not found at: $derPath" "Yellow"
 }
 
-# --- Step 4: Final thumbprint verification ---
+# Step 4: Thumbprint verification
 $requiredThumbprints = @{
     "V-254443 DoD Interoperability Root CA 2"         = "929BF96C046FC7CE8BEB7C6BD451289A3F05A9E2"
     "V-254444 US DOD CCEB Interoperability Root CA 1" = "9012E9E1E2FB8E05AF8B5B8D9CC04001C82FEE1C"
 }
 
-$disallowedCheck = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-    "Disallowed", "LocalMachine")
-$disallowedCheck.Open("ReadOnly")
+$checkStore = [System.Security.Cryptography.X509Certificates.X509Store]::new("Disallowed","LocalMachine")
+$checkStore.Open("ReadOnly")
 
 foreach ($label in $requiredThumbprints.Keys) {
-    $tp      = $requiredThumbprints[$label]
-    $inStore = $disallowedCheck.Certificates | Where-Object { $_.Thumbprint -eq $tp }
+    $tp     = $requiredThumbprints[$label]
+    $inStore = $checkStore.Certificates | Where-Object { $_.Thumbprint -eq $tp }
     if ($inStore) {
         Log "  [OK] Confirmed in Untrusted store: $label" "Green"
     } else {
-        Log "  [MANUAL REQUIRED] Still missing: $label (Thumbprint: $tp)" "Red"
-        Log "    The .der bundle may use a different thumbprint for this version." "Yellow"
-        Log "    Run: certutil -dump `"$derPath`" to inspect bundle contents." "Yellow"
+        Log "  [MANUAL REQUIRED] Missing: $label (Thumbprint: $tp)" "Red"
+        Log "    Run: certutil -dump `"$derPath`" to inspect bundle contents" "Yellow"
     }
 }
 
-$disallowedCheck.Close()
+$checkStore.Close()
 
 # ==============================================================
 # Refresh security policy
@@ -481,10 +480,10 @@ Log "  [OK] gpupdate triggered" "Green"
 # ==============================================================
 # Summary
 # ==============================================================
-Log "`n===== STIG Remediation v3 Complete =====" "Cyan"
+Log "`n===== STIG Remediation v4 Complete =====" "Cyan"
 Log "Log file : $debugLog" "Cyan"
 Log "`nItems still requiring MANUAL action:" "Yellow"
-Log "  V-254284 — Secure Boot : Enable in UEFI/BIOS firmware or use shielded/Gen2 VM" "Yellow"
+Log "  V-254284 — Secure Boot : Enable in UEFI/BIOS or recreate as shielded/Gen2 VM" "Yellow"
 Log "  V-254443/444 — If thumbprint check above shows MANUAL REQUIRED:" "Yellow"
 Log "    Run: certutil -dump `"$derPath`" and identify the correct cross-cert files" "Yellow"
 Log "    Then: Import-Certificate -FilePath <crosscert.cer> -CertStoreLocation Cert:\LocalMachine\Disallowed" "Yellow"

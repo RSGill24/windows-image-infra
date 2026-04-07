@@ -167,8 +167,8 @@ build {
     destination = "${var.hardening_target_dir}/stig_remediation_fixes.ps1"
   }
   provisioner "file" {
-    source      = "${var.hardening_source_dir}/stig_remidiation_fixes1.ps1"
-    destination = "${var.hardening_target_dir}/stig_remidiation_fixes1.ps1"
+    source      = "${var.hardening_source_dir}/stig_remediation_fixes1.ps1"
+    destination = "${var.hardening_target_dir}/stig_remediation_fixes1.ps1"
   }
   
   provisioner "file" {

@@ -115,7 +115,7 @@ Invoke-Step "$scriptDir\account_policy.ps1"           "Account Policy"
 Invoke-Step "$scriptDir\audit.ps1"                    "Audit Subcategory Policy"         -AllowFailure
 Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"    "Remaining STIG fixes"            -AllowFailure
 Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"   "Targeted STIG remediation"       -AllowFailure
-
+Invoke-Step "$scriptDir\stig_remediation_fixes1.ps1"   "Targeted STIG remediation others" -AllowFailure
 # # -----------------------------------------------------------------------
 # # STEP 5 -- Install Nessus Agent
 # # -----------------------------------------------------------------------

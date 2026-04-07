@@ -94,6 +94,7 @@ Invoke-Step "$scriptDir\install_PowerSTIG.ps1"        "Install PowerSTIG"
 Invoke-Step "$scriptDir\install_dsc_deps.ps1"         "Install DSC dependencies"
 Invoke-Step "$scriptDir\install_nessus.ps1"           "Install Nessus Agent (unlinked)" -AllowFailure
 Invoke-Step "$scriptDir\install_bigfix.ps1"           "Install bigfix Agent (unlinked)" -AllowFailure
+Invoke-Step "$scriptDir\install_trellix.ps1"           "Install trellix Agent (unlinked)" -AllowFailure
 # -----------------------------------------------------------------------
 # STEP 2 -- Install DoD Certificates
 # -----------------------------------------------------------------------

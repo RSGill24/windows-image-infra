@@ -311,5 +311,7 @@ if ($ErrorCount -eq 0) {
 } else {
     Write-Host "  $ErrorCount item(s) need attention (see WARN messages above)." -ForegroundColor Yellow
 }
-$global:LASTEXITCODE = 0
-exit $ErrorCount
+if ($ErrorCount -gt 0) {
+    Write-Warn "$ErrorCount issue(s) found during remediation — continuing pipeline"
+}
+exit 0

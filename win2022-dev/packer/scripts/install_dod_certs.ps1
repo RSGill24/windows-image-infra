@@ -1,98 +1,112 @@
-﻿# ===============================
-# DoD Certificates Import Script (FINAL - STIG COMPLIANT)
-# ===============================
+# ==============================
+# DoD Consent Banner Configuration
+# V-254457 (LegalNoticeText) + V-254458 (LegalNoticeCaption)
+# ==============================
 
-# Paths (UPDATED)
-$MainP7B = "C:\Users\packer_user\hardening\Certificates_PKCS7_v5_14_DoD.der.p7b"
-# ExternalFolder section removed/commented out
+$debugLog = "C:\Windows\Temp\banner_setup.log"
+if (Test-Path $debugLog) { Remove-Item $debugLog -Force }
 
-# ===============================
-# Function: Import certificates to a store
-# ===============================
-function Import-CertsToStore {
-    param (
-        [Parameter(Mandatory)]
-        [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]$Certificates,
-        [Parameter(Mandatory)]
-        [string]$StoreName
-    )
-
-    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($StoreName, "LocalMachine")
-    $store.Open("ReadWrite")
-
-    foreach ($cert in $Certificates) {
-        try {
-            $found = $store.Certificates.Find("FindByThumbprint", $cert.Thumbprint, $false)
-            if ($found.Count -eq 0) {
-                $store.Add($cert)
-                Write-Host "✅ Imported $($cert.Subject) -> $StoreName"
-            } else {
-                Write-Host "Already exists: $($cert.Subject) -> $StoreName"
-            }
-        } catch {
-            Write-Warning ("Failed to import " + $cert.Subject + " to " + $StoreName + ": " + $_.Exception.Message)
-        }
-    }
-
-    $store.Close()
+function Log($msg, $color = "White") {
+    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $line = "[$ts] $msg"
+    Write-Host $line -ForegroundColor $color
+    Add-Content -Path $debugLog -Value $line
 }
 
-# ===============================
-# Import main P7B (Root + Intermediate)
-# ===============================
-if (Test-Path $MainP7B) {
-    Write-Host "`nProcessing main DoD P7B..."
+Log "===== DoD Consent Banner Setup =====" "Cyan"
 
-    $collection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-    $collection.Import($MainP7B)
+$regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 
-    $rootCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-    $intermediateCerts = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+# V-254458 — LegalNoticeCaption (title of the banner popup)
+$bannerCaption = "DoD Notice and Consent Banner"
 
-    foreach ($cert in $collection) {
-        if ($cert.Subject -eq $cert.Issuer) {
-            $rootCerts.Add($cert)
-        } else {
-            $intermediateCerts.Add($cert)
-        }
+# V-254457 — LegalNoticeText (full body text)
+$bannerText = "WARNING_____WARNING`r`n`r`nYou are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
+
+try {
+    # V-254458 — Set Caption
+    Set-ItemProperty -Path $regPath -Name "LegalNoticeCaption" -Value $bannerCaption -Type String -Force
+    $captionVal = (Get-ItemProperty $regPath).LegalNoticeCaption
+    if ($captionVal -eq $bannerCaption) {
+        Log "  [OK] V-254458 LegalNoticeCaption = '$captionVal'" "Green"
+    } else {
+        Log "  [FAIL] LegalNoticeCaption mismatch — got: $captionVal" "Red"
     }
 
-    Import-CertsToStore -Certificates $rootCerts -StoreName "Root"
-    Import-CertsToStore -Certificates $intermediateCerts -StoreName "CA"
+    # V-254457 — Set Text
+    Set-ItemProperty -Path $regPath -Name "LegalNoticeText" -Value $bannerText -Type String -Force
+    $textVal = (Get-ItemProperty $regPath).LegalNoticeText
+    if ($textVal -eq $bannerText) {
+        Log "  [OK] V-254457 LegalNoticeText set successfully" "Green"
+    } else {
+        Log "  [FAIL] LegalNoticeText mismatch" "Red"
+    }
+
+} catch {
+    Log "  [ERROR] $($_.Exception.Message)" "Red"
+}
+
+# ----------------------------
+# Also enforce via secedit for GP compliance
+# ----------------------------
+Log "`n  Enforcing via secedit..." "Yellow"
+
+$infPath = "C:\Windows\Temp\banner.inf"
+$sdbPath = "C:\Windows\Temp\banner.sdb"
+$logSec  = "C:\Windows\Temp\banner_secedit.log"
+
+# secedit requires escaped text — newlines not supported in INF values,
+# so we use registry method above as primary and secedit as reinforcement
+$infContent = @"
+[Unicode]
+Unicode=yes
+[Version]
+signature="`$CHICAGO`$"
+Revision=1
+[Registry Values]
+MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\System\LegalNoticeCaption=1,$bannerCaption
+MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\System\LegalNoticeText=1,$bannerText
+"@
+
+Set-Content -Path $infPath -Value $infContent -Encoding Unicode
+secedit /configure /db $sdbPath /cfg $infPath /log $logSec /quiet
+$seceditExit = $LASTEXITCODE
+
+if ($seceditExit -eq 0) {
+    Log "  [OK] secedit applied successfully" "Green"
 } else {
-    Write-Warning "Main P7B file not found: $MainP7B"
+    Log "  [WARN] secedit exit code: $seceditExit — check $logSec" "Yellow"
 }
 
-# ===============================
-# Disallowed certs import removed/commented out
-# ===============================
-# Import-ToDisallowed -FolderPath $ExternalFolder
-
-# ===============================
+# ----------------------------
 # Verification
-# ===============================
-Write-Host "`n--- FINAL VERIFICATION ---"
+# ----------------------------
+Log "`n===== Verification =====" "Cyan"
 
-$rootStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","LocalMachine")
-$rootStore.Open("ReadOnly")
+$finalCaption = (Get-ItemProperty $regPath).LegalNoticeCaption
+$finalText    = (Get-ItemProperty $regPath).LegalNoticeText
 
-$caStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("CA","LocalMachine")
-$caStore.Open("ReadOnly")
+Log "  V-254458 Caption : $finalCaption" "Green"
+Log "  V-254457 Text preview : $($finalText.Substring(0, [Math]::Min(60, $finalText.Length)))..." "Green"
 
-$disallowedStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("Disallowed","LocalMachine")
-$disallowedStore.Open("ReadOnly")
+# Confirm caption matches STIG requirement
+if ($finalCaption -match "^(DoD Notice and Consent Banner|US Department of Defense Warning Statement)$") {
+    Log "  [PASS] Caption matches STIG V-254458 requirement" "Green"
+} else {
+    Log "  [FAIL] Caption does NOT match STIG V-254458 requirement" "Red"
+}
 
-Write-Host "Root Certs Count: $($rootStore.Certificates.Count)"
-Write-Host "Intermediate Certs Count: $($caStore.Certificates.Count)"
-Write-Host "Disallowed Certs Count: $($disallowedStore.Certificates.Count)"
+# Confirm text starts correctly
+if ($finalText -like "WARNING*") {
+    Log "  [PASS] Text starts with WARNING as required" "Green"
+} else {
+    Log "  [FAIL] Text does not start with WARNING" "Red"
+}
 
-# Show only relevant Disallowed certs (optional, may be empty now)
-$disallowedStore.Certificates |
-Where-Object { $_.Subject -match "Interop|CCEB" } |
-Select Subject, Thumbprint
+# Cleanup temp files
+Remove-Item $infPath -Force -ErrorAction SilentlyContinue
+Remove-Item $sdbPath -Force -ErrorAction SilentlyContinue
 
-$rootStore.Close()
-$caStore.Close()
-$disallowedStore.Close()
-
-Write-Host "`n✅ Script completed (STIG aligned except Disallowed certs)"
+Log "`n===== Banner Setup Complete =====" "Cyan"
+Log "  Banner appears on next login / RDP session — no reboot needed" "Yellow"
+Log "  Log : $debugLog" "Cyan"

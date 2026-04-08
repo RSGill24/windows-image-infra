@@ -171,7 +171,6 @@ build {
     source      = "${var.hardening_source_dir}/install_nessus.ps1"
     destination = "${var.hardening_target_dir}/install_nessus.ps1"
   }
-
   provisioner "file" {
     source      = "${var.hardening_source_dir}/InstallRoot.msi"
     destination = "${var.hardening_target_dir}/InstallRoot.msi"
@@ -179,10 +178,6 @@ build {
   provisioner "file" {
     source      = "${var.hardening_source_dir}/install_bigfix.ps1"
     destination = "${var.hardening_target_dir}/install_bigfix.ps1"
-  }
-  provisioner "file" {
-    source      = "${var.hardening_source_dir}/install_nessus.ps1"
-    destination = "${var.hardening_target_dir}/install_nessus.ps1"
   }
   provisioner "file" {
     source      = "${var.hardening_source_dir}/install_trellix.ps1"

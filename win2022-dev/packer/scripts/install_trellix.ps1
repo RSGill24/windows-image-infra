@@ -2,7 +2,7 @@
 # Trellix HX (xagt) Agent Installation Script - FINAL
 # ==============================
 
-$bucketMSI    = "gs://org-sec-agents-bucket/xagtSetup_36.30.17_universal (1).msi"
+$bucketMSI    = "gs://org-sec-agents-bucket/xagtSetup_36.30.17_universal.msi"
 $bucketConfig = "gs://org-sec-agents-bucket/agent_config.json"          # Updated filename
 $msiDir       = "C:\Windows\Temp\xagt_install"
 $downloadMSI  = "$msiDir\xagtSetup_36.30.17_universal.msi"

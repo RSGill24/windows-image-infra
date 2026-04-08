@@ -1,4 +1,4 @@
-Write-Host "Installing PowerSTIG..."
+﻿Write-Host "Installing PowerSTIG..."
 
 # Enforce TLS 1.2 to ensure PSGallery HTTPS connections succeed on older .NET defaults
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12

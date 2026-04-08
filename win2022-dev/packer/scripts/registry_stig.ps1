@@ -1,4 +1,4 @@
-Write-Host "=== Applying Registry STIG (Targeted Fix) ==="
+﻿Write-Host "=== Applying Registry STIG (Targeted Fix) ==="
 
 # V-254343.b
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `

@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Targeted STIG remediation for all failing rules identified in the SCAP scan.
@@ -6,7 +6,7 @@
 #>
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Continue'   # Don't abort on individual rule failures
 
 function Write-Section {
     param([string]$msg)
@@ -112,26 +112,21 @@ try {
 
 # ============================================================
 # CAT II: V-254261 — Remove software certificate installation files
-# FIX: Only scan specific known paths instead of full C:\ recursive scan.
-# Full C:\ recursive scan triggers security policy changes mid-execution
-# which kills the active WinRM session.
 # ============================================================
 
 Write-Section "CAT II: V-254261 — Remove .p12 and .pfx certificate files"
 
 $gceCert = 'C:\ProgramData\Google\Compute Engine\mds-mtls-client.key.pfx'
-
-# Known specific files — remove directly
-$knownFiles = @(
+$knownTestFiles = @(
     'C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\platform\gsutil\gslib\tests\test_data\test.p12',
     'C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\platform\gsutil\third_party\google-auth-library-python\tests\data\privatekey.p12'
 )
 
-foreach ($f in $knownFiles) {
+foreach ($f in $knownTestFiles) {
     if (Test-Path $f) {
         try {
             Remove-Item $f -Force
-            Write-Fixed "Removed: $f"
+            Write-Fixed "Removed test cert: $f"
         } catch {
             Write-Warn "Could not remove $f : $_"
             $ErrorCount++
@@ -142,40 +137,30 @@ foreach ($f in $knownFiles) {
 }
 
 if (Test-Path $gceCert) {
-    Write-Skip "GCE mTLS cert retained (GCP agent dependency): $gceCert"
+    Write-Skip "GCE mTLS cert retained (GCP agent dependency — document with ISSO): $gceCert"
 }
 
-# Scan only specific safe directories — NOT full C:\ recursion
-$safeScanPaths = @(
-    "C:\Users\packer_user",
-    "C:\Windows\Temp",
-    "C:\Temp",
-    "C:\DoD_Certs"
-)
-
-foreach ($scanPath in $safeScanPaths) {
-    if (-not (Test-Path $scanPath)) { continue }
-    foreach ($pattern in @('*.p12', '*.pfx')) {
-        try {
-            Get-ChildItem -Path $scanPath -Filter $pattern -Recurse -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -ne $gceCert } |
-                ForEach-Object {
-                    try {
-                        Remove-Item $_.FullName -Force
-                        Write-Fixed "Removed: $($_.FullName)"
-                    } catch {
-                        Write-Warn "Could not remove $($_.FullName): $_"
-                        $ErrorCount++
-                    }
+foreach ($pattern in @('*.p12', '*.pfx')) {
+    try {
+        Get-ChildItem -Path C:\ -Filter $pattern -Recurse -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.FullName -notlike '*Adobe*Preflight*' -and
+                $_.FullName -ne $gceCert
+            } |
+            ForEach-Object {
+                try {
+                    Remove-Item $_.FullName -Force
+                    Write-Fixed "Removed: $($_.FullName)"
+                } catch {
+                    Write-Warn "Could not remove $($_.FullName): $_"
+                    $ErrorCount++
                 }
-        } catch {
-            Write-Warn "Exception scanning $scanPath : $_"
-            $ErrorCount++
-        }
+            }
+    } catch {
+        Write-Warn "Exception during cert file scan: $_"
+        $ErrorCount++
     }
 }
-
-Write-OK "Certificate file cleanup complete"
 
 # ============================================================
 # CAT II: V-254284 — Secure Boot
@@ -189,6 +174,7 @@ try {
         Write-OK "Secure Boot is already enabled"
     } else {
         Write-Warn "Secure Boot is OFF — enable in GCP Shielded VM config."
+        Write-Warn "  In Packer HCL: shielded_instance_config { enable_secure_boot = true }"
     }
 } catch {
     Write-Warn "Could not query Secure Boot state: $_"
@@ -218,6 +204,7 @@ foreach ($cc in $certChecks) {
             Write-OK "[$($cc.Rule)] $($cc.Name)"
         } else {
             Write-Warn "[$($cc.Rule)] MISSING: $($cc.Name)"
+            Write-Warn "  -> Run install_dod_certs.ps1 or use InstallRoot/FBCA tools from https://cyber.mil/pki-pke"
             $ErrorCount++
         }
     } catch {
@@ -270,6 +257,94 @@ try {
     }
 } catch {
     Write-Warn "Failed to rename Guest: $_"
+    $ErrorCount++
+}
+
+# ============================================================
+# CAT II: V-254501 — Force shutdown from remote system — Administrators only
+# ============================================================
+
+Write-Section "CAT II: V-254501 — SeRemoteShutdownPrivilege = Administrators only"
+
+$seceditCfg2 = "$env:TEMP\stig_userrights.cfg"
+$seceditDb2  = "$env:TEMP\stig_userrights.sdb"
+
+Remove-Item $seceditCfg2 -ErrorAction SilentlyContinue
+Remove-Item $seceditDb2  -ErrorAction SilentlyContinue
+
+try {
+    secedit /export /areas USER_RIGHTS /cfg $seceditCfg2 /quiet
+    if (Test-Path $seceditCfg2) {
+        $ucfg = Get-Content $seceditCfg2 -Raw
+        if ($ucfg -match 'SeRemoteShutdownPrivilege') {
+            $ucfg = $ucfg -replace 'SeRemoteShutdownPrivilege\s*=\s*[^\r\n]*', 'SeRemoteShutdownPrivilege = *S-1-5-32-544'
+        } else {
+            $ucfg = $ucfg -replace '(\[Privilege Rights\])', "`$1`r`nSeRemoteShutdownPrivilege = *S-1-5-32-544"
+        }
+        $ucfg | Set-Content $seceditCfg2 -Encoding Unicode
+        secedit /configure /db $seceditDb2 /cfg $seceditCfg2 /areas USER_RIGHTS /quiet
+        if ($LASTEXITCODE -eq 0) {
+            Write-Fixed "SeRemoteShutdownPrivilege restricted to Administrators only"
+        } else {
+            Write-Warn "secedit USER_RIGHTS returned exit code $LASTEXITCODE"
+            $ErrorCount++
+        }
+    } else {
+        Write-Warn "secedit export failed for USER_RIGHTS — cannot set SeRemoteShutdownPrivilege"
+        $ErrorCount++
+    }
+} catch {
+    Write-Warn "Exception setting SeRemoteShutdownPrivilege: $_"
+    $ErrorCount++
+} finally {
+    Remove-Item $seceditCfg2 -ErrorAction SilentlyContinue
+    Remove-Item $seceditDb2  -ErrorAction SilentlyContinue
+}
+
+# ============================================================
+# CAT II: V-254251 — C:\ root directory permissions
+# ============================================================
+
+Write-Section "CAT II: V-254251 — C:\ root directory ACL"
+
+try {
+    $acl     = Get-Acl -Path "C:\"
+    $rights  = [System.Security.AccessControl.FileSystemRights]
+    $inherit = [System.Security.AccessControl.InheritanceFlags]
+    $prop    = [System.Security.AccessControl.PropagationFlags]
+    $allow   = [System.Security.AccessControl.AccessControlType]::Allow
+
+    $acl.SetAccessRuleProtection($false, $false)
+    $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "NT AUTHORITY\SYSTEM", $rights::FullControl,
+        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
+
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Administrators", $rights::FullControl,
+        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
+
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Users", $rights::ReadAndExecute,
+        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
+
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Users", $rights::CreateDirectories,
+        $inherit::ContainerInherit, $prop::None, $allow)))
+
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Users", $rights::CreateFiles,
+        $inherit::ContainerInherit, $prop::InheritOnly, $allow)))
+
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "CREATOR OWNER", $rights::FullControl,
+        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::InheritOnly, $allow)))
+
+    Set-Acl -Path "C:\" -AclObject $acl
+    Write-Fixed "C:\ ACL reset to STIG-required defaults"
+} catch {
+    Write-Warn "Failed to set C:\ ACL: $_"
     $ErrorCount++
 }
 

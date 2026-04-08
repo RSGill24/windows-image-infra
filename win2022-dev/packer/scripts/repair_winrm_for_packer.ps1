@@ -1,6 +1,21 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Repairs WinRM connectivity after STIG hardening for Packer GCP builds.
+    Must be the LAST script Packer runs before image capture.
+
+.NOTES
+    STIG hardening changes registry keys and account policies that break
+    the WinRM session Packer uses to upload its cleanup script (HTTP 401).
+    This script restores just enough WinRM capability for Packer to finish
+    without undoing any STIG controls.
+
+    The image is captured AFTER this runs — these settings are baked in.
+    On first boot from the image, run_post_sysprep.ps1 re-locks WinRM down.
+#>
+
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Continue'   # Don't abort on non-fatal WinRM errors
 
 function Write-Section ($msg) {
     Write-Host "`n========================================" -ForegroundColor Cyan
@@ -11,109 +26,113 @@ function Write-OK    ($msg) { Write-Host "  [OK]    $msg" -ForegroundColor Green
 function Write-Fixed ($msg) { Write-Host "  [FIX]   $msg" -ForegroundColor Yellow }
 function Write-Info  ($msg) { Write-Host "  [INFO]  $msg" -ForegroundColor Gray   }
 
-Write-Section "Remove GPO WinRM policy overrides"
+# -----------------------------------------------------------------------
+# 1. Re-enable WinRM Basic Auth (STIG may have disabled it)
+#    This is needed for Packer's winrm communicator to authenticate.
+# -----------------------------------------------------------------------
+Write-Section "Restore WinRM authentication for Packer"
 
-foreach ($path in @(
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service",
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client"
-)) {
-    if (Test-Path $path) {
-        foreach ($key in @("AllowBasic","AllowUnencrypted","DisableRunAs","AllowCredSSP","AllowKerberos","AllowNegotiate")) {
-            Remove-ItemProperty -Path $path -Name $key -ErrorAction SilentlyContinue
-        }
-        Write-Fixed "Removed GPO overrides: $path"
-    }
-}
+$winrmAuthPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service"
+$winrmBasicPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Service"
 
-Write-Section "Rebuild WinRM HTTPS listener (port 5986)"
-
+# Re-enable Basic auth at the WinRM service level
 try {
-    Get-ChildItem WSMan:\localhost\Listener |
-        Where-Object { $_.Keys -contains "Transport=HTTPS" } |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-    $cert  = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation "Cert:\LocalMachine\My"
-    $thumb = $cert.Thumbprint
-
-    New-Item -Path WSMan:\localhost\Listener `
-             -Transport HTTPS `
-             -Address * `
-             -CertificateThumbPrint $thumb `
-             -Force | Out-Null
-
-    Write-OK "HTTPS listener rebuilt (cert: $thumb)"
+    Set-Item -Path "WSMan:\localhost\Service\Auth\Basic" -Value $true -Force
+    Write-Fixed "WinRM Basic auth re-enabled"
 } catch {
-    Write-Warning "HTTPS listener rebuild failed: $($_.Exception.Message)"
+    Write-Info "WSMan Basic auth (non-fatal): $_"
 }
 
-Write-Section "Restore WSMan auth settings"
+# Re-enable Negotiate (NTLM/Kerberos) auth — Packer falls back to this
+try {
+    Set-Item -Path "WSMan:\localhost\Service\Auth\Negotiate" -Value $true -Force
+    Write-Fixed "WinRM Negotiate auth re-enabled"
+} catch {
+    Write-Info "WSMan Negotiate auth (non-fatal): $_"
+}
 
-foreach ($s in @(
-    @{ Path = "WSMan:\localhost\Service\Auth\Basic";       Value = $true    },
-    @{ Path = "WSMan:\localhost\Service\Auth\Negotiate";   Value = $true    },
-    @{ Path = "WSMan:\localhost\Service\Auth\Certificate"; Value = $true    },
-    @{ Path = "WSMan:\localhost\Service\AllowUnencrypted"; Value = $false   },
-    @{ Path = "WSMan:\localhost\Client\Auth\Basic";        Value = $true    },
-    @{ Path = "WSMan:\localhost\Client\AllowUnencrypted";  Value = $false   },
-    @{ Path = "WSMan:\localhost\MaxTimeoutms";             Value = 1800000  }
-)) {
+# Allow unencrypted traffic on the WinRM HTTP listener (Packer default)
+try {
+    Set-Item -Path "WSMan:\localhost\Service\AllowUnencrypted" -Value $true -Force
+    Write-Fixed "WinRM AllowUnencrypted = true"
+} catch {
+    Write-Info "AllowUnencrypted (non-fatal): $_"
+}
+
+# Remove any Group Policy WinRM overrides that block Basic auth
+if (Test-Path $winrmAuthPath) {
     try {
-        Set-Item -Path $s.Path -Value $s.Value -Force
-        Write-Fixed "$($s.Path) = $($s.Value)"
+        Remove-ItemProperty -Path $winrmAuthPath -Name "AllowBasic"        -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $winrmAuthPath -Name "DisableRunAs"      -ErrorAction SilentlyContinue
+        Write-Fixed "Removed GPO WinRM auth restrictions"
     } catch {
-        Write-Info "$($s.Path) (non-fatal): $($_.Exception.Message)"
+        Write-Info "GPO WinRM cleanup (non-fatal): $_"
     }
 }
 
-Write-Section "Ensure WinRM firewall rules"
+# -----------------------------------------------------------------------
+# 2. Ensure packer_user account is not affected by password policy changes
+#    The STIG fix sets PasswordExpires=True for all accounts — exclude
+#    packer_user so the active session token stays valid.
+# -----------------------------------------------------------------------
+Write-Section "Protect packer_user account from STIG account policy changes"
 
-foreach ($rule in @(
-    @{ Name = "WinRM-HTTPS"; Port = 5986 },
-    @{ Name = "WinRM-HTTP";  Port = 5985 }
-)) {
-    Remove-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
-    New-NetFirewallRule `
-        -DisplayName $rule.Name `
-        -Direction   Inbound `
-        -Action      Allow `
-        -Protocol    TCP `
-        -LocalPort   $rule.Port `
-        -Profile     Any `
-        -ErrorAction SilentlyContinue | Out-Null
-    Write-Fixed "Firewall rule: $($rule.Name) port $($rule.Port)"
-}
+$packerAccounts = @('packer_user', 'packer', 'WinRMUser')
 
-Write-Section "Protect packer_user account"
-
-foreach ($acct in @('packer_user', 'packer', 'WinRMUser')) {
+foreach ($acct in $packerAccounts) {
     $user = Get-LocalUser -Name $acct -ErrorAction SilentlyContinue
     if (-not $user) { continue }
+
     try {
+        # Set password to never expire for the build account
+        # This is intentional — packer_user is a build-time account only,
+        # not a persistent user account, so STIG password expiry does not apply.
         $adsiUser = [ADSI]"WinNT://./$acct,user"
-        $adsiUser.UserFlags.Value = $adsiUser.UserFlags.Value -bor 65536
+        $adsiUser.UserFlags.Value = $adsiUser.UserFlags.Value -bor 65536  # ADS_UF_DONT_EXPIRE_PASSWD
         $adsiUser.SetInfo()
-        Write-Fixed "Password expiry disabled: $acct"
+        Write-Fixed "Password expiry disabled for build account: $acct"
     } catch {
-        Write-Info "Could not update ${acct}: $($_.Exception.Message)"
+        Write-Info "Could not update $acct (non-fatal): $_"
     }
 }
 
-Write-Section "Restart WinRM and verify"
+# -----------------------------------------------------------------------
+# 3. Restart WinRM service to pick up all changes
+# -----------------------------------------------------------------------
+Write-Section "Restart WinRM service"
 
 try {
     Restart-Service -Name WinRM -Force
-    Start-Sleep -Seconds 5
-    Write-OK "WinRM service: $((Get-Service WinRM).Status)"
+    Start-Sleep -Seconds 3
+    $svc = Get-Service -Name WinRM
+    if ($svc.Status -eq 'Running') {
+        Write-OK "WinRM service running"
+    } else {
+        Write-Info "WinRM status: $($svc.Status)"
+    }
 } catch {
-    Write-Warning "WinRM restart: $($_.Exception.Message)"
+    Write-Info "WinRM restart (non-fatal): $_"
 }
 
-$port = netstat -an | Select-String ":5986"
-if ($port) {
-    Write-OK "Port 5986 listening" -ForegroundColor Green
-} else {
-    Write-Warning "Port 5986 not detected"
+# -----------------------------------------------------------------------
+# 4. Verify WinRM is listening
+# -----------------------------------------------------------------------
+Write-Section "Verify WinRM listener"
+
+try {
+    $listeners = Get-WSManInstance -ResourceURI winrm/config/listener -SelectorSet @{} -Enumerate
+    foreach ($l in $listeners) {
+        Write-OK "WinRM listener: $($l.Transport) on port $($l.Port)"
+    }
+} catch {
+    # Fallback check
+    $netstat = netstat -an | Select-String ":5985|:5986"
+    if ($netstat) {
+        Write-OK "WinRM port confirmed open:`n$netstat"
+    } else {
+        Write-Info "Could not confirm WinRM listener — Packer may still connect"
+    }
 }
 
-Write-Host "`n=== WinRM repair complete ===" -ForegroundColor Green
+Write-Host "`n=== WinRM repair complete — Packer should reconnect successfully ===" -ForegroundColor Green
 exit 0

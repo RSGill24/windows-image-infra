@@ -134,7 +134,7 @@ Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-25
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
 Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
-
+Invoke-Step "$scriptDir\dod_banner.ps1"           "dod-banner"
 # -----------------------------------------------------------------------
 # STEP 4 -- Post-DSC targeted fixes
 # All scripts below MUST run AFTER apply_mof.ps1.

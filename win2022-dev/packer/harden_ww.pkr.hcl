@@ -121,6 +121,10 @@ build {
     source      = "${var.hardening_source_dir}/run_all.ps1"
     destination = "${var.hardening_target_dir}/run_all.ps1"
   }
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/dod_banner.ps1"
+    destination = "${var.hardening_target_dir}/dod_banner.ps1"
+  }
 
   provisioner "file" {
     source      = "${var.hardening_source_dir}/install_PowerSTIG.ps1"

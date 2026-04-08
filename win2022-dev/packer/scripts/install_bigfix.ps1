@@ -6,7 +6,7 @@
 # Each VM spawned from this image gets a unique BigFix Agent ID.
 # ==============================
 
-$bucketPath   = "gs://org-sec-agents-bucket/BESClientsetup.exe"
+$bucketPath   = "gs://org-sec-agents-bucket/BESClientsetup_NMFS-NOAA4000.exe"
 $downloadPath = "C:\Windows\Temp\BESClientsetup.exe"
 $logPath      = "C:\Windows\Temp\bigfix_install.log"
 $installPath  = "C:\Program Files (x86)\BigFix Enterprise\BES Client"

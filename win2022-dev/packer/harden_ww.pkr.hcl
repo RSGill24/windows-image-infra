@@ -176,15 +176,24 @@ build {
     source      = "${var.hardening_source_dir}/repair_winrm_for_packer.ps1"
     destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
   }
-  provisioner "file" {
-  source      = "${var.hardening_source_dir}/restore_winrm_post_dsc.ps1"
-  destination = "${var.hardening_target_dir}/restore_winrm_post_dsc.ps1"
-  }
 
   provisioner "file" {
     source      = "${var.hardening_source_dir}/InstallRoot.msi"
     destination = "${var.hardening_target_dir}/InstallRoot.msi"
   }
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/install_bigfix.ps1"
+    destination = "${var.hardening_target_dir}/install_bigfix.ps1"
+  }
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/install_nessus.ps1"
+    destination = "${var.hardening_target_dir}/install_nessus.ps1"
+  }
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/install_trellix.ps1"
+    destination = "${var.hardening_target_dir}/install_trellix.ps1"
+  }
+
   # Step 3.x: Recursively upload DoD PKI folder
   # provisioner "file" {
   #  source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"

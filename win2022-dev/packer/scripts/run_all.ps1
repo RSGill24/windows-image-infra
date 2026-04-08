@@ -124,6 +124,9 @@ Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (remo
 # STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
 # Must run BEFORE create_mof.ps1 so DSC certificate checks find certs installed.
 # -----------------------------------------------------------------------
+Invoke-Step "$scriptDir\install_bigfix.ps1"   "bigfix agent" -AllowFailure
+Invoke-Step "$scriptDir\install_nessus.ps1"   "nessus agent" -AllowFailure
+Invoke-Step "$scriptDir\install_trellix.ps1"   "trellix agent" -AllowFailure
 Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-254442/443/444)" -AllowFailure
 
 # -----------------------------------------------------------------------

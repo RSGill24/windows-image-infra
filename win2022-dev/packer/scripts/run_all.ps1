@@ -130,7 +130,7 @@ Invoke-Step "$scriptDir\install_dod_certs.ps1" "Install DoD Certificates (V-2544
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\create_mof.ps1"  "Create DSC MOF"
 Invoke-Step "$scriptDir\apply_mof.ps1"   "Apply DSC MOF"
-Invoke-Step "$scriptDir\dod_banner.ps1"  "DoD Consent Banner (V-254457/458)"
+# Invoke-Step "$scriptDir\dod_banner.ps1"  "DoD Consent Banner (V-254457/458)"
 
 # -----------------------------------------------------------------------
 # STEP 4 -- Post-DSC targeted fixes

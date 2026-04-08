@@ -1,4 +1,4 @@
-this is apply_mof #Requires -RunAsAdministrator
+#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Applies the compiled DSC MOF to enforce STIG controls.

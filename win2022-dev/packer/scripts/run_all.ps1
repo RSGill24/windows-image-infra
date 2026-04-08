@@ -15,10 +15,10 @@
     7. apply_remaining_fixes.ps1 runs AFTER apply_mof.ps1 (V-254251/258/261)
     8. repair_winrm_for_packer.ps1 runs LAST (must not be undone by any STIG script)
 
-    FIX: Invoke-Step now runs each script in an isolated powershell.exe
-         process via Start-Process. This means exit calls inside child
-         scripts (e.g. apply_mof.ps1 exit 0) cannot kill the parent
-         run_all.ps1 session — all subsequent scripts always run.
+    FIX: Integrity check corrected to use 'audit.ps1' (the actual filename)
+         instead of 'apply_audit_policy.ps1' which does not exist on disk.
+         This was causing the pre-flight check to error with MISSING even
+         though audit.ps1 was uploaded correctly by Packer.
 #>
 
 Set-StrictMode -Version Latest
@@ -31,9 +31,7 @@ $scriptDir   = $PSScriptRoot
 $globalFails = 0
 
 # -----------------------------------------------------------------------
-# Helper: Run each script in its OWN powershell.exe process
-# This isolates exit/StrictMode/$ErrorActionPreference from this session
-# Child script exit 0/1 sets $proc.ExitCode but CANNOT kill run_all.ps1
+# Helper: Run a script step and abort pipeline on failure
 # -----------------------------------------------------------------------
 function Invoke-Step {
     param(
@@ -51,13 +49,19 @@ function Invoke-Step {
         return
     }
 
-    # FIX: Run in isolated process — exit inside child cannot kill parent
-    $proc = Start-Process powershell.exe `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`"" `
-        -Wait -PassThru -NoNewWindow
+    $global:LASTEXITCODE = 0
+    $stepFailed = $false
 
-    $exitCode = $proc.ExitCode
-    $stepFailed = ($exitCode -ne 0)
+    try {
+        & $ScriptPath
+        if ($global:LASTEXITCODE -ne 0) { $stepFailed = $true }
+    } catch {
+        Write-Warning "Unhandled exception in $Label : $_"
+        $stepFailed = $true
+        $global:LASTEXITCODE = 1
+    }
+
+    $exitCode = $global:LASTEXITCODE
 
     if ($stepFailed -and -not $AllowFailure) {
         Write-Error "$Label FAILED with exit code $exitCode -- aborting hardening pipeline"
@@ -66,12 +70,13 @@ function Invoke-Step {
         Write-Warning "$Label completed with warnings (exit code: $exitCode) -- continuing"
         $script:globalFails++
     } else {
-        Write-Host "    $Label completed OK (exit code: $exitCode)" -ForegroundColor Green
+        Write-Host "    $Label completed OK" -ForegroundColor Green
     }
 }
 
 # -----------------------------------------------------------------------
 # PRE-FLIGHT: Verify critical scripts are not truncated
+# FIX: Uses 'audit.ps1' (actual filename) not 'apply_audit_policy.ps1'
 # -----------------------------------------------------------------------
 Write-Host "`n--- Pre-flight: Script integrity checks ---" -ForegroundColor Yellow
 
@@ -116,37 +121,46 @@ Invoke-Step "$scriptDir\install_PowerSTIG.ps1"   "Install PowerSTIG"
 Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (removes CIM duplicates)"
 
 # -----------------------------------------------------------------------
-# STEP 2 -- Install agents + DoD Certificates
+# STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
+# Must run BEFORE create_mof.ps1 so DSC certificate checks find certs installed.
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\install_bigfix.ps1"    "BigFix agent"        -AllowFailure
-Invoke-Step "$scriptDir\install_nessus.ps1"    "Nessus agent"        -AllowFailure
-Invoke-Step "$scriptDir\install_trellix.ps1"   "Trellix agent"       -AllowFailure
-Invoke-Step "$scriptDir\install_dod_certs.ps1" "Install DoD Certificates (V-254442/443/444)" -AllowFailure
+Invoke-Step "$scriptDir\install_bigfix.ps1"   "bigfix agent" -AllowFailure
+Invoke-Step "$scriptDir\install_nessus.ps1"   "nessus agent" -AllowFailure
+Invoke-Step "$scriptDir\install_trellix.ps1"   "trellix agent" -AllowFailure
+Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-254442/443/444)" -AllowFailure
 
 # -----------------------------------------------------------------------
 # STEP 3 -- Create and apply the DSC MOF
-# apply_mof.ps1 uses exit 0/1 internally — isolated process ensures
-# those exit calls do NOT terminate this run_all.ps1 session
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\create_mof.ps1"  "Create DSC MOF"
-Invoke-Step "$scriptDir\apply_mof.ps1"   "Apply DSC MOF"
-# Invoke-Step "$scriptDir\dod_banner.ps1"  "DoD Consent Banner (V-254457/458)"
+Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
+Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
 
 # -----------------------------------------------------------------------
 # STEP 4 -- Post-DSC targeted fixes
-# All scripts below MUST run AFTER apply_mof.ps1
+# All scripts below MUST run AFTER apply_mof.ps1.
+# DSC cannot undo secedit/registry/auditpol writes -- running these after
+# DSC ensures they are the final state baked into the image.
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\registry_stig.ps1"          "Registry STIG fixes"                             -AllowFailure
-Invoke-Step "$scriptDir\services_stig.ps1"          "Services STIG fixes"                             -AllowFailure
-# Invoke-Step "$scriptDir\account_policy.ps1"         "Account Policy (net accounts + secedit)"
-# Invoke-Step "$scriptDir\audit.ps1"                  "Audit Subcategory Policy (V-278942 to V-278947)" -AllowFailure
-# Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"  "Remaining STIG fixes (V-254251/258/261)"         -AllowFailure
-# Invoke-Step "$scriptDir\stig_remediation_fixes.ps1" "Targeted STIG remediation"                       -AllowFailure
+Invoke-Step "$scriptDir\registry_stig.ps1"           "Registry STIG fixes"                             -AllowFailure
+Invoke-Step "$scriptDir\services_stig.ps1"           "Services STIG fixes"                             -AllowFailure
+
+# V-254285/286/287/288/289/290/291/292 -- password and lockout policy
+Invoke-Step "$scriptDir\account_policy.ps1"          "Account Policy (net accounts + secedit)"
+
+# V-278942/943/944/945/946/947 -- audit file system, handle manipulation, registry
+# FIX: script is named audit.ps1 not apply_audit_policy.ps1
+Invoke-Step "$scriptDir\audit.ps1"                   "Audit Subcategory Policy (V-278942 to V-278947)" -AllowFailure
+
+# V-254251/258/261 -- C:\ permissions, password expiry, cert file removal
+Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"   "Remaining STIG fixes (V-254251/258/261)"         -AllowFailure
+
+# Broader targeted fixes for remaining SCAP failures
+Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"                       -AllowFailure
 
 # -----------------------------------------------------------------------
 # STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)
 # -----------------------------------------------------------------------
-# Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"
+Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"
 
 # -----------------------------------------------------------------------
 # STEP 6 -- Final DSC compliance audit

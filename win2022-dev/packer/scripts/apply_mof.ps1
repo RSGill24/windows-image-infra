@@ -33,7 +33,7 @@ $mofFile    = Join-Path $OutputPath "localhost.mof"
 if (!(Test-Path $mofFile)) {
     Write-Error "MOF file not found at: $mofFile"
     Write-Error "Ensure create_mof.ps1 ran successfully before this script."
-    exit 1
+    return
 }
 
 $mofSize = (Get-Item $mofFile).Length
@@ -42,7 +42,7 @@ Write-Host "Found MOF: $mofFile ($mofSize bytes)"
 if ($mofSize -lt 10000) {
     Write-Error "MOF file is suspiciously small ($mofSize bytes) — this may indicate a failed compilation."
     Write-Error "Re-run create_mof.ps1 and check for errors before applying."
-    exit 1
+    return
 }
 
 # -----------------------------------------------------------------------
@@ -59,7 +59,7 @@ try {
     Write-Host "=== DSC configuration applied successfully ===" -ForegroundColor Green
     
     # Force clean exit code on success to prevent phantom exit code leaks
-    exit 0
+    return
 
 } catch {
     # Start-DscConfiguration throws on hard failures (e.g. MOF parse error,
@@ -74,5 +74,5 @@ try {
     # Exit 0 intentionally — resource-level failures are non-fatal at this stage.
     # Hard failures (LCM not running, MOF unreadable) will have already thrown above.
     Write-Host "=== DSC application completed with resource-level warnings ===" -ForegroundColor Yellow
-    exit 0
+    return
 }

@@ -10,6 +10,11 @@
 #   - V-254501 Identity='Everyone'   was granting Everyone remote shutdown right
 #
 # FIX: Added V-254289 through V-254293 (all AccountPolicy rules) to SkipRule.
+#   FIX: Added V-254285 through V-254288 (lockout policy rules) to SkipRule.
+#   FIX: Added V-254445 and V-254465 (SecurityOption rules) to SkipRule.
+#        SecurityOption DSC resource also writes to the SCE database and breaks
+#        WinRM mid-session exactly like AccountPolicy. Both handled by
+#        stig_remediation_fixes.ps1 after all uploads are complete.
 #   AccountPolicy DSC resource writes to the SCE security database during
 #   Start-DscConfiguration, which causes Windows to re-enforce GPO-derived
 #   WinRM restrictions mid-session — breaking Packer's WinRM connection before
@@ -175,11 +180,10 @@ Configuration ApplyWindowsServerStig {
             SkipRule = @(
                 # -------------------------------------------------------
                 # AccountPolicy rules — skipped to prevent SCE database
-                # write during DSC apply. The SCE write causes Windows to
-                # re-enforce GPO-derived WinRM restrictions mid-session,
-                # which breaks Packer's connection before subsequent
-                # provisioners can run. All of these are applied by
-                # account_policy.ps1 after all uploads are complete.
+                # write during DSC apply. The SCE write re-enforces
+                # GPO-derived WinRM restrictions mid-session, breaking
+                # Packer's connection. All handled by account_policy.ps1
+                # after all uploads are complete.
                 # -------------------------------------------------------
                 'V-254285',   # Account lockout duration
                 'V-254286',   # Account lockout threshold
@@ -190,6 +194,14 @@ Configuration ApplyWindowsServerStig {
                 'V-254291',   # Minimum password length
                 'V-254292',   # Password complexity
                 'V-254293',   # Reversible encryption (CAT I)
+
+                # -------------------------------------------------------
+                # SecurityOption rules — also write to SCE database,
+                # same WinRM-breaking side effect as AccountPolicy.
+                # Handled by stig_remediation_fixes.ps1 after uploads.
+                # -------------------------------------------------------
+                'V-254445',   # Network security: LAN Manager auth level
+                'V-254465',   # Network security: LDAP client signing
 
                 # -------------------------------------------------------
                 # Pre-existing skips (unchanged)
@@ -247,16 +259,16 @@ if ($mofSize -lt 50000) {
 # If any appear, SkipRule did not take effect — abort before apply_mof.ps1
 # runs and breaks WinRM.
 # -----------------------------------------------------------------------
-Write-Host "Verifying AccountPolicy rules are excluded from MOF..."
-$accountPolicyHits = Select-String -Path $mofFile -Pattern "AccountPolicy" -SimpleMatch
-if ($accountPolicyHits) {
-    Write-Error "AccountPolicy resources found in compiled MOF — SkipRule did not take effect."
-    Write-Error "DSC apply would break WinRM. Aborting. Check PowerSTIG version compatibility with SkipRule."
+Write-Host "Verifying SCE-writing resources are excluded from MOF..."
+$sceHits = Select-String -Path $mofFile -Pattern "AccountPolicy|SecurityOption" -SimpleMatch
+if ($sceHits) {
+    Write-Error "SCE-writing resources (AccountPolicy or SecurityOption) found in compiled MOF."
+    Write-Error "DSC apply would break WinRM. Aborting. Check SkipRule entries in this script."
     Write-Error "Matching lines:"
-    $accountPolicyHits | ForEach-Object { Write-Error "  $($_.Line.Trim())" }
+    $sceHits | ForEach-Object { Write-Error "  $($_.Line.Trim())" }
     exit 1
 }
-Write-Host "  [OK] No AccountPolicy resources in MOF — safe to apply." -ForegroundColor Green
+Write-Host "  [OK] No SCE-writing resources in MOF — safe to apply." -ForegroundColor Green
 
 Write-Host "=== DSC configuration compiled successfully ==="
 exit 0

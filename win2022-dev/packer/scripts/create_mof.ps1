@@ -167,7 +167,9 @@ Configuration ApplyWindowsServerStig {
 
             SkipRule = @(
                 'V-254254.c',
-                'V-254271'
+                'V-254271',
+                'V-254457',
+                'V-254458'
             )
         }
     }

@@ -1,4 +1,4 @@
-﻿# install_dsc_deps.ps1
+# install_dsc_deps.ps1
 # Installs PowerSTIG dependencies and generates org settings XML with PAM overrides.
 # Safe for GCP Cloud Build / Packer pipelines.
 

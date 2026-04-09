@@ -161,7 +161,7 @@ Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"
 # -----------------------------------------------------------------------
 # STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"
+Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"      -AllowFailure
 
 # -----------------------------------------------------------------------
 # STEP 6 -- Final DSC compliance audit

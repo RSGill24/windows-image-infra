@@ -169,3 +169,51 @@ if ($ErrorCount -eq 0) {
 }
 
 exit $ErrorCount
+
+# -----------------------------------------------------------------------
+# SecurityOption rules skipped from DSC MOF (V-254445, V-254465)
+# These were removed from DSC to prevent SCE database writes breaking
+# WinRM. Applied here via registry after all uploads are complete.
+# -----------------------------------------------------------------------
+
+# V-254445: Network security — LAN Manager authentication level
+# Must be: Send NTLMv2 response only, refuse LM and NTLM (value 5)
+Write-Section "V-254445: LAN Manager authentication level"
+try {
+    Set-ItemProperty `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "LmCompatibilityLevel" -Value 5 -Type DWord -Force
+    $val = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa").LmCompatibilityLevel
+    if ($val -eq 5) {
+        Write-OK "LmCompatibilityLevel = 5 (NTLMv2 only, refuse LM+NTLM)"
+    } else {
+        Write-Warn "LmCompatibilityLevel = $val (expected 5)"
+        $ErrorCount++
+    }
+} catch {
+    Write-Warn "Failed to set LmCompatibilityLevel: $_"
+    $ErrorCount++
+}
+
+# V-254465: Network security — LDAP client signing requirements
+# Must be: Negotiate signing (value 1)
+Write-Section "V-254465: LDAP client signing requirements"
+try {
+    $ldapPath = "HKLM:\SYSTEM\CurrentControlSet\Services\ldap"
+    if (!(Test-Path $ldapPath)) {
+        New-Item -Path $ldapPath -Force | Out-Null
+    }
+    Set-ItemProperty `
+        -Path $ldapPath `
+        -Name "LDAPClientIntegrity" -Value 1 -Type DWord -Force
+    $val = (Get-ItemProperty $ldapPath).LDAPClientIntegrity
+    if ($val -eq 1) {
+        Write-OK "LDAPClientIntegrity = 1 (Negotiate signing)"
+    } else {
+        Write-Warn "LDAPClientIntegrity = $val (expected 1)"
+        $ErrorCount++
+    }
+} catch {
+    Write-Warn "Failed to set LDAPClientIntegrity: $_"
+    $ErrorCount++
+}

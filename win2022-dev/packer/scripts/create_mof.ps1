@@ -9,6 +9,13 @@
 #   - V-254292 PolicyValue='Disabled' was disabling password complexity
 #   - V-254501 Identity='Everyone'   was granting Everyone remote shutdown right
 #
+# FIX: Added V-254289 through V-254293 (all AccountPolicy rules) to SkipRule.
+#   AccountPolicy DSC resource writes to the SCE security database during
+#   Start-DscConfiguration, which causes Windows to re-enforce GPO-derived
+#   WinRM restrictions mid-session — breaking Packer's WinRM connection before
+#   subsequent provisioners can run. These rules are handled exclusively by
+#   account_policy.ps1 which runs after all file uploads are complete.
+#
 # Only ISSO-approved exceptions remain: V-254439 and V-254435 (Guests group).
 # All password/lockout policy values are driven by the org.pamdata.xml file.
 
@@ -22,13 +29,13 @@ Write-Host "=== create_mof.ps1 starting ==="
 Write-Host "--- Scanning for duplicate System32 modules ---"
 $sys32Dsc = "C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 $conflictingModules = @(
-    "AuditPolicyDsc", 
-    "GPRegistryPolicyDsc", 
-    "PSDscResources", 
-    "WindowsDefenderDsc", 
-    "SecurityPolicyDsc", 
-    "AuditSystemDsc", 
-    "CertificateDsc", 
+    "AuditPolicyDsc",
+    "GPRegistryPolicyDsc",
+    "PSDscResources",
+    "WindowsDefenderDsc",
+    "SecurityPolicyDsc",
+    "AuditSystemDsc",
+    "CertificateDsc",
     "PowerSTIG"
 )
 
@@ -36,14 +43,14 @@ foreach ($mod in $conflictingModules) {
     $badPath = Join-Path $sys32Dsc $mod
     if (Test-Path $badPath) {
         Write-Host "  [!] Found conflict. Force deleting: $badPath" -ForegroundColor Yellow
-        
+
         # Strip TrustedInstaller protections using native Windows tools
         takeown.exe /F $badPath /R /D Y | Out-Null
         icacls.exe $badPath /grant "Administrators:(OI)(CI)F" /T /Q | Out-Null
-        
+
         # Nuke the folder
         Remove-Item -Path $badPath -Recurse -Force -ErrorAction SilentlyContinue
-        
+
         if (Test-Path $badPath) {
             Write-Warning "  FAILED to delete $badPath. CIM conflicts may occur."
         } else {
@@ -166,6 +173,27 @@ Configuration ApplyWindowsServerStig {
             }
 
             SkipRule = @(
+                # -------------------------------------------------------
+                # AccountPolicy rules — skipped to prevent SCE database
+                # write during DSC apply. The SCE write causes Windows to
+                # re-enforce GPO-derived WinRM restrictions mid-session,
+                # which breaks Packer's connection before subsequent
+                # provisioners can run. All of these are applied by
+                # account_policy.ps1 after all uploads are complete.
+                # -------------------------------------------------------
+                'V-254285',   # Account lockout duration
+                'V-254286',   # Account lockout threshold
+                'V-254287',   # Account lockout observation window
+                'V-254288',   # Enforce password history
+                'V-254289',   # Maximum password age
+                'V-254290',   # Minimum password age
+                'V-254291',   # Minimum password length
+                'V-254292',   # Password complexity
+                'V-254293',   # Reversible encryption (CAT I)
+
+                # -------------------------------------------------------
+                # Pre-existing skips (unchanged)
+                # -------------------------------------------------------
                 'V-254254.c',
                 'V-254271',
                 'V-254457',
@@ -206,7 +234,6 @@ if (!(Test-Path $mofFile)) {
     exit 1
 }
 
-# Display MOF size as a quick sanity check (a truncated/empty MOF is a red flag)
 $mofSize = (Get-Item $mofFile).Length
 Write-Host "MOF generated: $mofFile (size: $mofSize bytes)"
 
@@ -215,7 +242,21 @@ if ($mofSize -lt 50000) {
     Write-Warning "This may indicate that many STIG rules were skipped or the compilation was incomplete."
 }
 
-Write-Host "=== DSC configuration compiled successfully ==="
+# -----------------------------------------------------------------------
+# Confirm AccountPolicy rules are absent from the compiled MOF.
+# If any appear, SkipRule did not take effect — abort before apply_mof.ps1
+# runs and breaks WinRM.
+# -----------------------------------------------------------------------
+Write-Host "Verifying AccountPolicy rules are excluded from MOF..."
+$accountPolicyHits = Select-String -Path $mofFile -Pattern "AccountPolicy" -SimpleMatch
+if ($accountPolicyHits) {
+    Write-Error "AccountPolicy resources found in compiled MOF — SkipRule did not take effect."
+    Write-Error "DSC apply would break WinRM. Aborting. Check PowerSTIG version compatibility with SkipRule."
+    Write-Error "Matching lines:"
+    $accountPolicyHits | ForEach-Object { Write-Error "  $($_.Line.Trim())" }
+    exit 1
+}
+Write-Host "  [OK] No AccountPolicy resources in MOF — safe to apply." -ForegroundColor Green
 
-# Force clean exit code
+Write-Host "=== DSC configuration compiled successfully ==="
 exit 0

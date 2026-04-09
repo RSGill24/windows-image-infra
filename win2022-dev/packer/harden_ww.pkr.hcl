@@ -136,6 +136,14 @@ build {
     source      = "${var.hardening_source_dir}/install_dod_certs.ps1"
     destination = "${var.hardening_target_dir}/install_dod_certs.ps1"
   }
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/audit.ps1"
+    destination = "${var.hardening_target_dir}/audit.ps1"
+  }
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/dod_banner.ps1"
+    destination = "${var.hardening_target_dir}/dod_banner.ps1"
+  }
 
   provisioner "file" {
     source      = "${var.hardening_source_dir}/create_mof.ps1"

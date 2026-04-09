@@ -13,19 +13,8 @@ $bannerCaption = "DoD Notice and Consent Banner"
 # Keeping WARNING____WARNING on its own line separates it visually
 # from the body, matching the correct rendering in Image 1.
 # The full text must NOT exceed ~4096 chars or registry truncation occurs.
-$bannerText = "WARNING____WARNING`r`n`r`n" +
-"You are accessing a U.S. Government information system, which includes:`r`n" +
-"1) this computer`r`n" +
-"2) this computer network`r`n" +
-"3) all Government-furnished computers connected to this network`r`n" +
-"4) all Government-furnished devices and storage media attached to this network`r`n`r`n" +
-"You understand and consent to the following:`r`n" +
-"You may access this information system for authorized use only.`r`n" +
-"Unauthorized use of the system is prohibited and subject to criminal and civil penalties.`r`n`r`n" +
-"You have no reasonable expectation of privacy regarding any communication or data.`r`n" +
-"At any time, the Government may monitor, intercept, audit, and search data on this system.`r`n`r`n" +
-"This system may contain Controlled Unclassified Information (CUI).`r`n" +
-"Accessing and using this system indicates your understanding of this warning."
+$bannerText = "WARNING____WARNING`r`n`r`nYou are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
+
 # Set registry values
 Set-ItemProperty -Path $regPath -Name "LegalNoticeCaption" -Value $bannerCaption -Type String -Force
 Set-ItemProperty -Path $regPath -Name "LegalNoticeText"    -Value $bannerText    -Type String -Force
@@ -50,4 +39,4 @@ if ($finalText -like "WARNING____WARNING*") {
 }
 
 Write-Host "=== Banner Done ===" -ForegroundColor Cyan
-exit 0
+exit 0?

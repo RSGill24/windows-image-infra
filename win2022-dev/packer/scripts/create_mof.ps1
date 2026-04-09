@@ -1,4 +1,4 @@
-﻿# create_mof.ps1
+# create_mof.ps1
 # Compiles a DSC MOF using PowerSTIG.
 #
 # FIX: Removed all Exception entries that caused STIG regressions:

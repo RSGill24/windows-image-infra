@@ -119,6 +119,7 @@ if ($integrityFail) {
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\install_PowerSTIG.ps1"   "Install PowerSTIG"
 Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (removes CIM duplicates)"
+Invoke-Step "$scriptDir\dod_banner.ps1"    "applying dod banner "
 
 # -----------------------------------------------------------------------
 # STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)

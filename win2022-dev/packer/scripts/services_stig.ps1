@@ -1,4 +1,4 @@
-﻿Write-Host "=== Applying Services STIG (Targeted Fix) ==="
+Write-Host "=== Applying Services STIG (Targeted Fix) ==="
 
 # Antivirus (V-254248)
 Set-Service -Name WinDefend -StartupType Automatic

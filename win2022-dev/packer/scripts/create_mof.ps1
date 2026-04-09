@@ -9,6 +9,13 @@
 #   - V-254292 PolicyValue='Disabled' was disabling password complexity
 #   - V-254501 Identity='Everyone'   was granting Everyone remote shutdown right
 #
+# FIX: Added all AccountPolicy STIG rules to SkipRule (V-254285 to V-254292).
+#   The MSFT_AccountPolicy DSC resource writes to the SCE security database
+#   mid-execution, which corrupts WinRM authentication and causes 401 errors
+#   on every subsequent Packer provisioner. These rules are fully covered by
+#   account_policy.ps1 which runs after apply_mof.ps1 via secedit — a safer
+#   approach that does not touch the SCE database during the active WinRM session.
+#
 # Only ISSO-approved exceptions remain: V-254439 and V-254435 (Guests group).
 # All password/lockout policy values are driven by the org.pamdata.xml file.
 
@@ -22,13 +29,13 @@ Write-Host "=== create_mof.ps1 starting ==="
 Write-Host "--- Scanning for duplicate System32 modules ---"
 $sys32Dsc = "C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
 $conflictingModules = @(
-    "AuditPolicyDsc", 
-    "GPRegistryPolicyDsc", 
-    "PSDscResources", 
-    "WindowsDefenderDsc", 
-    "SecurityPolicyDsc", 
-    "AuditSystemDsc", 
-    "CertificateDsc", 
+    "AuditPolicyDsc",
+    "GPRegistryPolicyDsc",
+    "PSDscResources",
+    "WindowsDefenderDsc",
+    "SecurityPolicyDsc",
+    "AuditSystemDsc",
+    "CertificateDsc",
     "PowerSTIG"
 )
 
@@ -36,14 +43,14 @@ foreach ($mod in $conflictingModules) {
     $badPath = Join-Path $sys32Dsc $mod
     if (Test-Path $badPath) {
         Write-Host "  [!] Found conflict. Force deleting: $badPath" -ForegroundColor Yellow
-        
+
         # Strip TrustedInstaller protections using native Windows tools
         takeown.exe /F $badPath /R /D Y | Out-Null
         icacls.exe $badPath /grant "Administrators:(OI)(CI)F" /T /Q | Out-Null
-        
+
         # Nuke the folder
         Remove-Item -Path $badPath -Recurse -Force -ErrorAction SilentlyContinue
-        
+
         if (Test-Path $badPath) {
             Write-Warning "  FAILED to delete $badPath. CIM conflicts may occur."
         } else {
@@ -167,7 +174,33 @@ Configuration ApplyWindowsServerStig {
 
             SkipRule = @(
                 'V-254254.c',
-                'V-254271'
+                'V-254271',
+
+                # -------------------------------------------------------
+                # AccountPolicy rules — SKIPPED to protect WinRM session
+                # -------------------------------------------------------
+                # The MSFT_AccountPolicy DSC resource writes to the Windows
+                # SCE security database (secedit) mid-execution. This corrupts
+                # WinRM's authentication state during the active Packer session,
+                # causing 401 "invalid content type" errors on every subsequent
+                # provisioner upload — effectively killing the build pipeline.
+                #
+                # All eight rules below are fully re-applied by account_policy.ps1
+                # (which runs after apply_mof.ps1) using direct secedit writes,
+                # which achieve the same compliance result without touching the
+                # SCE database during an active WinRM session.
+                #
+                # DO NOT remove these SkipRule entries unless you have eliminated
+                # the WinRM/SCE conflict through another mechanism.
+                # -------------------------------------------------------
+                'V-254285',  # Account_lockout_duration       (15 minutes)
+                'V-254286',  # Account_lockout_threshold      (3 attempts)
+                'V-254287',  # Reset_lockout_count            (15 minutes)
+                'V-254288',  # Enforce_password_history       (24 passwords)
+                'V-254289',  # Maximum_password_age           (60 days)
+                'V-254290',  # Minimum_password_age           (1 day)
+                'V-254291',  # Minimum_password_length        (14 characters)
+                'V-254292'   # Password_complexity            (Enabled)
             )
         }
     }

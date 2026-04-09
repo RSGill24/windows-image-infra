@@ -50,29 +50,11 @@
 
   <!-- ============================================================
        LOGIN BANNER
+       V-254457 and V-254458 REMOVED from here.
+       Banner is set by dod_banner.ps1 which runs BEFORE DSC.
+       These rules are also in SkipRule in create_mof.ps1 so
+       DSC does not attempt to overwrite or conflict with them.
        ============================================================ -->
-
-  <!-- V-254457: Legal notice text (DoD standard banner) -->
-  <OrganizationalSetting id="V-254457" ValueData="------WARNING-------WARNING-----
-You are accessing a U.S. Government information system, which includes: 1) this
-computer, 2) this computer network, 3) all Government-furnished computers
-connected to this network, and 4) all Government-furnished devices and storage
-media attached to this network or to a computer on this network. You understand
-and consent to the following: you may access this information system for
-authorized use only: unauthorized use of the system is prohibited and subject
-to criminal and civil penalties: you have no reasonable expectation of privacy
-regarding any communication or data transiting or stored on this information
-system at any time and for any lawful Government purpose, the Government may
-monitor, intercept, audit, and search and seize any communication or data
-transiting or stored on this information system: and any communications or data
-transiting or stored on this information system may be disclosed or used for
-any lawful Government purpose.  This information system may contain Controlled
-Unclassified Information (CUI) that is subject to safeguarding or dissemination
-controls in accordance with law, regulation, or Government-wide policy.
-Accessing and using this system indicates your understanding of this warning." />
-
-  <!-- V-254458: Legal notice caption -->
-  <OrganizationalSetting id="V-254458" ValueData="DoD Notice and Consent Banner" />
 
   <!-- ============================================================
        DoD PKI CERTIFICATES
@@ -131,23 +113,27 @@ Accessing and using this system indicates your understanding of this warning." /
        These rules deny log on rights TO the Guests group.
        ============================================================ -->
 
-  <!-- V-254435: Deny log on as a batch job — must apply to Guests group FIX: was Administrators -->
+  <!-- V-254435: Deny log on as a batch job — must apply to Guests group -->
   <OrganizationalSetting id="V-254435" Identity="Guests" />
 
   <!-- V-254439: Deny log on as a service — Guests -->
   <OrganizationalSetting id="V-254439" Identity="Guests" />
 
-  <!-- V-254499: Deny log on locally — must apply to Guests group FIX: was Administrators -->
+  <!-- V-254499: Deny log on locally — must apply to Guests group -->
   <OrganizationalSetting id="V-254499" Identity="Guests" />
 
   <!-- ============================================================
-       BUILT-IN ACCOUNT RENAME
+       BUILT-IN ACCOUNT RENAME / DISABLE
+       DSC SecurityOption resource handles these via secedit.
+       V-254447: Renames built-in Administrator to "AdminRenamed"
+       V-254448: Renames built-in Guest to "GuestDisabled"
+       Both run as part of apply_mof.ps1 — no separate script needed.
        ============================================================ -->
 
   <!-- V-254447: Built-in Administrator account must be renamed -->
   <OrganizationalSetting id="V-254447" OptionValue="AdminRenamed" />
 
-  <!-- V-254448: Built-in Guest account must be renamed -->
+  <!-- V-254448: Built-in Guest account must be disabled/renamed -->
   <OrganizationalSetting id="V-254448" OptionValue="GuestDisabled" />
 
 </OrganizationalSettings>

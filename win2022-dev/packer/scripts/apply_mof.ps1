@@ -165,32 +165,4 @@ try {
 }
 
 # -----------------------------------------------------------------------
-# Banner re-apply
-# -----------------------------------------------------------------------
-Write-Host "Re-applying DoD banner..." -ForegroundColor Yellow
-
-try {
-    $bkey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
-        "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", $true)
-
-    $bkey.SetValue("LegalNoticeCaption", "DoD Notice and Consent Banner",
-        [Microsoft.Win32.RegistryValueKind]::String)
-
-    $sb = New-Object System.Text.StringBuilder
-    [void]$sb.Append("WARNING____WARNING")
-    [void]$sb.Append([char]13)
-    [void]$sb.Append([char]10)
-    [void]$sb.Append([char]13)
-    [void]$sb.Append([char]10)
-    [void]$sb.Append("You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning.")
-
-    $bkey.SetValue("LegalNoticeText", $sb.ToString(),
-        [Microsoft.Win32.RegistryValueKind]::String)
-    $bkey.Close()
-
-    Write-Host "  [OK] Banner re-applied" -ForegroundColor Green
-} catch {
-    Write-Warning "  Banner re-apply failed: $_"
-}
-
 exit 0

@@ -158,6 +158,7 @@ Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"   "Remaining STIG fixes (V-25
 
 # Broader targeted fixes for remaining SCAP failures
 Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"                       -AllowFailure
+Invoke-Step "$scriptDir\dod_banner.ps1"           "Apply dod banner"
 
 # -----------------------------------------------------------------------
 # STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)

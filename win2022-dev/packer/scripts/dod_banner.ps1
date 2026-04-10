@@ -5,15 +5,16 @@ Write-Host "=== Setting DoD Consent Banner ===" -ForegroundColor Cyan
 
 $regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 
-# V-254458 — Title (shown as bold header in LogonUI)
+# V-254458 — Title
 $bannerCaption = "DoD Notice and Consent Banner"
 
 # V-254457 — Body text
-# Windows LogonUI renders \r\n as actual line breaks in the dialog.
-# Keeping WARNING____WARNING on its own line separates it visually
-# from the body, matching the correct rendering in Image 1.
-# The full text must NOT exceed ~4096 chars or registry truncation occurs.
- $bannerText = "WARNING____WARNING`r`n`r`nYou are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
+# FIX: Packer file upload karte waqt backtick escapes (`r`n) plain text
+# ban jaate hain — [char] method use karo jo encoding se independent hai
+$CRLF = [char]13 + [char]10
+
+$bannerText = "WARNING____WARNING" + $CRLF + $CRLF + "You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
+
 Set-ItemProperty -Path $regPath -Name "LegalNoticeCaption" -Value $bannerCaption -Type String -Force
 Set-ItemProperty -Path $regPath -Name "LegalNoticeText"    -Value $bannerText    -Type String -Force
 
@@ -38,4 +39,3 @@ if ($finalText -like "WARNING____WARNING*") {
 
 Write-Host "=== Banner Done ===" -ForegroundColor Cyan
 exit 0
-

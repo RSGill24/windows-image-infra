@@ -39,4 +39,5 @@ if ($finalText -like "WARNING____WARNING*") {
 }
 
 Write-Host "=== Banner Done ===" -ForegroundColor Cyan
-exit 0?
+exit 0
+

@@ -194,6 +194,7 @@ Configuration ApplyWindowsServerStig {
                 'V-254291',   # Minimum password length
                 'V-254292',   # Password complexity
                 'V-254293',   # Reversible encryption (CAT I)
+                'V-254434'
 
                 # -------------------------------------------------------
                 # SecurityOption rules — also write to SCE database,

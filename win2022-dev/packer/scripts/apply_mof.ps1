@@ -1,275 +1,196 @@
-# create_mof.ps1
-# Compiles a DSC MOF using PowerSTIG.
-#
-# FIX: Removed all Exception entries that caused STIG regressions:
-#   - V-254446 ValueData='0'         was DISABLING blank-password protection (CAT I!)
-#   - V-254289 PolicyValue='0'       was setting max password age to NEVER
-#   - V-254290 PolicyValue='0'       was setting min password age to 0
-#   - V-254291 PolicyValue='0'       was setting min password length to 0
-#   - V-254292 PolicyValue='Disabled' was disabling password complexity
-#   - V-254501 Identity='Everyone'   was granting Everyone remote shutdown right
-#
-# FIX: Added V-254289 through V-254293 (all AccountPolicy rules) to SkipRule.
-#   FIX: Added V-254285 through V-254288 (lockout policy rules) to SkipRule.
-#   FIX: Added V-254445 and V-254465 (SecurityOption rules) to SkipRule.
-#        SecurityOption DSC resource also writes to the SCE database and breaks
-#        WinRM mid-session exactly like AccountPolicy. Both handled by
-#        stig_remediation_fixes.ps1 after all uploads are complete.
-#   AccountPolicy DSC resource writes to the SCE security database during
-#   Start-DscConfiguration, which causes Windows to re-enforce GPO-derived
-#   WinRM restrictions mid-session — breaking Packer's WinRM connection before
-#   subsequent provisioners can run. These rules are handled exclusively by
-#   account_policy.ps1 which runs after all file uploads are complete.
-#
-# Only ISSO-approved exceptions remain: V-254439 and V-254435 (Guests group).
-# All password/lockout policy values are driven by the org.pamdata.xml file.
+#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Applies the compiled DSC MOF to enforce STIG controls.
+.NOTES
+    FIX: DSC Scheduled Task se chalta hai — WinRM se independent.
+         UserRightsAssignment secedit write karta hai jo WinRM todta hai.
+         Scheduled Task SYSTEM account mein chalta hai isliye WinRM
+         tootne se script abort nahi hoti.
+         DSC complete hone ke baad WinRM restore aur banner re-apply hota hai.
+#>
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Continue'
 
-Write-Host "=== create_mof.ps1 starting ==="
+Write-Host "=== Applying DSC configuration ==="
 
 # -----------------------------------------------------------------------
-# PRE-COMPILATION CIM CONFLICT CLEANUP
-# Aggressively destroys out-of-band DSC modules baked into System32.
-# If these exist alongside the Program Files copies, DSC compilation fails.
+# Resolve MOF path
 # -----------------------------------------------------------------------
-Write-Host "--- Scanning for duplicate System32 modules ---"
-$sys32Dsc = "C:\Windows\system32\WindowsPowerShell\v1.0\Modules"
-$conflictingModules = @(
-    "AuditPolicyDsc",
-    "GPRegistryPolicyDsc",
-    "PSDscResources",
-    "WindowsDefenderDsc",
-    "SecurityPolicyDsc",
-    "AuditSystemDsc",
-    "CertificateDsc",
-    "PowerSTIG"
-)
-
-foreach ($mod in $conflictingModules) {
-    $badPath = Join-Path $sys32Dsc $mod
-    if (Test-Path $badPath) {
-        Write-Host "  [!] Found conflict. Force deleting: $badPath" -ForegroundColor Yellow
-
-        # Strip TrustedInstaller protections using native Windows tools
-        takeown.exe /F $badPath /R /D Y | Out-Null
-        icacls.exe $badPath /grant "Administrators:(OI)(CI)F" /T /Q | Out-Null
-
-        # Nuke the folder
-        Remove-Item -Path $badPath -Recurse -Force -ErrorAction SilentlyContinue
-
-        if (Test-Path $badPath) {
-            Write-Warning "  FAILED to delete $badPath. CIM conflicts may occur."
-        } else {
-            Write-Host "  Successfully removed $badPath" -ForegroundColor Green
-        }
-    }
-}
-Write-Host "--- Cleanup complete ---"
+$OutputPath = Join-Path $PSScriptRoot "MOF"
+$mofFile    = Join-Path $OutputPath "localhost.mof"
 
 # -----------------------------------------------------------------------
-# Ensuring all module paths are in PSModulePath
+# Pre-application validation
 # -----------------------------------------------------------------------
-$requiredPaths = @(
-    "C:\Program Files\WindowsPowerShell\Modules",
-    "C:\Windows\system32\WindowsPowerShell\v1.0\Modules",
-    "C:\Program Files (x86)\WindowsPowerShell\Modules"
-)
-foreach ($p in $requiredPaths) {
-    if ($p -and ($env:PSModulePath -split ';') -notcontains $p) {
-        Write-Host "Adding to PSModulePath: $p"
-        $env:PSModulePath = "$p;$env:PSModulePath"
-    }
-}
-
-# -----------------------------------------------------------------------
-# Detecting latest PowerSTIG module
-# -----------------------------------------------------------------------
-$module = Get-Module PowerSTIG -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
-if (-not $module) {
-    Write-Error "PowerSTIG module not found. Ensure install_PowerSTIG.ps1 ran successfully."
-    exit 1
-}
-$pstigVersion = $module.Version.ToString()
-Write-Host "Found PowerSTIG module $pstigVersion at: $($module.ModuleBase)"
-
-# -----------------------------------------------------------------------
-# Detecting STIG XML and parse version
-# -----------------------------------------------------------------------
-$stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
-$stigXml = Get-ChildItem -Path $stigDataPath -Filter "WindowsServer-2022-MS-*.org.default.xml" |
-           Sort-Object Name -Descending | Select-Object -First 1
-if (-not $stigXml) {
-    Write-Error "No WindowsServer-2022-MS-*.org.default.xml found in $stigDataPath"
-    exit 1
-}
-$stigVersionString = ($stigXml.Name -replace 'WindowsServer-2022-MS-', '' -replace '\.org\.default\.xml', '')
-Write-Host "Detected STIG XML: $($stigXml.FullName)"
-Write-Host "Detected STIG version: $stigVersionString"
-
-# -----------------------------------------------------------------------
-# Paths
-# -----------------------------------------------------------------------
-$HardeningDir = $PSScriptRoot
-$OutputPath   = Join-Path $HardeningDir "MOF"
-$OrgSettings  = Join-Path $HardeningDir ($stigXml.Name -replace '\.org\.default\.xml', '.org.pamdata.xml')
-
-if (!(Test-Path $OrgSettings)) {
-    Write-Warning "PAM org settings not found at $OrgSettings -- falling back to default XML"
-    $OrgSettings = $stigXml.FullName
-}
-Write-Host "Using OrgSettings: $OrgSettings"
-
-if (!(Test-Path $OutputPath)) {
-    New-Item -Path $OutputPath -ItemType Directory -Force | Out-Null
-    Write-Host "Created MOF output directory: $OutputPath"
-}
-
-# -----------------------------------------------------------------------
-# Verify DSC resource is available
-# -----------------------------------------------------------------------
-Import-Module -Name PowerSTIG -RequiredVersion $pstigVersion -Force
-try {
-    $dscCheck = Get-DscResource -Name WindowsServer -Module PowerSTIG -ErrorAction Stop
-    Write-Host "DSC resource confirmed: $($dscCheck.Name) from $($dscCheck.Module)"
-} catch {
-    Write-Error "WindowsServer DSC resource not found: $_"
-    exit 1
-}
-
-# -----------------------------------------------------------------------
-# Generate temporary DSC configuration script
-# -----------------------------------------------------------------------
-$tempScript = Join-Path $env:TEMP "dsc_config_generated.ps1"
-
-$safeOutputPath  = $OutputPath  -replace "'", "''"
-$safeOrgSettings = $OrgSettings -replace "'", "''"
-
-$scriptContent = @"
-Configuration ApplyWindowsServerStig {
-    Import-DscResource -ModuleName PowerSTIG -ModuleVersion $pstigVersion
-
-    Node 'localhost' {
-        WindowsServer 'ConfigureServer' {
-            OsVersion   = '2022'
-            OsRole      = 'MS'
-            StigVersion = '$stigVersionString'
-            OrgSettings = '$safeOrgSettings'
-
-            # ---------------------------------------------------------------
-            # EXCEPTION RULES — ISSO-APPROVED DEVIATIONS ONLY
-            # ---------------------------------------------------------------
-            # All password policy, lockout policy, and security option values
-            # are driven by OrgSettings (pamdata.xml). Do NOT add exceptions
-            # for those rules here — exceptions override pamdata.xml and will
-            # cause SCAP failures.
-            #
-            # REMOVED exceptions that caused SCAP failures:
-            #   V-254446 ValueData='0'          -> Disabled blank-password protection (CAT I)
-            #   V-254289 PolicyValue='0'         -> Max password age = NEVER
-            #   V-254290 PolicyValue='0'         -> Min password age = 0
-            #   V-254291 PolicyValue='0'         -> Min password length = 0
-            #   V-254292 PolicyValue='Disabled'  -> Disabled password complexity
-            #   V-254501 Identity='Everyone'     -> Granted Everyone remote shutdown
-            # ---------------------------------------------------------------
-            Exception = @{
-                # V-254439: Deny log on as a service — Guests only
-                'V-254439' = @{ 'Identity' = 'Guests' }
-                # V-254435: Deny log on as a batch job — Guests only
-                'V-254435' = @{ 'Identity' = 'Guests' }
-            }
-
-            SkipRule = @(
-                # -------------------------------------------------------
-                # AccountPolicy rules — skipped to prevent SCE database
-                # write during DSC apply. The SCE write re-enforces
-                # GPO-derived WinRM restrictions mid-session, breaking
-                # Packer's connection. All handled by account_policy.ps1
-                # after all uploads are complete.
-                # -------------------------------------------------------
-                'V-254285',   # Account lockout duration
-                'V-254286',   # Account lockout threshold
-                'V-254287',   # Account lockout observation window
-                'V-254288',   # Enforce password history
-                'V-254289',   # Maximum password age
-                'V-254290',   # Minimum password age
-                'V-254291',   # Minimum password length
-                'V-254292',   # Password complexity
-                'V-254293',   # Reversible encryption (CAT I)
-                'V-254434'
-
-                # -------------------------------------------------------
-                # SecurityOption rules — also write to SCE database,
-                # same WinRM-breaking side effect as AccountPolicy.
-                # Handled by stig_remediation_fixes.ps1 after uploads.
-                # -------------------------------------------------------
-                'V-254445',   # Network security: LAN Manager auth level
-                'V-254465',   # Network security: LDAP client signing
-
-                # -------------------------------------------------------
-                # Pre-existing skips (unchanged)
-                # -------------------------------------------------------
-                'V-254254.c',
-                'V-254271',
-                'V-254457',
-                'V-254458'
-            )
-        }
-    }
-}
-
-ApplyWindowsServerStig -OutputPath '$safeOutputPath'
-"@
-
-Set-Content -Path $tempScript -Value $scriptContent -Encoding UTF8
-Write-Host "Generated temporary DSC config script: $tempScript"
-
-# -----------------------------------------------------------------------
-# Spawn a fresh PowerShell process to compile the MOF.
-# A new process avoids CIM class caching issues from the current session.
-# -----------------------------------------------------------------------
-Write-Host "=== Generating MOF... ==="
-$result = Start-Process powershell `
-    -ArgumentList "-ExecutionPolicy Bypass -NonInteractive -File `"$tempScript`"" `
-    -Wait `
-    -PassThru `
-    -NoNewWindow
-
-if ($result.ExitCode -ne 0) {
-    Write-Error "DSC configuration compilation failed with exit code $($result.ExitCode)"
-    exit $result.ExitCode
-}
-
-# -----------------------------------------------------------------------
-# Verify MOF was created
-# -----------------------------------------------------------------------
-$mofFile = Join-Path $OutputPath "localhost.mof"
 if (!(Test-Path $mofFile)) {
-    Write-Error "MOF file was not generated at: $mofFile"
+    Write-Error "MOF file not found at: $mofFile"
     exit 1
 }
 
 $mofSize = (Get-Item $mofFile).Length
-Write-Host "MOF generated: $mofFile (size: $mofSize bytes)"
+Write-Host "Found MOF: $mofFile ($mofSize bytes)"
 
-if ($mofSize -lt 50000) {
-    Write-Warning "MOF file is unusually small ($mofSize bytes). Expected > 50 KB."
-    Write-Warning "This may indicate that many STIG rules were skipped or the compilation was incomplete."
-}
-
-# -----------------------------------------------------------------------
-# Confirm AccountPolicy rules are absent from the compiled MOF.
-# If any appear, SkipRule did not take effect — abort before apply_mof.ps1
-# runs and breaks WinRM.
-# -----------------------------------------------------------------------
-Write-Host "Verifying SCE-writing resources are excluded from MOF..."
-$sceHits = Select-String -Path $mofFile -Pattern "AccountPolicy|SecurityOption" -SimpleMatch
-if ($sceHits) {
-    Write-Error "SCE-writing resources (AccountPolicy or SecurityOption) found in compiled MOF."
-    Write-Error "DSC apply would break WinRM. Aborting. Check SkipRule entries in this script."
-    Write-Error "Matching lines:"
-    $sceHits | ForEach-Object { Write-Error "  $($_.Line.Trim())" }
+if ($mofSize -lt 10000) {
+    Write-Error "MOF file is suspiciously small ($mofSize bytes)"
     exit 1
 }
-Write-Host "  [OK] No SCE-writing resources in MOF — safe to apply." -ForegroundColor Green
 
-Write-Host "=== DSC configuration compiled successfully ==="
+# -----------------------------------------------------------------------
+# Clear LCM cached MOF
+# -----------------------------------------------------------------------
+Write-Host "Clearing LCM cached MOF..." -ForegroundColor Yellow
+
+$lcmCachePaths = @(
+    "C:\Windows\System32\Configuration\Current.mof",
+    "C:\Windows\System32\Configuration\Pending.mof",
+    "C:\Windows\System32\Configuration\Previous.mof",
+    "C:\Windows\System32\Configuration\backup.mof"
+)
+foreach ($p in $lcmCachePaths) {
+    if (Test-Path $p) {
+        Remove-Item $p -Force -ErrorAction SilentlyContinue
+        Write-Host "  Deleted: $p" -ForegroundColor Yellow
+    }
+}
+
+Stop-DscConfiguration -Force -ErrorAction SilentlyContinue
+Remove-DscConfigurationDocument -Stage Current  -Force -ErrorAction SilentlyContinue
+Remove-DscConfigurationDocument -Stage Pending  -Force -ErrorAction SilentlyContinue
+Remove-DscConfigurationDocument -Stage Previous -Force -ErrorAction SilentlyContinue
+
+Write-Host "LCM cache cleared." -ForegroundColor Green
+
+# -----------------------------------------------------------------------
+# DSC ko Scheduled Task se chalao — WinRM se independent
+# UserRightsAssignment secedit write karta hai jo WinRM todta hai
+# Scheduled Task SYSTEM mein chalta hai — WinRM toot bhi jaye toh
+# script continue karti hai
+# -----------------------------------------------------------------------
+Write-Host "Starting DSC via Scheduled Task (SYSTEM account)..." -ForegroundColor Yellow
+
+$dscScriptContent = "Start-DscConfiguration -Path '$OutputPath' -Wait -Force -Verbose *>> 'C:\Windows\Temp\dsc_apply.log' 2>&1"
+$dscScriptPath    = "C:\Windows\Temp\run_dsc.ps1"
+
+Set-Content -Path $dscScriptPath -Value $dscScriptContent -Encoding UTF8
+
+$action = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument "-ExecutionPolicy Bypass -NonInteractive -File `"$dscScriptPath`""
+
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+
+$settings = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries
+
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+
+Unregister-ScheduledTask -TaskName "DSC_Apply_STIG" -Confirm:$false -ErrorAction SilentlyContinue
+
+Register-ScheduledTask `
+    -TaskName  "DSC_Apply_STIG" `
+    -Action    $action `
+    -Trigger   $trigger `
+    -Settings  $settings `
+    -Principal $principal `
+    -Force | Out-Null
+
+Write-Host "  Scheduled Task registered — waiting for DSC to start..." -ForegroundColor Gray
+Start-Sleep -Seconds 15
+
+# -----------------------------------------------------------------------
+# DSC complete hone ka wait karo
+# -----------------------------------------------------------------------
+Write-Host "Waiting for DSC to complete..."
+$timeout = 600
+$elapsed = 0
+
+do {
+    Start-Sleep -Seconds 15
+    $elapsed += 15
+    $task = Get-ScheduledTask -TaskName "DSC_Apply_STIG" -ErrorAction SilentlyContinue
+    $state = if ($task) { $task.State } else { "NotFound" }
+    Write-Host "  DSC Task state: $state — ${elapsed}s elapsed"
+} while ($state -eq 'Running' -and $elapsed -lt $timeout)
+
+Write-Host "DSC Task finished — Final state: $state" -ForegroundColor Green
+
+# DSC log tail karo
+if (Test-Path "C:\Windows\Temp\dsc_apply.log") {
+    Write-Host "--- DSC Log (last 10 lines) ---" -ForegroundColor Gray
+    Get-Content "C:\Windows\Temp\dsc_apply.log" | Select-Object -Last 10 |
+        ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+}
+
+# Cleanup
+Unregister-ScheduledTask -TaskName "DSC_Apply_STIG" -Confirm:$false -ErrorAction SilentlyContinue
+Remove-Item $dscScriptPath -Force -ErrorAction SilentlyContinue
+
+# -----------------------------------------------------------------------
+# WinRM restore — DSC complete ho gaya, ab WinRM fix karo
+# -----------------------------------------------------------------------
+Write-Host "Restoring WinRM after DSC..." -ForegroundColor Yellow
+
+# WinRM restore block — Restart-Service NAHI karna
+# Restart karne se WinRM band ho jaata hai GPO ki wajah se
+try {
+    # GPO restrictions hatao
+    $gpoPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service"
+    if (Test-Path $gpoPath) {
+        Remove-ItemProperty -Path $gpoPath -Name "AllowBasic"              -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $gpoPath -Name "AllowUnencryptedTraffic" -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $gpoPath -Name "DisableRunAs"            -ErrorAction SilentlyContinue
+        Write-Host "  GPO WinRM restrictions removed" -ForegroundColor Green
+    }
+
+    # WinRM start karo agar band hai
+    $svc = Get-Service WinRM
+    if ($svc.Status -ne 'Running') {
+        Start-Service WinRM
+        Start-Sleep -Seconds 5
+    }
+
+    # Auth settings set karo — NO Restart-Service
+    Set-Item -Path WSMan:\localhost\Service\Auth\Basic       -Value $true -Force
+    Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate   -Value $true -Force
+    Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force
+    winrm set winrm/config/service '@{AllowUnencrypted="true"}' | Out-Null
+    winrm set winrm/config/service/auth '@{Basic="true"}' | Out-Null
+
+    Write-Host "  [OK] WinRM restored" -ForegroundColor Green
+} catch {
+    Write-Warning "  WinRM restore failed: $_"
+}
+
+# -----------------------------------------------------------------------
+# Banner re-apply
+# -----------------------------------------------------------------------
+Write-Host "Re-applying DoD banner..." -ForegroundColor Yellow
+
+try {
+    $bkey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+        "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", $true)
+
+    $bkey.SetValue("LegalNoticeCaption", "DoD Notice and Consent Banner",
+        [Microsoft.Win32.RegistryValueKind]::String)
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("WARNING____WARNING")
+    [void]$sb.Append([char]13)
+    [void]$sb.Append([char]10)
+    [void]$sb.Append([char]13)
+    [void]$sb.Append([char]10)
+    [void]$sb.Append("You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning.")
+
+    $bkey.SetValue("LegalNoticeText", $sb.ToString(),
+        [Microsoft.Win32.RegistryValueKind]::String)
+    $bkey.Close()
+
+    Write-Host "  [OK] Banner re-applied" -ForegroundColor Green
+} catch {
+    Write-Warning "  Banner re-apply failed: $_"
+}
+
 exit 0

@@ -91,9 +91,7 @@ These are installed during the build process using dedicated scripts:
 
 ### 4. Audit Configuration
 - Enables Windows auditing policies  
-- Creates scheduled audit task  
 - Performs compliance validation  
-- Can be extended to export audit results  
 
 ---
 

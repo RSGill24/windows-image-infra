@@ -83,11 +83,9 @@ These are installed during the build process using dedicated scripts:
 | `install_nessus.ps1` | Installs Nessus vulnerability scanning agent |
 | `install_bigfix.ps1` | Installs BigFix compliance and patching agent |
 
-> ⚠️ Note:  
-> Ensure agent binaries, tokens, and configuration parameters (e.g., activation keys, manager URLs) are securely provided via:
+> Note:  
+> Agent binaries, and configuration parameters are securely provided via:
 > - Secure storage (GCS/S3/Artifact repo)
-> - Environment variables or secrets
-> - Cloud Build substitutions / Secret Manager
 
 ---
 

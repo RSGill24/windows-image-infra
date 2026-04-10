@@ -15,10 +15,15 @@
     7. apply_remaining_fixes.ps1 runs AFTER apply_mof.ps1 (V-254251/258/261)
     8. repair_winrm_for_packer.ps1 runs LAST (must not be undone by any STIG script)
 
-    FIX: Integrity check corrected to use 'audit.ps1' (the actual filename)
-         instead of 'apply_audit_policy.ps1' which does not exist on disk.
-         This was causing the pre-flight check to error with MISSING even
-         though audit.ps1 was uploaded correctly by Packer.
+    FIX (WinRM 401): apply_mof.ps1 ke baad WinRM toot jaata tha kyunki DSC
+    UserRightsAssignment secedit write karta hai jo GPO-derived WinRM restrictions
+    re-enforce kar deta hai. apply_mof.ps1 ab khud WinRM restore karta hai aur
+    verify loop chalata hai. Yeh script Cloud Run (Packer) mein bhi correctly
+    chalti hai — WinRM guarantee ke saath.
+
+    NOTE: Yeh script ab Packer ke Step 5a se call hoti hai sirf DSC wale hisse ke liye.
+    account_policy, fixes, etc. Step 5b (alag provisioner) se chalte hain taaki
+    Packer ka WinRM connection guaranteed ready ho.
 #>
 
 Set-StrictMode -Version Latest
@@ -76,7 +81,6 @@ function Invoke-Step {
 
 # -----------------------------------------------------------------------
 # PRE-FLIGHT: Verify critical scripts are not truncated
-# FIX: Uses 'audit.ps1' (actual filename) not 'apply_audit_policy.ps1'
 # -----------------------------------------------------------------------
 Write-Host "`n--- Pre-flight: Script integrity checks ---" -ForegroundColor Yellow
 
@@ -119,29 +123,41 @@ if ($integrityFail) {
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\install_PowerSTIG.ps1"   "Install PowerSTIG"
 Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (removes CIM duplicates)"
-# -----------------------------------------------------------------------
-# DOD Banner — inline set karo, file encoding issue avoid karne ke liye
 
 # -----------------------------------------------------------------------
-# STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
+# STEP 2 -- Install agents and DoD Certificates (before create_mof)
 # Must run BEFORE create_mof.ps1 so DSC certificate checks find certs installed.
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\install_bigfix.ps1"   "bigfix agent" -AllowFailure
-Invoke-Step "$scriptDir\install_nessus.ps1"   "nessus agent" -AllowFailure
-Invoke-Step "$scriptDir\install_trellix.ps1"   "trellix agent" -AllowFailure
-Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-254442/443/444)" -AllowFailure
+Invoke-Step "$scriptDir\install_bigfix.ps1"      "BigFix agent"                                    -AllowFailure
+Invoke-Step "$scriptDir\install_nessus.ps1"      "Nessus agent"                                    -AllowFailure
+Invoke-Step "$scriptDir\install_trellix.ps1"     "Trellix agent"                                   -AllowFailure
+Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-254442/443/444)"     -AllowFailure
 
 # -----------------------------------------------------------------------
 # STEP 3 -- Create and apply the DSC MOF
+# apply_mof.ps1 ke andar:
+#   - DSC Scheduled Task se chalta hai (WinRM se independent)
+#   - DSC complete hone ke baad WinRM restore hota hai
+#   - WinRM verify loop chalti hai (max 120s) — ready confirm karke exit hoti hai
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
-Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
+Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF (WinRM auto-restored inside)"
+
+# -----------------------------------------------------------------------
+# FIX: WinRM ready confirmation after apply_mof
+# apply_mof.ps1 ne WinRM restore kiya hai aur verify loop bhi chali hai.
+# Yahan extra buffer dete hain taaki Packer ka connection stable ho jaye
+# pehle se koi aur provisioner aaye (Step 5b mein).
+# -----------------------------------------------------------------------
+Write-Host "`n--- WinRM post-DSC buffer (30s) ---" -ForegroundColor Yellow
+Start-Sleep -Seconds 30
+Write-Host "    Buffer complete." -ForegroundColor Green
 
 # -----------------------------------------------------------------------
 # STEP 4 -- Post-DSC targeted fixes
-# All scripts below MUST run AFTER apply_mof.ps1.
-# DSC cannot undo secedit/registry/auditpol writes -- running these after
-# DSC ensures they are the final state baked into the image.
+# NOTE: Packer ke Cloud Run mode mein yeh steps Step 5b (alag provisioner)
+# se chalte hain. Local/manual mode mein yahan se chalte hain.
+# Dono cases mein WinRM upar verify ho chuka hai isliye safe hai.
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\registry_stig.ps1"           "Registry STIG fixes"                             -AllowFailure
 Invoke-Step "$scriptDir\services_stig.ps1"           "Services STIG fixes"                             -AllowFailure
@@ -149,8 +165,7 @@ Invoke-Step "$scriptDir\services_stig.ps1"           "Services STIG fixes"      
 # V-254285/286/287/288/289/290/291/292 -- password and lockout policy
 Invoke-Step "$scriptDir\account_policy.ps1"          "Account Policy (net accounts + secedit)"
 
-# V-278942/943/944/945/946/947 -- audit file system, handle manipulation, registry
-# FIX: script is named audit.ps1 not apply_audit_policy.ps1
+# V-278942/943/944/945/946/947 -- audit subcategories
 Invoke-Step "$scriptDir\audit.ps1"                   "Audit Subcategory Policy (V-278942 to V-278947)" -AllowFailure
 
 # V-254251/258/261 -- C:\ permissions, password expiry, cert file removal
@@ -158,12 +173,13 @@ Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"   "Remaining STIG fixes (V-25
 
 # Broader targeted fixes for remaining SCAP failures
 Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"                       -AllowFailure
-Invoke-Step "$scriptDir\dod_banner.ps1"           "Apply dod banner"
+
+Invoke-Step "$scriptDir\dod_banner.ps1"              "Apply DoD banner"                                -AllowFailure
 
 # -----------------------------------------------------------------------
 # STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"      -AllowFailure
+Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"             -AllowFailure
 
 # -----------------------------------------------------------------------
 # STEP 6 -- Final DSC compliance audit

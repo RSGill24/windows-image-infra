@@ -122,30 +122,25 @@ Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (remo
 # -----------------------------------------------------------------------
 # DOD Banner — inline set karo, file encoding issue avoid karne ke liye
 # -----------------------------------------------------------------------
-$regPath       = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
-$bannerCaption = "DoD Notice and Consent Banner"
-$bodyText      = "You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
+# -----------------------------------------------------------------------
+# Banner — .reg file se set karo (encoding proof)
+# -----------------------------------------------------------------------
+Write-Host "`n--- applying dod banner ---" -ForegroundColor Yellow
 
-# Hex values — encoding proof
-$cr         = [char]0x0D
-$lf         = [char]0x0A
-$bannerText = "WARNING____WARNING" + $cr + $lf + $cr + $lf + $bodyText
+$regFilePath = "C:\Windows\Temp\dod_banner.reg"
 
-Set-ItemProperty -Path $regPath -Name "LegalNoticeCaption" -Value $bannerCaption -Type String -Force
-Set-ItemProperty -Path $regPath -Name "LegalNoticeText"    -Value $bannerText    -Type String -Force
+$regFileContent = "Windows Registry Editor Version 5.00`r`n`r`n[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System]`r`n""LegalNoticeCaption""=""DoD Notice and Consent Banner""`r`n""LegalNoticeText""=""WARNING____WARNING\r\n\r\nYou are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning.""`r`n"
 
-# Byte verify karo
-$stored = (Get-ItemProperty $regPath).LegalNoticeText
-Write-Host "  Char 18 (CR check): $([int][char]$stored[18]) — should be 13" -ForegroundColor Gray
-Write-Host "  Char 19 (LF check): $([int][char]$stored[19]) — should be 10" -ForegroundColor Gray
+Set-Content -Path $regFilePath -Value $regFileContent -Encoding Unicode
+reg import $regFilePath
+Remove-Item $regFilePath -Force -ErrorAction SilentlyContinue
 
-$check = (Get-ItemProperty $regPath).LegalNoticeCaption
-if ($check -eq $bannerCaption) {
+$check = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").LegalNoticeCaption
+if ($check -eq "DoD Notice and Consent Banner") {
     Write-Host "    applying dod banner completed OK" -ForegroundColor Green
 } else {
     Write-Warning "    applying dod banner FAILED"
 }
-
 # -----------------------------------------------------------------------
 # STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
 # Must run BEFORE create_mof.ps1 so DSC certificate checks find certs installed.

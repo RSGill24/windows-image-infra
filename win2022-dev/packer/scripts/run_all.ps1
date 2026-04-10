@@ -119,7 +119,26 @@ if ($integrityFail) {
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\install_PowerSTIG.ps1"   "Install PowerSTIG"
 Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (removes CIM duplicates)"
-Invoke-Step "$scriptDir\dod_banner.ps1"    "applying dod banner "
+# -----------------------------------------------------------------------
+# DOD Banner — inline set karo, file encoding issue avoid karne ke liye
+# -----------------------------------------------------------------------
+Write-Host "`n--- applying dod banner ---" -ForegroundColor Yellow
+
+$regPath       = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+$bannerCaption = "DoD Notice and Consent Banner"
+$nl            = [System.Environment]::NewLine
+$bodyText      = "You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
+$bannerText    = "WARNING____WARNING" + $nl + $nl + $bodyText
+
+Set-ItemProperty -Path $regPath -Name "LegalNoticeCaption" -Value $bannerCaption -Type String -Force
+Set-ItemProperty -Path $regPath -Name "LegalNoticeText"    -Value $bannerText    -Type String -Force
+
+$check = (Get-ItemProperty $regPath).LegalNoticeCaption
+if ($check -eq $bannerCaption) {
+    Write-Host "    applying dod banner completed OK" -ForegroundColor Green
+} else {
+    Write-Warning "    applying dod banner FAILED"
+}
 
 # -----------------------------------------------------------------------
 # STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)

@@ -158,15 +158,4 @@ These are installed during the build process using dedicated scripts:
   - Trellix (FireEye)
   - Nessus Agent
   - BigFix Agent  
-- Network access to:
-  - Agent management servers (e.g., Nessus Manager, BigFix Root Server, Trellix ePO)
 
----
-
-## Notes / Best Practices
-
-- Keep agent installers version-controlled or stored securely  
-- Do not hardcode credentials or activation keys  
-- Use secure parameter injection (Secret Manager / environment variables)  
-- Validate agent connectivity post-installation  
-- Consider adding health checks in `run_all.ps1`

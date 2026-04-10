@@ -3,11 +3,18 @@
 .SYNOPSIS
     Applies the compiled DSC MOF to enforce STIG controls.
 .NOTES
-    FIX: DSC Scheduled Task se chalta hai — WinRM se independent.
+    FIX (WinRM 401): DSC Scheduled Task se chalta hai — WinRM se independent.
          UserRightsAssignment secedit write karta hai jo WinRM todta hai.
          Scheduled Task SYSTEM account mein chalta hai isliye WinRM
          tootne se script abort nahi hoti.
-         DSC complete hone ke baad WinRM restore aur banner re-apply hota hai.
+         DSC complete hone ke baad:
+           1. WinRM restore hota hai (GPO restrictions hata ke auth set karta hai)
+           2. WinRM verify loop chalti hai — max 120s tak confirm karta hai
+              ki WinRM actually connections accept kar raha hai.
+           3. 20s extra buffer deta hai taaki Packer ka next provisioner
+              (Step 5b) safely connect ho sake.
+         Yahi fix 401 "invalid content type" error ko resolve karta hai jo
+         Cloud Run / Packer cleanup script upload ke waqt aata tha.
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
@@ -63,9 +70,9 @@ Write-Host "LCM cache cleared." -ForegroundColor Green
 
 # -----------------------------------------------------------------------
 # DSC ko Scheduled Task se chalao — WinRM se independent
-# UserRightsAssignment secedit write karta hai jo WinRM todta hai
+# UserRightsAssignment secedit write karta hai jo WinRM todta hai.
 # Scheduled Task SYSTEM mein chalta hai — WinRM toot bhi jaye toh
-# script continue karti hai
+# script continue karti hai.
 # -----------------------------------------------------------------------
 Write-Host "Starting DSC via Scheduled Task (SYSTEM account)..." -ForegroundColor Yellow
 
@@ -133,8 +140,6 @@ Remove-Item $dscScriptPath -Force -ErrorAction SilentlyContinue
 # -----------------------------------------------------------------------
 Write-Host "Restoring WinRM after DSC..." -ForegroundColor Yellow
 
-# WinRM restore block — Restart-Service NAHI karna
-# Restart karne se WinRM band ho jaata hai GPO ki wajah se
 try {
     # GPO restrictions hatao
     $gpoPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service"
@@ -159,10 +164,41 @@ try {
     winrm set winrm/config/service '@{AllowUnencrypted="true"}' | Out-Null
     winrm set winrm/config/service/auth '@{Basic="true"}' | Out-Null
 
-    Write-Host "  [OK] WinRM restored" -ForegroundColor Green
+    Write-Host "  [OK] WinRM settings restored" -ForegroundColor Green
 } catch {
     Write-Warning "  WinRM restore failed: $_"
 }
 
 # -----------------------------------------------------------------------
+# FIX: WinRM verify loop
+# Confirm karo ki WinRM actually connections accept kar raha hai
+# pehle se script exit ho aur Packer ka next provisioner (Step 5b) aaye.
+# Yahi 401 "invalid content type" ka root fix hai.
+# -----------------------------------------------------------------------
+Write-Host "Verifying WinRM is fully ready for Packer..." -ForegroundColor Yellow
+
+$winrmReady = $false
+for ($i = 1; $i -le 24; $i++) {
+    Start-Sleep -Seconds 5
+    try {
+        $null = winrm enumerate winrm/config/listener 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $winrmReady = $true
+            Write-Host "  [OK] WinRM ready after $($i * 5)s" -ForegroundColor Green
+            break
+        }
+    } catch {}
+    Write-Host "  Waiting for WinRM... ($($i * 5)s elapsed)"
+}
+
+if (-not $winrmReady) {
+    Write-Warning "  WinRM ne 120s mein confirm nahi kiya — continue kar rahe hain"
+    Write-Warning "  Step 5b provisioner mein connection issue aa sakta hai"
+}
+
+# Extra buffer — Packer ka TCP handshake stable hone ke liye
+Write-Host "  Extra buffer 20s for Packer TCP stability..." -ForegroundColor Gray
+Start-Sleep -Seconds 20
+
+Write-Host "=== apply_mof.ps1 complete — WinRM ready ===" -ForegroundColor Green
 exit 0

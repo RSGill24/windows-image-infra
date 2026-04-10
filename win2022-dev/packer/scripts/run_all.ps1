@@ -125,22 +125,38 @@ Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (remo
 # -----------------------------------------------------------------------
 # Banner — .reg file se set karo (encoding proof)
 # -----------------------------------------------------------------------
-Write-Host "`n--- applying dod banner ---" -ForegroundColor Yellow
+# VM pe run karo
+$regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 
-$regFilePath = "C:\Windows\Temp\dod_banner.reg"
+$caption = "DoD Notice and Consent Banner"
 
-$regFileContent = "Windows Registry Editor Version 5.00`r`n`r`n[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System]`r`n""LegalNoticeCaption""=""DoD Notice and Consent Banner""`r`n""LegalNoticeText""=""WARNING____WARNING\r\n\r\nYou are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning.""`r`n"
+# Direct .NET string builder — koi file nahi, koi encoding nahi
+$body = "You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
 
-Set-Content -Path $regFilePath -Value $regFileContent -Encoding Unicode
-reg import $regFilePath
-Remove-Item $regFilePath -Force -ErrorAction SilentlyContinue
+# .NET directly se newline inject karo
+$text = [string]::Concat(
+    "WARNING____WARNING",
+    [System.Environment]::NewLine,
+    [System.Environment]::NewLine,
+    $body
+)
 
-$check = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").LegalNoticeCaption
-if ($check -eq "DoD Notice and Consent Banner") {
-    Write-Host "    applying dod banner completed OK" -ForegroundColor Green
-} else {
-    Write-Warning "    applying dod banner FAILED"
-}
+# Registry mein directly .NET se write karo — PowerShell bypass
+$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+    "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", $true)
+$key.SetValue("LegalNoticeCaption", $caption, [Microsoft.Win32.RegistryValueKind]::String)
+$key.SetValue("LegalNoticeText",    $text,    [Microsoft.Win32.RegistryValueKind]::String)
+$key.Close()
+
+# Verify
+$stored = $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+    "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", $false)
+$val = $stored.GetValue("LegalNoticeText")
+$stored.Close()
+
+Write-Host "Char 18: $([int][char]$val[18]) — should be 13"
+Write-Host "Char 19: $([int][char]$val[19]) — should be 10"
+Write-Host "Length: $($val.Length)"
 # -----------------------------------------------------------------------
 # STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
 # Must run BEFORE create_mof.ps1 so DSC certificate checks find certs installed.

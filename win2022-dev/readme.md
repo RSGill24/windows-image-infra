@@ -48,7 +48,8 @@ win2022-dev/
 
 ### 1. Windows Server 2022 Base Image
 - Latest Windows Server 2022  
-- Automated provisioning via Packer  
+- Automated provisioning via Packer
+- Customized DOD consent Banner
 
 ---
 

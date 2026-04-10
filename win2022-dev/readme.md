@@ -85,7 +85,7 @@ These are installed during the build process using dedicated scripts:
 
 > Note:  
 > Agent binaries, and configuration parameters are securely provided via:
-> - Secure storage (GCS/S3/Artifact repo)
+> - Secure storage (GCS- Google Cloud Storage)
 
 ---
 

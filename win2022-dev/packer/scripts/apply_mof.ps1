@@ -14,6 +14,13 @@
          attempting to apply. Fails fast with a clear message if SkipRule did
          not take effect, rather than breaking WinRM silently mid-apply.
 
+    FIX: Added $ErrorActionPreference = 'Continue' before banner re-apply
+         block so that any DSC error does not abort banner code execution.
+
+    FIX: Banner re-applied after DSC using StringBuilder + [char]13/10
+         because [System.Environment]::NewLine becomes null in Packer
+         child process uploads.
+
     Run order: AFTER create_mof.ps1, BEFORE account_policy.ps1
     (account_policy.ps1 applies all password/lockout policy via secedit,
     which does not go through the DSC LCM and does not affect WinRM)
@@ -49,9 +56,6 @@ if ($mofSize -lt 10000) {
 
 # -----------------------------------------------------------------------
 # Pre-application validation — AccountPolicy must not be in the MOF.
-# If it is, applying will write to the SCE database and break WinRM.
-# create_mof.ps1 already checks this, but we re-verify here as a
-# safeguard in case the MOF was compiled by a different run.
 # -----------------------------------------------------------------------
 Write-Host "Verifying MOF contains no AccountPolicy resources..."
 $accountPolicyHits = Select-String -Path $mofFile -Pattern "AccountPolicy" -SimpleMatch
@@ -64,8 +68,6 @@ Write-Host "  [OK] No AccountPolicy resources in MOF." -ForegroundColor Green
 
 # -----------------------------------------------------------------------
 # Clear LCM cached MOF to force fresh application.
-# LCM stores its own copy independently of the MOF output directory.
-# Stale cached MOFs can have AccountPolicy rules even after recompilation.
 # -----------------------------------------------------------------------
 Write-Host "Clearing LCM cached MOF to force fresh application..." -ForegroundColor Yellow
 
@@ -82,8 +84,6 @@ foreach ($p in $lcmCachePaths) {
     }
 }
 
-# Stop-DscConfiguration returns exit code 16001 when no config is running.
-# Temporarily use Continue mode so this does not abort the script.
 $ErrorActionPreference = 'Continue'
 Stop-DscConfiguration -Force -ErrorAction SilentlyContinue
 Remove-DscConfigurationDocument -Stage Current  -Force -ErrorAction SilentlyContinue
@@ -95,9 +95,6 @@ Write-Host "LCM cache cleared." -ForegroundColor Green
 
 # -----------------------------------------------------------------------
 # Apply DSC configuration
-# -Wait     : Block until all resources are applied (required in Packer)
-# -Force    : Apply even if system is already in desired state
-# -Verbose  : Log each resource operation (essential for debugging)
 # -----------------------------------------------------------------------
 Write-Host "Applying DSC configuration (this may take several minutes)..."
 
@@ -112,21 +109,40 @@ try {
 }
 
 # -----------------------------------------------------------------------
-# NOTE: No WinRM restore block here.
-# AccountPolicy is excluded from the MOF so DSC does not write to the
-# SCE database, meaning GPO-derived WinRM restrictions are never
-# re-enforced during this apply. WinRM remains alive for Packer.
-# account_policy.ps1 handles all password/lockout policy via secedit.
+# Banner re-apply — DSC/secedit overwrite karta hai LegalNoticeText
+# $ErrorActionPreference = 'Continue' zaroori hai taaki koi bhi
+# DSC error banner code ko abort na kare
+# StringBuilder + [char]13/10 use karo — Packer mein [System.Environment]
+# ::NewLine null ban jaata hai
 # -----------------------------------------------------------------------
-$bkey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
-    "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", $true)
-$bkey.SetValue("LegalNoticeCaption", "DoD Notice and Consent Banner", [Microsoft.Win32.RegistryValueKind]::String)
-$bkey.SetValue("LegalNoticeText", [string]::Concat(
-    "WARNING____WARNING",
-    [System.Environment]::NewLine,
-    [System.Environment]::NewLine,
-    "You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
-), [Microsoft.Win32.RegistryValueKind]::String)
-$bkey.Close()
-Write-Host "  [OK] Banner re-applied" -ForegroundColor Green
+$ErrorActionPreference = 'Continue'
+
+Write-Host "Re-applying DoD banner after DSC..." -ForegroundColor Yellow
+
+try {
+    $bkey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+        "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", $true)
+
+    $bkey.SetValue("LegalNoticeCaption", "DoD Notice and Consent Banner", [Microsoft.Win32.RegistryValueKind]::String)
+
+    $warningLine = "WARNING____WARNING"
+    $bodyText    = "You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append($warningLine)
+    [void]$sb.Append([char]13)
+    [void]$sb.Append([char]10)
+    [void]$sb.Append([char]13)
+    [void]$sb.Append([char]10)
+    [void]$sb.Append($bodyText)
+    $bannerText = $sb.ToString()
+
+    $bkey.SetValue("LegalNoticeText", $bannerText, [Microsoft.Win32.RegistryValueKind]::String)
+    $bkey.Close()
+
+    Write-Host "  [OK] Banner re-applied" -ForegroundColor Green
+} catch {
+    Write-Warning "  Banner re-apply failed: $_"
+}
+
 exit 0

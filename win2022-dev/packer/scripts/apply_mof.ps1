@@ -37,7 +37,7 @@ Register-ScheduledTask -TaskName "DSC_Apply_STIG" -Action $action -Trigger $trig
 
 Start-Sleep -Seconds 10
 
-# WAIT FOR DSC (fixed detection)
+# WAIT FOR DSC
 $logFile = "$BaseDir\dsc_apply.log"
 $timeout = 1800
 $elapsed = 0
@@ -82,25 +82,28 @@ Register-ScheduledTask -TaskName "WinRM_Fix" -Action $action -Trigger $trigger -
 
 Start-Sleep -Seconds 30
 
-# Copy banner
-$srcBanner = "C:\Users\packer_user\hardening\dod_banner.ps1"
-$dstBanner = "C:\Windows\Temp\dod_banner.ps1"
+# COPY ALL SCRIPTS
+Copy-Item "C:\Users\packer_user\hardening\dod_banner.ps1" "$BaseDir\dod_banner.ps1" -Force -ErrorAction SilentlyContinue
+Copy-Item "C:\Users\packer_user\hardening\account_policy.ps1" "$BaseDir\account_policy.ps1" -Force -ErrorAction SilentlyContinue
+Copy-Item "C:\Users\packer_user\hardening\audit_policy.ps1" "$BaseDir\audit_policy.ps1" -Force -ErrorAction SilentlyContinue
 
-if (Test-Path $srcBanner) {
-    Copy-Item $srcBanner $dstBanner -Force
-}
+# RUN ALL POST SCRIPTS IN ORDER
+$finalScript = "$BaseDir\post_stig.ps1"
 
-# Apply banner
-if (Test-Path $dstBanner) {
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$dstBanner`""
-    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+@"
+powershell -ExecutionPolicy Bypass -File "$BaseDir\account_policy.ps1"
+powershell -ExecutionPolicy Bypass -File "$BaseDir\audit_policy.ps1"
+powershell -ExecutionPolicy Bypass -File "$BaseDir\dod_banner.ps1"
+"@ | Set-Content -Path $finalScript -Encoding UTF8
 
-    Unregister-ScheduledTask -TaskName "Apply_Banner" -Confirm:$false -ErrorAction SilentlyContinue
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$finalScript`""
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
 
-    Register-ScheduledTask -TaskName "Apply_Banner" -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+Unregister-ScheduledTask -TaskName "Post_STIG_All" -Confirm:$false -ErrorAction SilentlyContinue
 
-    Start-Sleep -Seconds 30
-}
+Register-ScheduledTask -TaskName "Post_STIG_All" -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+
+Start-Sleep -Seconds 60
 
 Write-Host "=== apply_mof COMPLETE ==="
 exit 0

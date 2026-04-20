@@ -133,8 +133,13 @@ Invoke-Step "$scriptDir\install_dod_certs.ps1"   "Install DoD Certificates (V-25
 
 # -----------------------------------------------------------------------
 # STEP 3 -- Create and apply the DSC MOF
+# Banner is written BEFORE apply_mof (per pamdata.xml) so that if DSC
+# disrupts WinRM mid-apply, the banner is already baked into the registry.
+# V-254457/V-254458 are SkipRule'd in create_mof.ps1 so DSC will not
+# overwrite what dod_banner.ps1 just set.
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
+Invoke-Step "$scriptDir\dod_banner.ps1"          "Apply DoD banner (pre-DSC — survives WinRM drop)" -AllowFailure
 Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
 
 # -----------------------------------------------------------------------

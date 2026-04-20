@@ -14,7 +14,7 @@ $bodyText = "You are accessing a U.S. Government information system, which inclu
 # Packer kisi bhi escape sequence ko corrupt karta hai file upload mein
 # Isliye newline ko runtime pe programmatically inject karo
 # -----------------------------------------------------------------------
-$warningLine = "WARNING____WARNING"
+$warningLine = "WARNING_____WARNING"
 $newline     = [System.Environment]::NewLine
 
 # Combine karo runtime pe — koi escape sequence nahi
@@ -41,7 +41,7 @@ if ($finalCaption -eq $bannerCaption) {
     exit 1
 }
 
-if ($finalText -like "WARNING____WARNING*") {
+if ($finalText -like "WARNING_____WARNING*") {
     Write-Host "  [OK] Text set correctly" -ForegroundColor Green
     Write-Host "  [OK] Text length: $($finalText.Length) characters" -ForegroundColor Green
 } else {

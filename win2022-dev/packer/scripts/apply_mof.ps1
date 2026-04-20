@@ -66,12 +66,14 @@ while ($elapsed -lt $timeout) {
 # WinRM restore
 $winrmScript = "$BaseDir\winrm_restore.ps1"
 
-@"
+@'
 Set-Service WinRM -StartupType Automatic
 Start-Service WinRM
-Set-Item WSMan:\localhost\Service\Auth\Basic -Value \$true -Force
-Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value \$true -Force
-"@ | Set-Content -Path $winrmScript -Encoding UTF8
+Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true -Force
+Set-Item WSMan:\localhost\Service\Auth\Negotiate -Value $true -Force
+Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force
+Restart-Service WinRM -Force
+'@ | Set-Content -Path $winrmScript -Encoding UTF8
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$winrmScript`""
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
@@ -85,14 +87,14 @@ Start-Sleep -Seconds 30
 # COPY ALL SCRIPTS
 Copy-Item "C:\Users\packer_user\hardening\dod_banner.ps1" "$BaseDir\dod_banner.ps1" -Force -ErrorAction SilentlyContinue
 Copy-Item "C:\Users\packer_user\hardening\account_policy.ps1" "$BaseDir\account_policy.ps1" -Force -ErrorAction SilentlyContinue
-Copy-Item "C:\Users\packer_user\hardening\audit_policy.ps1" "$BaseDir\audit_policy.ps1" -Force -ErrorAction SilentlyContinue
+Copy-Item "C:\Users\packer_user\hardening\audit.ps1" "$BaseDir\audit.ps1" -Force -ErrorAction SilentlyContinue
 
 # RUN ALL POST SCRIPTS IN ORDER
 $finalScript = "$BaseDir\post_stig.ps1"
 
 @"
 powershell -ExecutionPolicy Bypass -File "$BaseDir\account_policy.ps1"
-powershell -ExecutionPolicy Bypass -File "$BaseDir\audit_policy.ps1"
+powershell -ExecutionPolicy Bypass -File "$BaseDir\audit.ps1"
 powershell -ExecutionPolicy Bypass -File "$BaseDir\dod_banner.ps1"
 "@ | Set-Content -Path $finalScript -Encoding UTF8
 

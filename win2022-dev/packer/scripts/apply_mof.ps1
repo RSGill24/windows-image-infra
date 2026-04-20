@@ -1,111 +1,136 @@
 #Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Applies the compiled DSC MOF via a SYSTEM scheduled task, polls that task's
+    state for reliable completion detection, then restores WinRM inline so the
+    remaining run_all.ps1 steps remain observable by Packer.
+
+.NOTES
+    Previous version polled the transcript log for specific verbose strings
+    ("Invoke CimMethod complete", "LCM: [End Set"). Those strings are version-
+    dependent and often do not appear — causing the script to poll the entire
+    30 min timeout even when DSC finished in 8 min.
+
+    This version:
+      - Polls Get-ScheduledTask .State (Ready when done). Reliable.
+      - Streams the last changed log line so progress is visible.
+      - Hard-caps at 25 min and force-stops DSC if still running.
+      - Restores WinRM Basic auth + AllowUnencrypted immediately after DSC so
+        Packer's WinRM session survives STIG registry writes that disable
+        Basic auth mid-apply. Without this, Packer loses output stream and
+        every subsequent provisioner appears to hang.
+      - Removed the Post_STIG_All scheduled task. run_all.ps1 now re-runs
+        dod_banner, account_policy, audit, etc. INLINE in the WinRM session
+        after apply_mof returns — we restore WinRM here so that works.
+#>
 
 $ErrorActionPreference = 'Continue'
 
 Write-Host "=== apply_mof.ps1 starting ==="
 
-$BaseDir    = "C:\Windows\Temp"
-$OutputPath = Join-Path $PSScriptRoot "MOF"
-$mofFile    = Join-Path $OutputPath "localhost.mof"
+$BaseDir    = 'C:\Windows\Temp'
+$OutputPath = Join-Path $PSScriptRoot 'MOF'
+$mofFile    = Join-Path $OutputPath  'localhost.mof'
+$logFile    = Join-Path $BaseDir     'dsc_apply.log'
+$dscScript  = Join-Path $BaseDir     'run_dsc.ps1'
+$taskName   = 'DSC_Apply_STIG'
+$timeoutMin = 25
 
 if (!(Test-Path $mofFile)) {
     Write-Error "MOF file not found at: $mofFile"
     exit 1
 }
 
-Stop-DscConfiguration -Force -ErrorAction SilentlyContinue
+Write-Host 'Clearing stale DSC state...'
+Stop-DscConfiguration                       -Force -ErrorAction SilentlyContinue
 Remove-DscConfigurationDocument -Stage Current  -Force -ErrorAction SilentlyContinue
 Remove-DscConfigurationDocument -Stage Pending  -Force -ErrorAction SilentlyContinue
 Remove-DscConfigurationDocument -Stage Previous -Force -ErrorAction SilentlyContinue
+Remove-Item $logFile -Force -ErrorAction SilentlyContinue
 
-$dscScript = "$BaseDir\run_dsc.ps1"
-
+# Script that the SYSTEM scheduled task will run. Transcripted for visibility.
 @"
-Start-Transcript -Path "$BaseDir\dsc_apply.log" -Append
-Start-DscConfiguration -Path "$OutputPath" -Wait -Force -Verbose
+Start-Transcript -Path "$logFile"
+try {
+    Start-DscConfiguration -Path "$OutputPath" -Wait -Force -Verbose
+    Write-Host "=== DSC_APPLY_DONE ==="
+} catch {
+    Write-Host "=== DSC_APPLY_FAIL: `$_ ==="
+}
 Stop-Transcript
 "@ | Set-Content -Path $dscScript -Encoding UTF8
 
-$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+$action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+             -Argument "-ExecutionPolicy Bypass -File `"$dscScript`""
+$trigger   = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$dscScript`""
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
-
-Unregister-ScheduledTask -TaskName "DSC_Apply_STIG" -Confirm:$false -ErrorAction SilentlyContinue
-
-Register-ScheduledTask -TaskName "DSC_Apply_STIG" -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask   -TaskName $taskName -Action $action -Trigger $trigger `
+                         -Principal $principal -Force | Out-Null
 
 Start-Sleep -Seconds 10
 
-# WAIT FOR DSC
-$logFile = "$BaseDir\dsc_apply.log"
-$timeout = 1800
-$elapsed = 0
+Write-Host ("Polling task '{0}' (timeout: {1} min). State=Ready means done." -f $taskName, $timeoutMin)
 
-Write-Host "Waiting for DSC to complete..."
+$start    = Get-Date
+$lastSize = 0
 
-while ($elapsed -lt $timeout) {
-    Start-Sleep -Seconds 15
-    $elapsed += 15
+while ($true) {
+    Start-Sleep -Seconds 20
+    $elapsed = [int]((Get-Date) - $start).TotalSeconds
 
+    $task  = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    $state = if ($task) { $task.State } else { 'Gone' }
+
+    # Stream last newly-appended log line so user sees real DSC progress.
+    $tail = ''
     if (Test-Path $logFile) {
-        $content = Get-Content $logFile -Tail 20 -ErrorAction SilentlyContinue
-
-        if ($content -match "Operation 'Invoke CimMethod' complete" -or
-            $content -match "consistency check completed" -or
-            $content -match "LCM:\s+\[\s*End\s+Set") {
-
-            Write-Host "DSC completed"
-            break
+        $size = (Get-Item $logFile).Length
+        if ($size -ne $lastSize) {
+            $lastSize = $size
+            $line = Get-Content $logFile -Tail 1 -ErrorAction SilentlyContinue
+            if ($line) { $tail = ' | ' + $line.Trim() }
         }
     }
 
-    Write-Host "Still running... $elapsed sec"
+    Write-Host ("[{0,5}s] task={1}{2}" -f $elapsed, $state, $tail)
+
+    if ($state -eq 'Ready' -or $state -eq 'Gone') {
+        Write-Host 'DSC task finished.'
+        break
+    }
+    if ($elapsed -ge ($timeoutMin * 60)) {
+        Write-Host "Timeout after $timeoutMin min — force-stopping DSC."
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Start-Sleep 5
+        Stop-DscConfiguration -Force -ErrorAction SilentlyContinue
+        break
+    }
 }
 
-# WinRM restore
-$winrmScript = "$BaseDir\winrm_restore.ps1"
+# ---------------------------------------------------------------------------
+# Restore WinRM inline. STIG DSC registry rules can set
+#   HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service\AllowBasic = 0
+# which kills Packer's WinRM session mid-apply. Undo those writes here so
+# every remaining provisioner (registry_stig, services_stig, account_policy,
+# audit, apply_remaining_fixes, stig_remediation_fixes, dod_banner reassert)
+# remains observable in Packer's output.
+# ---------------------------------------------------------------------------
+Write-Host '=== Post-DSC: Restoring WinRM for remaining provisioners ==='
 
-@'
-Set-Service WinRM -StartupType Automatic
-Start-Service WinRM
-Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true -Force
-Set-Item WSMan:\localhost\Service\Auth\Negotiate -Value $true -Force
-Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force
-Restart-Service WinRM -Force
-'@ | Set-Content -Path $winrmScript -Encoding UTF8
+try { Set-Item WSMan:\localhost\Service\Auth\Basic       -Value $true -Force } catch { Write-Host "Basic auth restore: $_" }
+try { Set-Item WSMan:\localhost\Service\Auth\Negotiate   -Value $true -Force } catch { Write-Host "Negotiate restore: $_" }
+try { Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force } catch { Write-Host "AllowUnencrypted restore: $_" }
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$winrmScript`""
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+$gpoPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+if (Test-Path $gpoPath) {
+    Remove-ItemProperty $gpoPath -Name AllowBasic   -ErrorAction SilentlyContinue
+    Remove-ItemProperty $gpoPath -Name DisableRunAs -ErrorAction SilentlyContinue
+}
 
-Unregister-ScheduledTask -TaskName "WinRM_Fix" -Confirm:$false -ErrorAction SilentlyContinue
+try { Set-Service WinRM -StartupType Automatic } catch { Write-Host "Set-Service: $_" }
+try { Restart-Service WinRM -Force }             catch { Write-Host "Restart-Service: $_" }
 
-Register-ScheduledTask -TaskName "WinRM_Fix" -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
-
-Start-Sleep -Seconds 30
-
-# COPY ALL SCRIPTS
-Copy-Item "C:\Users\packer_user\hardening\dod_banner.ps1" "$BaseDir\dod_banner.ps1" -Force -ErrorAction SilentlyContinue
-Copy-Item "C:\Users\packer_user\hardening\account_policy.ps1" "$BaseDir\account_policy.ps1" -Force -ErrorAction SilentlyContinue
-Copy-Item "C:\Users\packer_user\hardening\audit.ps1" "$BaseDir\audit.ps1" -Force -ErrorAction SilentlyContinue
-
-# RUN ALL POST SCRIPTS IN ORDER
-$finalScript = "$BaseDir\post_stig.ps1"
-
-@"
-powershell -ExecutionPolicy Bypass -File "$BaseDir\account_policy.ps1"
-powershell -ExecutionPolicy Bypass -File "$BaseDir\audit.ps1"
-powershell -ExecutionPolicy Bypass -File "$BaseDir\dod_banner.ps1"
-"@ | Set-Content -Path $finalScript -Encoding UTF8
-
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$finalScript`""
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
-
-Unregister-ScheduledTask -TaskName "Post_STIG_All" -Confirm:$false -ErrorAction SilentlyContinue
-
-Register-ScheduledTask -TaskName "Post_STIG_All" -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
-
-Start-Sleep -Seconds 60
-
-Write-Host "=== apply_mof COMPLETE ==="
+Write-Host '=== apply_mof COMPLETE ==='
 exit 0

@@ -104,6 +104,11 @@ build {
       "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop } catch {}",
       "Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue",
       "Start-Service -Name seclogon -ErrorAction SilentlyContinue",
+      "# LocalAccountTokenFilterPolicy=1 -- gives WinRM admin sessions a FULL admin token",
+      "# instead of the UAC-filtered token. Lets subsequent non-elevated provisioners run",
+      "# admin commands directly, bypassing Packer's buggy elevated-provisioner scheduled",
+      "# task mechanism that was throwing HRESULT 0x80070002 at RegisterTaskDefinition.",
+      "New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'LocalAccountTokenFilterPolicy' -Value 1 -PropertyType DWord -Force | Out-Null",
       "$cfg = Join-Path $env:TEMP 'br.inf'",
       "$db  = Join-Path $env:TEMP 'br.sdb'",
       "secedit /export /areas USER_RIGHTS /cfg $cfg /quiet",
@@ -119,7 +124,7 @@ build {
       "secedit /configure /db $db /cfg $cfg /areas USER_RIGHTS /quiet",
       "Remove-Item $cfg,$db -Force -ErrorAction SilentlyContinue",
       "Write-Host 'seclogon status:' (Get-Service seclogon).Status",
-      "Write-Host 'Setup verified.'"
+      "Write-Host 'LocalAccountTokenFilterPolicy set. Setup verified.'"
     ]
   }
 
@@ -130,8 +135,8 @@ build {
       "Install-Module -Name PSWindowsUpdate -Force -SkipPublisherCheck",
       "Get-WindowsUpdate -Install -AcceptAll -AutoReboot:$false"
     ]
-    elevated_user     = ".\\packer_user"
-    elevated_password = var.packer_user_password
+    # elevated_user/password removed -- LocalAccountTokenFilterPolicy=1 set in Step 1
+    # gives WinRM admin sessions full tokens, so elevation wrapper is unnecessary.
   }
 
   # Step 3: Upload each hardening script individually with its full destination
@@ -262,8 +267,8 @@ build {
   # Prevents PowerShell parse errors caused by encoding mismatches
   # introduced during WinRM file transfer.
   provisioner "powershell" {
-    elevated_user     = ".\\packer_user"
-    elevated_password = var.packer_user_password
+    # elevated_user/password removed -- LocalAccountTokenFilterPolicy=1 set in Step 1
+    # gives WinRM admin sessions full tokens, so elevation wrapper is unnecessary.
     inline = [
       "Write-Host '--- Fixing File Encodings (CRLF + UTF-8 BOM) ---'",
       "$targetDir = '${var.hardening_target_dir}'",
@@ -282,8 +287,8 @@ build {
   # FIX: integrity check now uses 'audit.ps1' (the actual filename) instead
   # of 'apply_audit_policy.ps1' which caused the MISSING error in the last run.
   provisioner "powershell" {
-    elevated_user     = ".\\packer_user"
-    elevated_password = var.packer_user_password
+    # elevated_user/password removed -- LocalAccountTokenFilterPolicy=1 set in Step 1
+    # gives WinRM admin sessions full tokens, so elevation wrapper is unnecessary.
     inline = [
       "Write-Host '--- Pre-hardening script integrity check ---'",
       "$checks = @(",
@@ -321,8 +326,8 @@ build {
       "Set-Location '${var.hardening_target_dir}'",
       "& '${var.hardening_target_dir}/${var.hardening_entry_script}'"
     ]
-    elevated_user     = ".\\packer_user"
-    elevated_password = var.packer_user_password
+    # elevated_user/password removed -- LocalAccountTokenFilterPolicy=1 set in Step 1
+    # gives WinRM admin sessions full tokens, so elevation wrapper is unnecessary.
     timeout           = "85m"
   }
 }

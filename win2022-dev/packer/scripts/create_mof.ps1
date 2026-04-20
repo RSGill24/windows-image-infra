@@ -205,6 +205,22 @@ Configuration ApplyWindowsServerStig {
                 'V-254465',   # Network security: LDAP client signing
 
                 # -------------------------------------------------------
+                # WinRM STIG rules — these DISABLE Basic auth / unencrypted
+                # traffic during DSC apply, which KILLS Packer's WinRM
+                # session mid-build and causes the instance to be deleted
+                # at ~41s with the provisioner hung. Must be applied AFTER
+                # the Packer image is captured (via first-boot scheduled
+                # task on the resulting image, not during build).
+                # Also protected by WinRM guardian task in apply_mof.ps1.
+                # -------------------------------------------------------
+                'V-254499',   # WinRM client: do not allow Basic auth
+                'V-254500',   # WinRM client: do not allow unencrypted traffic
+                'V-254501',   # WinRM client: do not use Digest auth
+                'V-254502',   # WinRM service: do not allow Basic auth
+                'V-254503',   # WinRM service: do not allow unencrypted traffic
+                'V-254504',   # WinRM service: must not store RunAs credentials
+
+                # -------------------------------------------------------
                 # Pre-existing skips (unchanged)
                 # -------------------------------------------------------
                 'V-254254.c',

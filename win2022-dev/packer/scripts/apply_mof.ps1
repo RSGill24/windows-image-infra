@@ -61,6 +61,41 @@ Stop-Transcript
 "@ | Set-Content -Path $dscScript -Encoding UTF8
 
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+
+# ---------------------------------------------------------------------------
+# WinRM Guardian — runs every ~15 sec in background, re-asserts WinRM
+# Basic auth + AllowUnencrypted. Protects Packer's session even if
+# create_mof.ps1's SkipRule list misses a WinRM-disabling rule (STIG rule
+# IDs can shift between PowerSTIG versions). Gets killed right after DSC.
+# ---------------------------------------------------------------------------
+$guardScript = Join-Path $BaseDir 'winrm_guardian.ps1'
+$guardFlag   = Join-Path $BaseDir 'winrm_guardian.stop'
+Remove-Item $guardFlag -Force -ErrorAction SilentlyContinue
+
+@"
+# Loops until flag file appears. Re-asserts WinRM Basic auth & unencrypted.
+`$flag = '$guardFlag'
+`$gpo  = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+while (-not (Test-Path `$flag)) {
+    try { Set-Item WSMan:\localhost\Service\Auth\Basic       -Value `$true -Force -ErrorAction SilentlyContinue } catch {}
+    try { Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value `$true -Force -ErrorAction SilentlyContinue } catch {}
+    if (Test-Path `$gpo) {
+        Remove-ItemProperty `$gpo -Name AllowBasic       -ErrorAction SilentlyContinue
+        Remove-ItemProperty `$gpo -Name AllowUnencrypted -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 15
+}
+"@ | Set-Content -Path $guardScript -Encoding UTF8
+
+$guardTask   = 'WinRM_Guardian'
+$guardAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+               -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$guardScript`""
+$guardTrig   = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(3)
+Unregister-ScheduledTask -TaskName $guardTask -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask   -TaskName $guardTask -Action $guardAction -Trigger $guardTrig `
+                         -Principal $principal -Force | Out-Null
+Write-Host 'WinRM guardian task registered.'
+
 $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
              -Argument "-ExecutionPolicy Bypass -File `"$dscScript`""
 $trigger   = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
@@ -108,6 +143,12 @@ while ($true) {
         break
     }
 }
+
+# Stop the WinRM guardian — DSC done, no more protection needed.
+New-Item -Path $guardFlag -ItemType File -Force | Out-Null
+Start-Sleep -Seconds 2
+Unregister-ScheduledTask -TaskName $guardTask -Confirm:$false -ErrorAction SilentlyContinue
+Write-Host 'WinRM guardian stopped.'
 
 # ---------------------------------------------------------------------------
 # Restore WinRM inline. STIG DSC registry rules can set

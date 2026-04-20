@@ -63,46 +63,7 @@ source "googlecompute" "update_pam_ww" {
   metadata = {
     windows-startup-script-ps1 = <<EOF
 net user packer_user "${var.packer_user_password}" /add /y
-net user packer_user /active:yes
-wmic useraccount where "Name='packer_user'" set PasswordExpires=FALSE
 net localgroup Administrators packer_user /add
-
-# Grant SeBatchLogonRight to packer_user — required for Packer elevated
-# provisioner (RegisterTaskDefinition w/ password logon type). Missing this
-# is what causes "HRESULT 0x80070002 The system cannot find the file specified"
-# at RegisterTaskDefinition on hardened or batch-restricted base images.
-$cfg = "$env:TEMP\br.inf"
-$db  = "$env:TEMP\br.sdb"
-secedit /export /areas USER_RIGHTS /cfg $cfg /quiet
-$txt = Get-Content $cfg -Raw
-if ($txt -match 'SeBatchLogonRight\s*=\s*([^\r\n]*)') {
-    if ($Matches[1] -notmatch 'packer_user') {
-        $txt = $txt -replace 'SeBatchLogonRight\s*=\s*[^\r\n]*', "SeBatchLogonRight = $($Matches[1]),packer_user"
-    }
-} else {
-    $txt = $txt -replace '(\[Privilege Rights\])', "`$1`r`nSeBatchLogonRight = packer_user"
-}
-$txt | Set-Content $cfg -Encoding Unicode
-secedit /configure /db $db /cfg $cfg /areas USER_RIGHTS /quiet
-Remove-Item $cfg,$db -Force -ErrorAction SilentlyContinue
-
-# Secondary Logon service — REQUIRED by Packer's elevated provisioner.
-# RegisterTaskDefinition(... TASK_LOGON_PASSWORD ...) uses seclogon under
-# the hood. If disabled/stopped (common on hardened bases), it fails with
-# HRESULT 0x80070002 "The system cannot find the file specified".
-Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue
-Start-Service -Name seclogon -ErrorAction SilentlyContinue
-
-# Force-create packer_user profile so RegisterTaskDefinition can load
-# the user profile when the scheduled task fires.
-$pwSec = ConvertTo-SecureString "${var.packer_user_password}" -AsPlainText -Force
-$cred  = New-Object System.Management.Automation.PSCredential("packer_user", $pwSec)
-try {
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/c exit" -Credential $cred -LoadUserProfile -WindowStyle Hidden -Wait -ErrorAction Stop
-    Write-Host "packer_user profile created."
-} catch {
-    Write-Host "Profile pre-creation skipped: $_"
-}
 
 winrm quickconfig -q
 Enable-PSRemoting -Force
@@ -128,11 +89,36 @@ EOF
 build {
   sources = ["sources.googlecompute.update_pam_ww"]
 
-  # Step 1: Confirm connection and ensure packer_user is in Administrators.
+  # Step 1: Confirm connection, ensure packer_user is in Administrators,
+  # and prep elevated-provisioner prerequisites (seclogon + SeBatchLogonRight).
+  # This runs NON-elevated but WinRM admin sessions get a full-admin token
+  # on workgroup Windows, so secedit/sc work here.
+  #
+  # FIX: "HRESULT 0x80070002 at RegisterTaskDefinition" in Step 2 happens
+  # when packer_user lacks Log-on-as-a-batch-job right OR when the
+  # Secondary Logon (seclogon) service is stopped. Both required by
+  # Packer's elevated provisioner (TASK_LOGON_PASSWORD).
   provisioner "powershell" {
     inline = [
       "Write-Host 'Connected as:' $env:USERNAME",
       "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop } catch {}",
+      "Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue",
+      "Start-Service -Name seclogon -ErrorAction SilentlyContinue",
+      "$cfg = Join-Path $env:TEMP 'br.inf'",
+      "$db  = Join-Path $env:TEMP 'br.sdb'",
+      "secedit /export /areas USER_RIGHTS /cfg $cfg /quiet",
+      "$txt = Get-Content $cfg -Raw",
+      "if ($txt -match 'SeBatchLogonRight\\s*=\\s*([^\\r\\n]*)') {",
+      "  if ($Matches[1] -notmatch 'packer_user') {",
+      "    $txt = $txt -replace 'SeBatchLogonRight\\s*=\\s*[^\\r\\n]*', ('SeBatchLogonRight = ' + $Matches[1] + ',packer_user')",
+      "  }",
+      "} else {",
+      "  $txt = $txt -replace '(\\[Privilege Rights\\])', \"`$1`r`nSeBatchLogonRight = packer_user\"",
+      "}",
+      "$txt | Set-Content $cfg -Encoding Unicode",
+      "secedit /configure /db $db /cfg $cfg /areas USER_RIGHTS /quiet",
+      "Remove-Item $cfg,$db -Force -ErrorAction SilentlyContinue",
+      "Write-Host 'seclogon status:' (Get-Service seclogon).Status",
       "Write-Host 'Setup verified.'"
     ]
   }

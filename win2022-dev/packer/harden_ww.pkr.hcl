@@ -63,7 +63,28 @@ source "googlecompute" "update_pam_ww" {
   metadata = {
     windows-startup-script-ps1 = <<EOF
 net user packer_user "${var.packer_user_password}" /add /y
+net user packer_user /active:yes
+wmic useraccount where "Name='packer_user'" set PasswordExpires=FALSE
 net localgroup Administrators packer_user /add
+
+# Grant SeBatchLogonRight to packer_user — required for Packer elevated
+# provisioner (RegisterTaskDefinition w/ password logon type). Missing this
+# is what causes "HRESULT 0x80070002 The system cannot find the file specified"
+# at RegisterTaskDefinition on hardened or batch-restricted base images.
+$cfg = "$env:TEMP\br.inf"
+$db  = "$env:TEMP\br.sdb"
+secedit /export /areas USER_RIGHTS /cfg $cfg /quiet
+$txt = Get-Content $cfg -Raw
+if ($txt -match 'SeBatchLogonRight\s*=\s*([^\r\n]*)') {
+    if ($Matches[1] -notmatch 'packer_user') {
+        $txt = $txt -replace 'SeBatchLogonRight\s*=\s*[^\r\n]*', "SeBatchLogonRight = $($Matches[1]),packer_user"
+    }
+} else {
+    $txt = $txt -replace '(\[Privilege Rights\])', "`$1`r`nSeBatchLogonRight = packer_user"
+}
+$txt | Set-Content $cfg -Encoding Unicode
+secedit /configure /db $db /cfg $cfg /areas USER_RIGHTS /quiet
+Remove-Item $cfg,$db -Force -ErrorAction SilentlyContinue
 
 winrm quickconfig -q
 Enable-PSRemoting -Force

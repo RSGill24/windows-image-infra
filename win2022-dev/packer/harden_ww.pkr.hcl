@@ -86,6 +86,24 @@ $txt | Set-Content $cfg -Encoding Unicode
 secedit /configure /db $db /cfg $cfg /areas USER_RIGHTS /quiet
 Remove-Item $cfg,$db -Force -ErrorAction SilentlyContinue
 
+# Secondary Logon service — REQUIRED by Packer's elevated provisioner.
+# RegisterTaskDefinition(... TASK_LOGON_PASSWORD ...) uses seclogon under
+# the hood. If disabled/stopped (common on hardened bases), it fails with
+# HRESULT 0x80070002 "The system cannot find the file specified".
+Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue
+Start-Service -Name seclogon -ErrorAction SilentlyContinue
+
+# Force-create packer_user profile so RegisterTaskDefinition can load
+# the user profile when the scheduled task fires.
+$pwSec = ConvertTo-SecureString "${var.packer_user_password}" -AsPlainText -Force
+$cred  = New-Object System.Management.Automation.PSCredential("packer_user", $pwSec)
+try {
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c exit" -Credential $cred -LoadUserProfile -WindowStyle Hidden -Wait -ErrorAction Stop
+    Write-Host "packer_user profile created."
+} catch {
+    Write-Host "Profile pre-creation skipped: $_"
+}
+
 winrm quickconfig -q
 Enable-PSRemoting -Force
 
@@ -126,7 +144,7 @@ build {
       "Install-Module -Name PSWindowsUpdate -Force -SkipPublisherCheck",
       "Get-WindowsUpdate -Install -AcceptAll -AutoReboot:$false"
     ]
-    elevated_user     = "packer_user"
+    elevated_user     = ".\\packer_user"
     elevated_password = var.packer_user_password
   }
 
@@ -258,7 +276,7 @@ build {
   # Prevents PowerShell parse errors caused by encoding mismatches
   # introduced during WinRM file transfer.
   provisioner "powershell" {
-    elevated_user     = "packer_user"
+    elevated_user     = ".\\packer_user"
     elevated_password = var.packer_user_password
     inline = [
       "Write-Host '--- Fixing File Encodings (CRLF + UTF-8 BOM) ---'",
@@ -278,7 +296,7 @@ build {
   # FIX: integrity check now uses 'audit.ps1' (the actual filename) instead
   # of 'apply_audit_policy.ps1' which caused the MISSING error in the last run.
   provisioner "powershell" {
-    elevated_user     = "packer_user"
+    elevated_user     = ".\\packer_user"
     elevated_password = var.packer_user_password
     inline = [
       "Write-Host '--- Pre-hardening script integrity check ---'",
@@ -317,7 +335,7 @@ build {
       "Set-Location '${var.hardening_target_dir}'",
       "& '${var.hardening_target_dir}/${var.hardening_entry_script}'"
     ]
-    elevated_user     = "packer_user"
+    elevated_user     = ".\\packer_user"
     elevated_password = var.packer_user_password
     timeout           = "85m"
   }

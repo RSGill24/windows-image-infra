@@ -173,5 +173,57 @@ if (Test-Path $gpoPath) {
 try { Set-Service WinRM -StartupType Automatic } catch { Write-Host "Set-Service: $_" }
 try { Restart-Service WinRM -Force }             catch { Write-Host "Restart-Service: $_" }
 
+# ---------------------------------------------------------------------------
+# Prevent DSC LCM from re-applying STIG every 15 min (ConsistencyCheck default)
+# and re-disabling Basic auth. Three actions:
+#   1. Remove persisted DSC configuration documents so there's nothing to re-apply.
+#   2. Set LCM to ApplyOnly mode (no auto-consistency check).
+#   3. Stop and disable the DSC timer service as a belt-and-suspenders measure.
+# Without these, the post-DSC WinRM restore above gets reverted within 15 min,
+# locking the account out exactly as we observed (401 Unauthorized).
+# ---------------------------------------------------------------------------
+Write-Host '=== Preventing DSC LCM re-apply of STIG (Basic-auth lockout defense) ==='
+
+try {
+    Stop-DscConfiguration -Force -ErrorAction SilentlyContinue
+    Remove-DscConfigurationDocument -Stage Current  -Force -ErrorAction SilentlyContinue
+    Remove-DscConfigurationDocument -Stage Pending  -Force -ErrorAction SilentlyContinue
+    Remove-DscConfigurationDocument -Stage Previous -Force -ErrorAction SilentlyContinue
+    Write-Host 'DSC configuration documents removed.'
+} catch {
+    Write-Host "DSC document cleanup: $_"
+}
+
+# Set LCM to ApplyOnly so it never runs consistency checks.
+try {
+    $lcmMetaMof = Join-Path $BaseDir 'LCM_ApplyOnly'
+    if (Test-Path $lcmMetaMof) { Remove-Item $lcmMetaMof -Recurse -Force }
+    New-Item -Path $lcmMetaMof -ItemType Directory -Force | Out-Null
+
+    [DscLocalConfigurationManager()]
+    Configuration LcmApplyOnly {
+        Node 'localhost' {
+            Settings {
+                ConfigurationMode  = 'ApplyOnly'
+                RebootNodeIfNeeded = $false
+            }
+        }
+    }
+    LcmApplyOnly -OutputPath $lcmMetaMof | Out-Null
+    Set-DscLocalConfigurationManager -Path $lcmMetaMof -Force
+    Write-Host 'LCM mode set to ApplyOnly (no auto consistency check).'
+} catch {
+    Write-Host "LCM mode change failed (non-fatal): $_"
+}
+
+# Disable DSC timer service so LCM cannot wake up.
+try {
+    Stop-Service  -Name DscTimer -Force -ErrorAction SilentlyContinue
+    Set-Service   -Name DscTimer -StartupType Disabled -ErrorAction SilentlyContinue
+    Write-Host 'DscTimer service stopped and disabled.'
+} catch {
+    Write-Host "DscTimer service change (non-fatal): $_"
+}
+
 Write-Host '=== apply_mof COMPLETE ==='
 exit 0

@@ -17,7 +17,7 @@ if ((Get-PSRepository -Name PSGallery).InstallationPolicy -ne 'Trusted') {
 
 # Install PowerSTIG for all users so it is available system-wide (e.g., SYSTEM
 # scheduled task context). -AllowClobber overwrites any conflicting commands.
-Install-Module -Name PowerSTIG -Scope AllUsers -Force -AllowClobber -AcceptLicense
+Install-Module -Name PowerSTIG -Scope AllUsers -Force -AllowClobber
 
 # Import into the current session so subsequent scripts can use it immediately.
 Import-Module PowerSTIG -Force

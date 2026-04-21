@@ -48,6 +48,68 @@ Remove-DscConfigurationDocument -Stage Pending  -Force -ErrorAction SilentlyCont
 Remove-DscConfigurationDocument -Stage Previous -Force -ErrorAction SilentlyContinue
 Remove-Item $logFile -Force -ErrorAction SilentlyContinue
 
+# ---------------------------------------------------------------------------
+# MOF sanitization — physically strip any DSC instance that targets WinRM.
+# PowerSTIG's SkipRule IDs can shift between versions; our list may miss one.
+# Walks the MOF with a proper brace counter so we correctly handle nested
+# '};' patterns inside instance bodies (e.g., ValueData = { "0" };). The
+# previous regex approach broke on those and corrupted the MOF to 1 resource.
+# ---------------------------------------------------------------------------
+Write-Host 'Sanitizing MOF to remove any WinRM-breaking resources...'
+$mofText = [System.IO.File]::ReadAllText($mofFile)
+
+function Split-MofInstances {
+    param([string]$Text)
+    $instances = New-Object System.Collections.Generic.List[hashtable]
+    $i = 0
+    while ($i -lt $Text.Length) {
+        $startIdx = $Text.IndexOf('instance of', $i)
+        if ($startIdx -lt 0) { break }
+        # Find the opening '{' after the header.
+        $braceIdx = $Text.IndexOf('{', $startIdx)
+        if ($braceIdx -lt 0) { break }
+        # Walk forward counting braces to find the matching close.
+        $depth = 1
+        $j = $braceIdx + 1
+        while ($j -lt $Text.Length -and $depth -gt 0) {
+            $c = $Text[$j]
+            if     ($c -eq '{') { $depth++ }
+            elseif ($c -eq '}') { $depth-- }
+            $j++
+        }
+        if ($depth -ne 0) { break }
+        # Expect a ';' right after the matching '}'.
+        if ($j -lt $Text.Length -and $Text[$j] -eq ';') { $j++ }
+        $instances.Add(@{ Start = $startIdx; End = $j; Text = $Text.Substring($startIdx, $j - $startIdx) })
+        $i = $j
+    }
+    return $instances
+}
+
+$instances = Split-MofInstances -Text $mofText
+if ($instances.Count -eq 0) {
+    Write-Warning 'MOF sanitizer: no instances found — leaving MOF unchanged.'
+} else {
+    $header = $mofText.Substring(0, $instances[0].Start)
+    $footer = $mofText.Substring($instances[-1].End)
+
+    $kept = New-Object System.Collections.Generic.List[string]
+    $removed = 0
+    foreach ($inst in $instances) {
+        if ($inst.Text -match '(?i)WinRM|WSMan|AllowBasic|AllowUnencrypted') {
+            $removed++
+            $preview = ($inst.Text -replace '\s+', ' ').Substring(0, [Math]::Min(100, $inst.Text.Length))
+            Write-Host "  Stripped: $preview"
+        } else {
+            $kept.Add($inst.Text)
+        }
+    }
+
+    $sanitized = $header + ($kept -join "`r`n`r`n") + "`r`n" + $footer
+    [System.IO.File]::WriteAllText($mofFile, $sanitized, [System.Text.UTF8Encoding]::new($false))
+    Write-Host ("MOF sanitized: {0} total instances; {1} WinRM-related removed; {2} kept." -f $instances.Count, $removed, $kept.Count)
+}
+
 # Script that the SYSTEM scheduled task will run. Transcripted for visibility.
 @"
 Start-Transcript -Path "$logFile"
@@ -62,39 +124,11 @@ Stop-Transcript
 
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
 
-# ---------------------------------------------------------------------------
-# WinRM Guardian — runs every ~15 sec in background, re-asserts WinRM
-# Basic auth + AllowUnencrypted. Protects Packer's session even if
-# create_mof.ps1's SkipRule list misses a WinRM-disabling rule (STIG rule
-# IDs can shift between PowerSTIG versions). Gets killed right after DSC.
-# ---------------------------------------------------------------------------
-$guardScript = Join-Path $BaseDir 'winrm_guardian.ps1'
-$guardFlag   = Join-Path $BaseDir 'winrm_guardian.stop'
-Remove-Item $guardFlag -Force -ErrorAction SilentlyContinue
-
-@"
-# Loops until flag file appears. Re-asserts WinRM Basic auth & unencrypted.
-`$flag = '$guardFlag'
-`$gpo  = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
-while (-not (Test-Path `$flag)) {
-    try { Set-Item WSMan:\localhost\Service\Auth\Basic       -Value `$true -Force -ErrorAction SilentlyContinue } catch {}
-    try { Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value `$true -Force -ErrorAction SilentlyContinue } catch {}
-    if (Test-Path `$gpo) {
-        Remove-ItemProperty `$gpo -Name AllowBasic       -ErrorAction SilentlyContinue
-        Remove-ItemProperty `$gpo -Name AllowUnencrypted -ErrorAction SilentlyContinue
-    }
-    Start-Sleep -Seconds 15
-}
-"@ | Set-Content -Path $guardScript -Encoding UTF8
-
-$guardTask   = 'WinRM_Guardian'
-$guardAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-               -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$guardScript`""
-$guardTrig   = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(3)
-Unregister-ScheduledTask -TaskName $guardTask -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask   -TaskName $guardTask -Action $guardAction -Trigger $guardTrig `
-                         -Principal $principal -Force | Out-Null
-Write-Host 'WinRM guardian task registered.'
+# WinRM guardian REMOVED — MOF sanitization above physically strips all WinRM/
+# WSMan/AllowBasic/AllowUnencrypted resources from the MOF before DSC sees it,
+# so there is nothing left that could disable Basic auth. The guardian's own
+# Set-Item WSMan:\... writes were racing Packer's WinRM session mid-cleanup
+# and causing exit 16001 (connection dropped) right after DSC finished.
 
 $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
              -Argument "-ExecutionPolicy Bypass -File `"$dscScript`""
@@ -144,11 +178,7 @@ while ($true) {
     }
 }
 
-# Stop the WinRM guardian — DSC done, no more protection needed.
-New-Item -Path $guardFlag -ItemType File -Force | Out-Null
-Start-Sleep -Seconds 2
-Unregister-ScheduledTask -TaskName $guardTask -Confirm:$false -ErrorAction SilentlyContinue
-Write-Host 'WinRM guardian stopped.'
+# Guardian stop logic removed — guardian itself removed above.
 
 # ---------------------------------------------------------------------------
 # Restore WinRM inline. STIG DSC registry rules can set
@@ -171,7 +201,11 @@ if (Test-Path $gpoPath) {
 }
 
 try { Set-Service WinRM -StartupType Automatic } catch { Write-Host "Set-Service: $_" }
-try { Restart-Service WinRM -Force }             catch { Write-Host "Restart-Service: $_" }
+# NOTE: do NOT Restart-Service WinRM here. Restart drops Packer's live WinRM
+# session mid-provisioner and causes "Provisioning step had errors" even
+# though DSC itself ran cleanly. Set-Item on WSMan:\ paths applies settings
+# to the running service without a restart, which is all we need for Packer
+# to continue observing subsequent provisioners.
 
 # ---------------------------------------------------------------------------
 # Prevent DSC LCM from re-applying STIG every 15 min (ConsistencyCheck default)
@@ -192,28 +226,6 @@ try {
     Write-Host 'DSC configuration documents removed.'
 } catch {
     Write-Host "DSC document cleanup: $_"
-}
-
-# Set LCM to ApplyOnly so it never runs consistency checks.
-try {
-    $lcmMetaMof = Join-Path $BaseDir 'LCM_ApplyOnly'
-    if (Test-Path $lcmMetaMof) { Remove-Item $lcmMetaMof -Recurse -Force }
-    New-Item -Path $lcmMetaMof -ItemType Directory -Force | Out-Null
-
-    [DscLocalConfigurationManager()]
-    Configuration LcmApplyOnly {
-        Node 'localhost' {
-            Settings {
-                ConfigurationMode  = 'ApplyOnly'
-                RebootNodeIfNeeded = $false
-            }
-        }
-    }
-    LcmApplyOnly -OutputPath $lcmMetaMof | Out-Null
-    Set-DscLocalConfigurationManager -Path $lcmMetaMof -Force
-    Write-Host 'LCM mode set to ApplyOnly (no auto consistency check).'
-} catch {
-    Write-Host "LCM mode change failed (non-fatal): $_"
 }
 
 # Disable DSC timer service so LCM cannot wake up.

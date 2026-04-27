@@ -5,25 +5,20 @@ Write-Host "=== Setting DoD Consent Banner ===" -ForegroundColor Cyan
 
 $regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 
-$bannerCaption = "DoD Notice and Consent Banner"
+# Title matches the image: **********Warning**********
+$bannerCaption = "**********Warning**********"
 
 $bodyText = "You are accessing a U.S. Government information system, which includes: 1) this computer, 2) this computer network, 3) all Government-furnished computers connected to this network, and 4) all Government-furnished devices and storage media attached to this network or to a computer on this network. You understand and consent to the following: you may access this information system for authorized use only; unauthorized use of the system is prohibited and subject to criminal and civil penalties. You have no reasonable expectation of privacy regarding any communication or data transiting or stored on this information system. At any time and for any lawful Government purpose, the Government may monitor, intercept, audit, and search and seize any communication or data transiting or stored on this information system, and any communication or data transiting or stored on this information system may be disclosed or used for any lawful Government purpose. This information system may contain Controlled Unclassified Information (CUI) that is subject to safeguarding or dissemination controls in accordance with law, regulation, or Government-wide policy. Accessing and using this system indicates your understanding of this warning."
 
-$warningLine = "WARNING_____WARNING"
-$newline     = [System.Environment]::NewLine
-
-
-$bannerText  = $warningLine + $newline + $newline + $bodyText
-
+$newline    = [System.Environment]::NewLine
+$bannerText = $bodyText
 
 Set-ItemProperty -Path $regPath -Name "LegalNoticeCaption" -Value $bannerCaption -Type String -Force
 Set-ItemProperty -Path $regPath -Name "LegalNoticeText"    -Value $bannerText    -Type String -Force
 
-
 $stored = (Get-ItemProperty $regPath).LegalNoticeText
 Write-Host "  Stored text byte check:" -ForegroundColor Gray
-Write-Host "  Char 18: $([int][char]$stored[18]) (should be 13 for CR)" -ForegroundColor Gray
-Write-Host "  Char 19: $([int][char]$stored[19]) (should be 10 for LF)" -ForegroundColor Gray
+Write-Host "  First chars: $($stored.Substring(0, [Math]::Min(30, $stored.Length)))" -ForegroundColor Gray
 
 # Verify
 $finalCaption = (Get-ItemProperty $regPath).LegalNoticeCaption
@@ -36,7 +31,7 @@ if ($finalCaption -eq $bannerCaption) {
     exit 1
 }
 
-if ($finalText -like "WARNING_____WARNING*") {
+if ($finalText -like "You are accessing*") {
     Write-Host "  [OK] Text set correctly" -ForegroundColor Green
     Write-Host "  [OK] Text length: $($finalText.Length) characters" -ForegroundColor Green
 } else {

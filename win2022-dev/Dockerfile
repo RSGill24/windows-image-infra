@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     apt-transport-https \
     python3 \
+    ansible \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Install Google Cloud SDK ─────────────────────────────────

@@ -1,0 +1,15 @@
+*.tmp
+*.log
+**/temp/
+**/tmp/
+**/.packer-manifest.json
+**/crash.log
+**/override.tf
+**.tfstate
+**.tfvars
+.DS_Store
+.env.local
+*.pem
+*.key
+secrets/
+credentials/

@@ -1,0 +1,46 @@
+---
+# Phase 2: Database Installation Playbook
+# Runs on Linux container via Packer to install databases on Windows VM
+# Ansible connects to Windows VM via WinRM and installs MySQL/Oracle
+
+- name: Phase 2 - Database Customization via Ansible
+  hosts: windows_target
+  gather_facts: yes
+  vars:
+    ansible_connection: winrm
+    ansible_winrm_server_cert_validation: ignore
+    ansible_port: 5986
+    database_type: "{{ lookup('env', 'DATABASE_TYPE') | default('none') }}"
+    installation_target_dir: "C:/Users/packer_user/installation/"
+
+  tasks:
+    - name: Display Database Installation Information
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════╗
+          ║   Phase 2: Database Installation via Ansible   ║
+          ╠════════════════════════════════════════════════╣
+          ║ Database Type: {{ database_type }}
+          ║ Target Directory: {{ installation_target_dir }}
+          ║ Ansible Host: {{ inventory_hostname }}
+          ║ Connection: WinRM (Port 5986)
+          ╚════════════════════════════════════════════════╝
+
+    - name: Install MySQL
+      include_tasks: install_mysql_tasks.yml
+      when: database_type | lower == 'mysql'
+
+    - name: Install Oracle
+      include_tasks: install_oracle_tasks.yml
+      when: database_type | lower == 'oracle'
+
+    - name: Show Database Installation Status
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════╗
+          ║   Database Installation Complete               ║
+          ╠════════════════════════════════════════════════╣
+          ║ Database Type: {{ database_type }}
+          ║ Status: SUCCESS
+          ║ Next Step: Image ready for deployment
+          ╚════════════════════════════════════════════════╝

@@ -1,0 +1,189 @@
+substitutions:
+  _PROJECT_ID: "big-mender-473219-r2"
+  _SOURCE_IMAGE_PROJECT_ID: "big-mender-473219-r2"
+  _SOURCE_IMAGE_FAMILY: "pww-windows-2022-hardened"  # Phase 1 output
+  _ZONE: "us-east4-b"
+  _IMAGE_FAMILY: "pww-windows-2022-db"  # Phase 2 output
+  _WINRM_SECRET: "packer-winrm-password"
+  _PACKER_TEMPLATE: "customize_db.pkr.hcl"
+  _PACKER_VERSION: "1.9.4"
+  _INSTALLATION_SOURCE_DIR: "./scripts"
+  _INSTALLATION_TARGET_DIR: "C:/Users/packer_user/installation/"
+  _MACHINE_TYPE: "e2-standard-8"
+  _TRIVY_VERSION: "0.61.1"
+  _SEVERITY: "HIGH,CRITICAL"
+  _REGION: "us-east4"
+  _AR_REPO: "packer-images"
+  _IMAGE_NAME: "windows-packer-db-customizer"
+  _DATABASE_TYPE: ""  # Read from config.yaml
+
+steps:
+
+# ── Step 0: Load Database Configuration from config.yaml ──────────────
+# Reads the database_type from config.yaml and exports as env var
+
+- id: 'load-config'
+  name: 'gcr.io/cloud-builders/gke-deploy'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      echo "=== Loading Database Configuration from YAML ==="
+
+      if [ -f "./phase2/config.yaml" ]; then
+        echo "Reading database configuration from ./phase2/config.yaml"
+        
+        # Parse YAML safely using grep and awk
+        DATABASE_TYPE=$(grep -E "^database_type:" "./phase2/config.yaml" | awk '{print $2}' | tr -d '\n\r')
+        
+        if [ -z "$$DATABASE_TYPE" ]; then
+          echo "ERROR: database_type not found in config.yaml"
+          exit 1
+        fi
+        
+        echo "Database Type: $$DATABASE_TYPE"
+        
+        # Validate database type
+        if [[ "$$DATABASE_TYPE" != "mysql" && "$$DATABASE_TYPE" != "oracle" && "$$DATABASE_TYPE" != "none" ]]; then
+          echo "ERROR: Invalid database_type '$$DATABASE_TYPE'. Must be 'mysql', 'oracle', or 'none'"
+          exit 1
+        fi
+        
+        echo "$$DATABASE_TYPE" > /workspace/database_type.txt
+        cat /workspace/database_type.txt
+      else
+        echo "ERROR: ./phase2/config.yaml not found"
+        exit 1
+      fi
+
+# ── Step 1: Trivy Security Scans ─────────────────────────────
+
+- id: 'trivy-config-scan'
+  name: 'aquasec/trivy:${_TRIVY_VERSION}'
+  entrypoint: sh
+  args:
+  - -c
+  - |
+      set -e
+
+      echo "=== Trivy Config Scan — Packer HCL ==="
+      trivy config \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./phase2/packer || true
+
+      echo "=== Trivy Filesystem Scan — Secrets ==="
+      trivy fs \
+        --scanners secret \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./phase2/packer/scripts || true
+
+      echo "=== Trivy Filesystem Scan — Vulnerabilities ==="
+      trivy fs \
+        --scanners vuln \
+        --severity ${_SEVERITY} \
+        --exit-code 0 \
+        --format table \
+        ./phase2/packer/scripts || true
+
+      echo "=== Trivy scan complete ==="
+
+# ── Step 2: Build Docker Image ────────────────────────────────
+# Builds a Linux container with Packer + database installer scripts
+
+- id: 'docker-build'
+  name: 'gcr.io/cloud-builders/docker'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}"
+
+      echo "Building Phase 2 Docker image: $$IMAGE_TAG"
+
+      docker build \
+        --build-arg PACKER_VERSION=${_PACKER_VERSION} \
+        --tag "$$IMAGE_TAG:$SHORT_SHA" \
+        --tag "$$IMAGE_TAG:latest" \
+        --file ./phase2/Dockerfile \
+        ./phase2
+
+      echo "Docker build complete."
+
+# ── Step 3: Configure Artifact Registry Auth ─────────────────
+
+- id: 'configure-docker-auth'
+  name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+      echo "Configuring Docker auth for Artifact Registry..."
+      gcloud auth configure-docker ${_REGION}-docker.pkg.dev --quiet
+      echo "Auth configured."
+
+# ── Step 4: Push Docker Image to Artifact Registry ────────────
+# After this step, go to GCP Console → Cloud Run → Jobs
+# and manually execute the database-image-build job.
+
+- id: 'docker-push'
+  name: 'gcr.io/cloud-builders/docker'
+  args:
+  - push
+  - '--all-tags'
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}'
+
+# ── Step 5: Display Configuration Summary ─────────────────────────────
+# Shows the final configuration that will be used
+
+- id: 'display-config'
+  name: 'gcr.io/cloud-builders/gke-deploy'
+  entrypoint: bash
+  args:
+  - -c
+  - |
+      set -euo pipefail
+
+      echo "╔════════════════════════════════════════════════╗"
+      echo "║   Phase 2: Configuration Summary               ║"
+      echo "╠════════════════════════════════════════════════╣"
+      echo "║"
+      
+      if [ -f "./phase2/config.yaml" ]; then
+        echo "║ Config file: ./phase2/config.yaml"
+        DATABASE_TYPE=$(grep -E "^database_type:" "./phase2/config.yaml" | awk '{print $2}' | tr -d '\n\r')
+        echo "║ Database Type: $$DATABASE_TYPE"
+      else
+        echo "║ ERROR: Config file not found!"
+        exit 1
+      fi
+      
+      echo "║ Docker Image: ${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest"
+      echo "║"
+      echo "╚════════════════════════════════════════════════╝"
+      echo ""
+      echo "NEXT STEPS:"
+      echo "1. Go to GCP Console → Cloud Run → Jobs"
+      echo "2. Select the 'database-image-build' job"
+      echo "3. Click 'Execute' to run the build with database type: $$DATABASE_TYPE"
+      echo "4. Or use gcloud to execute remotely:"
+      echo "   gcloud run jobs execute database-image-build --region=${_REGION}"
+
+# ── Images stored in Artifact Registry ───────────────────────
+images:
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA'
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest'
+
+# ── Service Account & Options ─────────────────────────────────
+serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

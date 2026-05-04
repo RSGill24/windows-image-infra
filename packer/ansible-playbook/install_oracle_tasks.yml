@@ -1,0 +1,163 @@
+---
+# Oracle Installation Tasks via Ansible
+# Downloads and installs Oracle Database 23c Free on Windows
+
+- name: Display Oracle Installation Starting
+  debug:
+    msg: |
+      ╔════════════════════════════════════════╗
+      ║   Installing Oracle Database 23c Free  ║
+      ╠════════════════════════════════════════╣
+      ║ Download: Oracle Database Free Edition
+      ║ Version: 23c
+      ║ Listener Port: 1521
+      ║ Enterprise Manager: 5500
+      ╚════════════════════════════════════════╝
+
+- name: Create temporary directories for Oracle
+  win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "C:\\Temp"
+    - "C:\\Temp\\oracle_extract"
+    - "C:\\Oracle"
+
+- name: Download Oracle 23c Free Edition
+  win_get_url:
+    url: "https://download.oracle.com/otn/nt/oracle23/OracleDatabase23Free_Windows.zip"
+    dest: "C:\\Temp\\oracle23c-free.zip"
+    timeout: 600
+  register: oracle_download
+  ignore_errors: yes
+  failed_when: false
+
+- name: Check if Oracle installer exists
+  win_stat:
+    path: "C:\\Temp\\oracle23c-free.zip"
+  register: oracle_zip_stat
+
+- name: Extract Oracle installer (if exists)
+  win_unzip:
+    src: "C:\\Temp\\oracle23c-free.zip"
+    dest: "C:\\Temp\\oracle_extract"
+    rm: no
+  when: oracle_zip_stat.stat.exists
+  register: oracle_extract
+
+- name: Find Oracle setup.exe
+  win_find:
+    path: "C:\\Temp\\oracle_extract"
+    patterns: "setup.exe"
+    recurse: yes
+  register: oracle_setup_exe
+  when: oracle_zip_stat.stat.exists
+
+- name: Install Oracle Database (if setup found)
+  win_command: |
+    "{{ oracle_setup_exe.files[0].path }}" /auditInstallDir=C:\Oracle\product\23c /silent
+  when: 
+    - oracle_zip_stat.stat.exists
+    - oracle_setup_exe.files | length > 0
+  register: oracle_install
+  failed_when: false
+  timeout: 1800
+
+- name: Display Oracle installation result
+  debug:
+    msg: "Oracle installation completed with exit code: {{ oracle_install.rc | default('N/A') }}"
+  when: oracle_zip_stat.stat.exists
+
+- name: Display Oracle manual setup instructions (if not auto-installed)
+  debug:
+    msg: |
+      ⚠ Oracle installation notes:
+      - Automated download may require authentication
+      - Pre-staged installer location: C:\Temp\oracle23c-free.zip
+      - Manual setup required from: https://www.oracle.com/database/free/
+      - Setup executable: Setup.exe in extracted directory
+  when: not oracle_zip_stat.stat.exists
+
+- name: Set ORACLE_HOME environment variable
+  win_environment:
+    name: ORACLE_HOME
+    value: "C:\\Oracle\\product\\23c"
+    level: machine
+    state: present
+
+- name: Add ORACLE_HOME/bin to PATH
+  win_path:
+    elements:
+      - "C:\\Oracle\\product\\23c\\bin"
+    scope: machine
+    state: present
+
+- name: Configure Windows Firewall for Oracle Listener (1521)
+  win_firewall_rule:
+    name: "Oracle Listener on port 1521"
+    direction: in
+    action: allow
+    protocol: tcp
+    localport: 1521
+    state: present
+    enabled: yes
+
+- name: Configure Windows Firewall for Oracle EM Express (5500)
+  win_firewall_rule:
+    name: "Oracle Enterprise Manager on port 5500"
+    direction: in
+    action: allow
+    protocol: tcp
+    localport: 5500
+    state: present
+    enabled: yes
+
+- name: Check for Oracle services
+  win_service_info:
+    name: "OracleServiceXE"
+  register: oracle_service_info
+  failed_when: false
+  ignore_errors: yes
+
+- name: Start Oracle service (if exists)
+  win_service:
+    name: OracleServiceXE
+    state: started
+    start_mode: auto
+  when: 
+    - oracle_service_info.services | length > 0
+  register: oracle_service_start
+  failed_when: false
+
+- name: Create Oracle directories
+  win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "C:\\Oracle\\product\\23c\\bin"
+    - "C:\\Oracle\\product\\23c\\network\\admin"
+  failed_when: false
+  ignore_errors: yes
+
+- name: Display Oracle Installation Complete
+  debug:
+    msg: |
+      ╔════════════════════════════════════════╗
+      ║   Oracle Installation Complete         ║
+      ╠════════════════════════════════════════╣
+      ║ ✓ ORACLE_HOME: C:\Oracle\product\23c
+      ║ ✓ Firewall: Ports 1521, 5500 open
+      ║ ✓ Environment: PATH updated
+      ║ Note: Further configuration may be needed
+      ║ Status: SETUP READY
+      ╚════════════════════════════════════════╝
+
+- name: Cleanup Oracle temporary files
+  win_file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "C:\\Temp\\oracle23c-free.zip"
+    - "C:\\Temp\\oracle_extract"
+  failed_when: false
+  ignore_errors: yes

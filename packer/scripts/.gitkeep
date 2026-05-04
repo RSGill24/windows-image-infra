@@ -1,0 +1,7 @@
+# Placeholder file to ensure this directory exists in git
+# This directory is reserved for optional PowerShell/shell scripts
+# that can be used for database customization if needed.
+# 
+# Currently, database installation is primarily handled via:
+# - Ansible playbooks in ../ansible-playbook/
+# - Direct downloads via win_get_url in Ansible tasks

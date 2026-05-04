@@ -137,7 +137,7 @@ fi
 echo "Validating Packer template..."
 if VALIDATION_OUTPUT=$(packer validate \
   -var "project_id=${PROJECT_ID}" \
-  -var 'source_image_project_id=["${SOURCE_IMAGE_PROJECT_ID}"]' \
+  -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
   -var "source_image_family=${SOURCE_IMAGE_FAMILY}" \
   -var "service_account_email=${SERVICE_ACCOUNT_EMAIL}" \
   -var "image_family=${IMAGE_FAMILY}" \
@@ -173,7 +173,7 @@ echo "[INFO] gcloud authentication verified"
 echo "Starting Packer build with database customization..."
 if packer build \
   -var "project_id=${PROJECT_ID}" \
-  -var 'source_image_project_id=["${SOURCE_IMAGE_PROJECT_ID}"]' \
+  -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
   -var "source_image_family=${SOURCE_IMAGE_FAMILY}" \
   -var "service_account_email=${SERVICE_ACCOUNT_EMAIL}" \
   -var "image_family=${IMAGE_FAMILY}" \

@@ -6,6 +6,10 @@ packer {
       version = ">= 1.1.6"
       source  = "github.com/hashicorp/googlecompute"
     }
+    ansible = {
+      version = ">= 1.0.0"
+      source  = "github.com/hashicorp/ansible"
+    }
   }
 }
 
@@ -66,7 +70,7 @@ source "googlecompute" "customize_with_db" {
   use_iap                 = true
   use_internal_ip         = true
   omit_external_ip        = true
-  source_image_projects   = [var.source_image_project_id]
+  source_image_project_id = var.source_image_project_id
   source_image_family     = var.source_image_family
 
   communicator   = "winrm"

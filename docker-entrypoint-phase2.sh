@@ -25,12 +25,12 @@ packer version 2>&1 || echo "[WARN] Could not get packer version"
 : "${MACHINE_TYPE:?MACHINE_TYPE env var is required}"
 : "${SERVICE_ACCOUNT_EMAIL:?SERVICE_ACCOUNT_EMAIL env var is required}"
 : "${WINRM_SECRET:?WINRM_SECRET env var is required}"
-: "${PACKER_TEMPLATE:?PACKER_TEMPLATE env var is required}"
 
 # ── Optional environment variables with defaults ─────────────
 INSTALLATION_TARGET_DIR="${INSTALLATION_TARGET_DIR:=C:/Users/packer_user/installation/}"
 INSTALLATION_SOURCE_DIR="${INSTALLATION_SOURCE_DIR:=./scripts}"
 INSTALLATION_ENTRY_SCRIPT="${INSTALLATION_ENTRY_SCRIPT:=database_orchestrator.ps1}"
+PACKER_TEMPLATE="${PACKER_TEMPLATE:=customize_db.pkr.hcl}"
 
 echo "[INFO] Installation Target Dir: ${INSTALLATION_TARGET_DIR}"
 echo "[INFO] Installation Source Dir: ${INSTALLATION_SOURCE_DIR}"
@@ -83,12 +83,18 @@ export PACKER_LOG_PATH="/tmp/packer-debug.log"
 # ── Verify Packer template exists ────────────────────────────
 if [ ! -f "${PACKER_TEMPLATE}" ]; then
   echo "[ERROR] Packer template not found: ${PACKER_TEMPLATE}"
-  ls -la "$(dirname "${PACKER_TEMPLATE}")" || true
+  echo "[DEBUG] Current working directory: $(pwd)"
+  echo "[DEBUG] Listed files in current directory:"
+  ls -lah
+  echo ""
+  echo "[DEBUG] Looking for .pkr.hcl files in current directory:"
+  find . -maxdepth 1 -name "*.pkr.hcl" -type f || echo "No .pkr.hcl files found"
   exit 1
 fi
 
-echo "[INFO] Packer template location: ${PACKER_TEMPLATE}"
-echo "[INFO] Current working directory: $(pwd)"
+echo "[INFO] Packer template: ${PACKER_TEMPLATE}"
+echo "[INFO] Working directory: $(pwd)"
+echo "[INFO] Template absolute path: $(cd "$(dirname "${PACKER_TEMPLATE}")" && pwd)/$(basename "${PACKER_TEMPLATE}")"
 
 # ── Initialize Packer plugins ───────────────────────────────
 echo "Initializing Packer plugins..."

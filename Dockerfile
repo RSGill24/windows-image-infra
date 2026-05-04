@@ -46,6 +46,11 @@ WORKDIR /workspace
 # ── Copy Packer template ─────────────────────────────────────
 COPY packer/customize_db.pkr.hcl ./customize_db.pkr.hcl
 
+# ── Set default Packer template environment variable ──────────
+# This ensures the entrypoint script has a sensible default
+# Can be overridden at runtime if needed
+ENV PACKER_TEMPLATE="customize_db.pkr.hcl"
+
 # ── Create scripts directory (may be empty) ─────────────────────
 RUN mkdir -p ./scripts/
 
@@ -66,10 +71,13 @@ RUN chmod +x ./docker-entrypoint-phase2.sh
 RUN packer init ./customize_db.pkr.hcl
 
 # ── Verify all required files exist ────────────────────────────
-RUN ls -la config.yaml && \
+RUN echo "=== Verifying Phase 2 Container Setup ===" && \
+    ls -la config.yaml && \
     ls -la customize_db.pkr.hcl && \
     ls -la docker-entrypoint-phase2.sh && \
-    test -d ansible-playbook && echo "✅ Ansible playbooks ready" || echo "⚠️ Ansible playbooks not found"
+    test -d ansible-playbook && echo "✅ Ansible playbooks ready" || echo "⚠️ Ansible playbooks not found" && \
+    echo "=== Setup verification complete ===" && \
+    pwd && ls -la
 
 # ── Entrypoint ───────────────────────────────────────────────
 ENTRYPOINT ["./docker-entrypoint-phase2.sh"]

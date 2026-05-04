@@ -22,8 +22,16 @@ echo "========================================================"
 : "${MACHINE_TYPE:?MACHINE_TYPE env var is required}"
 : "${SERVICE_ACCOUNT_EMAIL:?SERVICE_ACCOUNT_EMAIL env var is required}"
 : "${WINRM_SECRET:?WINRM_SECRET env var is required}"
-: "${INSTALLATION_TARGET_DIR:?INSTALLATION_TARGET_DIR env var is required}"
 : "${PACKER_TEMPLATE:?PACKER_TEMPLATE env var is required}"
+
+# ── Optional environment variables with defaults ─────────────
+INSTALLATION_TARGET_DIR="${INSTALLATION_TARGET_DIR:=C:/Users/packer_user/installation/}"
+INSTALLATION_SOURCE_DIR="${INSTALLATION_SOURCE_DIR:=./scripts}"
+INSTALLATION_ENTRY_SCRIPT="${INSTALLATION_ENTRY_SCRIPT:=database_orchestrator.ps1}"
+
+echo "[INFO] Installation Target Dir: ${INSTALLATION_TARGET_DIR}"
+echo "[INFO] Installation Source Dir: ${INSTALLATION_SOURCE_DIR}"
+echo "[INFO] Installation Entry Script: ${INSTALLATION_ENTRY_SCRIPT}"
 
 # ── Load database type from config.yaml ────────────────────────
 CONFIG_FILE="${CONFIG_FILE:=./config.yaml}"
@@ -79,9 +87,9 @@ packer validate \
   -var "machine_type=${MACHINE_TYPE}" \
   -var "zone=${ZONE}" \
   -var "database_type=${DATABASE_TYPE}" \
-  -var "installation_source_dir=./scripts" \
+  -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
-  -var "installation_entry_script=database_orchestrator.ps1" \
+  -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
   "${PACKER_TEMPLATE}"
 
 # ── Run Packer build ─────────────────────────────────────────
@@ -95,9 +103,9 @@ packer build \
   -var "machine_type=${MACHINE_TYPE}" \
   -var "zone=${ZONE}" \
   -var "database_type=${DATABASE_TYPE}" \
-  -var "installation_source_dir=./scripts" \
+  -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
-  -var "installation_entry_script=database_orchestrator.ps1" \
+  -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
   "${PACKER_TEMPLATE}"
 
 echo "Packer build completed successfully."

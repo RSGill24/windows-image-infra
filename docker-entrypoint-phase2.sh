@@ -33,7 +33,17 @@ echo "[INFO] Shell: $SHELL, Bash Version: ${BASH_VERSION}"
 INSTALLATION_TARGET_DIR="${INSTALLATION_TARGET_DIR:=C:/Users/packer_user/installation/}"
 INSTALLATION_SOURCE_DIR="${INSTALLATION_SOURCE_DIR:=./scripts}"
 INSTALLATION_ENTRY_SCRIPT="${INSTALLATION_ENTRY_SCRIPT:=database_orchestrator.ps1}"
-PACKER_TEMPLATE="${PACKER_TEMPLATE:=customize_db.pkr.hcl}"
+
+# ── CRITICAL: Phase 2 uses customize_db.pkr.hcl ONLY ─────────
+# Hard-coded for Phase 2 database customization
+# This MUST NOT be overridden with Phase 1 or other templates
+PACKER_TEMPLATE="customize_db.pkr.hcl"
+
+# Reject any attempt to use wrong template
+if [ ! -z "${PACKER_TEMPLATE_OVERRIDE:-}" ]; then
+  echo "[WARN] Ignoring PACKER_TEMPLATE_OVERRIDE env var: ${PACKER_TEMPLATE_OVERRIDE}"
+  echo "[WARN] Phase 2 always uses: ${PACKER_TEMPLATE}"
+fi
 
 echo "[INFO] Installation Target Dir: ${INSTALLATION_TARGET_DIR}"
 echo "[INFO] Installation Source Dir: ${INSTALLATION_SOURCE_DIR}"
@@ -100,16 +110,28 @@ export PACKER_LOG_PATH="/tmp/packer-debug.log"
 # ── Verify Packer template exists ────────────────────────────
 if [ ! -f "${PACKER_TEMPLATE}" ]; then
   echo "[ERROR] Packer template not found: ${PACKER_TEMPLATE}"
+  echo "[ERROR] Phase 2 requires: customize_db.pkr.hcl"
+  echo ""
   echo "[DEBUG] Current working directory: $(pwd)"
   echo "[DEBUG] Listed files in current directory:"
   ls -lah
   echo ""
   echo "[DEBUG] Looking for .pkr.hcl files in current directory:"
   find . -maxdepth 1 -name "*.pkr.hcl" -type f || echo "No .pkr.hcl files found"
+  echo ""
+  echo "[ERROR] SOLUTION: Ensure Dockerfile COPY packer/customize_db.pkr.hcl ./customize_db.pkr.hcl"
   exit 1
 fi
 
-echo "[INFO] Packer template: ${PACKER_TEMPLATE}"
+# ── Verify correct template is being used ─────────────────────
+if [ "$(basename "${PACKER_TEMPLATE}")" != "customize_db.pkr.hcl" ]; then
+  echo "[ERROR] Wrong Packer template detected: ${PACKER_TEMPLATE}"
+  echo "[ERROR] Phase 2 only supports: customize_db.pkr.hcl"
+  echo "[ERROR] This appears to be a Phase 1 or incorrect template."
+  exit 1
+fi
+
+echo "[INFO] Packer template: ${PACKER_TEMPLATE} ✓"
 echo "[INFO] Working directory: $(pwd)"
 echo "[INFO] Template absolute path: $(cd "$(dirname "${PACKER_TEMPLATE}")" && pwd)/$(basename "${PACKER_TEMPLATE}")"
 
@@ -156,7 +178,24 @@ if VALIDATION_OUTPUT=$(packer validate \
   -var "zone=${ZONE}" \
   -var "database_type=${DATABASE_TYPE}" \
   -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
-  -vaCheck gcloud authentication ─────────────────────────────
+  -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
+  -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
+  "${PACKER_TEMPLATE}" 2>&1); then
+  echo "[INFO] Packer template validation successful"
+  echo "$VALIDATION_OUTPUT"
+else
+  VALIDATE_EXIT_CODE=$?
+  echo "[ERROR] Packer template validation failed (exit code: ${VALIDATE_EXIT_CODE})"
+  echo "$VALIDATION_OUTPUT"
+  if [ -f "/tmp/packer-debug.log" ]; then
+    echo ""
+    echo "[DEBUG] Packer debug log:"
+    tail -50 "/tmp/packer-debug.log"
+  fi
+  exit 1
+fi
+
+# ── Check gcloud authentication ─────────────────────────────
 echo "Checking gcloud authentication..."
 if ! gcloud auth list 2>&1 | grep -q "ACTIVE"; then
   echo "[ERROR] gcloud is not authenticated. Cannot proceed with build."
@@ -198,24 +237,7 @@ fi
 
 echo "========================================================"
 echo "Packer build completed successfully."
-echo "========================================================COUNT_EMAIL}" \
-  -var "image_family=${IMAGE_FAMILY}" \
-  -var "machine_type=${MACHINE_TYPE}" \
-  -var "zone=${ZONE}" \
-  -var "database_type=${DATABASE_TYPE}" \
-  -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
-  -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
-  -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
-  "${PACKER_TEMPLATE}" 2>&1; then
-  echo "[ERROR] Packer build failed"
-  if [ -f "/tmp/packer-debug.log" ]; then
-    echo "[DEBUG] Packer debug log:"
-    tail -100 "/tmp/packer-debug.log"
-  fi
-  exit 1
-fi
-
-echo "Packer build completed successfully."
+echo "========================================================"
 
 # ── Deprecate older images ───────────────────────────────────
 echo "Deprecating older images in family ${IMAGE_FAMILY}..."

@@ -22,7 +22,7 @@ echo "[INFO] Shell: $SHELL, Bash Version: ${BASH_VERSION}"
 # ── Hardcoded configuration values ───────────────────────────
 PROJECT_ID="big-mender-473219-r2"
 SOURCE_IMAGE_PROJECT_ID="big-mender-473219-r2"
-SOURCE_IMAGE_FAMILY="pww-disa--hardened-patched-1777652372"
+SOURCE_IMAGE_FAMILY="pww-windows-2022-hardened"
 IMAGE_FAMILY="pww-windows-2022-db"
 ZONE="us-east4-b"
 MACHINE_TYPE="e2-standard-8"

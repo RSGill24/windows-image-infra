@@ -20,7 +20,8 @@ variable "project_id" {
 }
 
 variable "source_image_project_id" {
-  type = string
+  type        = string
+  description = "Project ID containing the source image"
 }
 
 variable "source_image_family" {
@@ -65,7 +66,7 @@ source "googlecompute" "customize_with_db" {
   use_iap                 = true
   use_internal_ip         = true
   omit_external_ip        = true
-  source_image_project_id = var.source_image_project_id
+  source_image_projects   = [var.source_image_project_id]
   source_image_family     = var.source_image_family
 
   communicator   = "winrm"

@@ -143,7 +143,6 @@ build {
     user          = "packer_user"
     use_proxy     = false
     extra_arguments = [
-      "-e", "ansible_host={{ build `Host` }}",
       "-e", "ansible_winrm_server_cert_validation=ignore",
       "-e", "ansible_winrm_scheme=https",
       "-e", "ansible_winrm_port=5986",

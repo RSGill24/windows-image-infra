@@ -39,10 +39,10 @@ steps:
         exit 1
       fi
 
-      echo "Reading database configuration from $CONFIG_PATH"
+      echo "Reading database configuration from $$CONFIG_PATH"
       
       # Parse YAML safely using grep and awk
-      DATABASE_TYPE=$(grep -E "^database_type:" "$CONFIG_PATH" | awk '{print $2}' | tr -d '\n\r')
+      DATABASE_TYPE=$(grep -E "^database_type:" "$$CONFIG_PATH" | awk '{print $2}' | tr -d '\n\r')
       
       if [ -z "$$DATABASE_TYPE" ]; then
         echo "ERROR: database_type not found in config.yaml"
@@ -144,8 +144,8 @@ steps:
         exit 1
       fi
       
-      echo "║ Config file: $CONFIG_PATH"
-      DATABASE_TYPE=$(grep -E "^database_type:" "$CONFIG_PATH" | awk '{print $2}' | tr -d '\n\r')
+      echo "║ Config file: $$CONFIG_PATH"
+      DATABASE_TYPE=$(grep -E "^database_type:" "$$CONFIG_PATH" | awk '{print $2}' | tr -d '\n\r')
       echo "║ Database Type: $$DATABASE_TYPE"
       
       echo "║ Docker Image: ${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest"

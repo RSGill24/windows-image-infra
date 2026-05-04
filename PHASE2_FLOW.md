@@ -28,13 +28,6 @@ Phase 2 builds on Phase 1 (hardened Windows 2022 image) and adds a database laye
                 ╚═══════════════════════════════════╝
                             ↓
                 ╔═══════════════════════════════════╗
-                ║    Step 1: Trivy Security Scans   ║
-                ║ - Scan Packer HCL for misconfigs ║
-                ║ - Scan scripts for secrets        ║
-                ║ - Scan for vulnerabilities        ║
-                ╚═══════════════════════════════════╝
-                            ↓
-                ╔═══════════════════════════════════╗
                 ║   Step 2: Build Docker Image      ║
                 ║ - Build Linux container with:     ║
                 ║   • Packer binary                 ║

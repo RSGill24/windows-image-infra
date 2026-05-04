@@ -126,7 +126,6 @@ phase2/
 │   └─ Handle: image deprecation, logging
 │
 ├── cloudbuild2.yaml
-│   └─ Step 1: Trivy scans (security)
 │   └─ Step 2: docker build (creates builder image)
 │   └─ Step 3: docker push (to Artifact Registry)
 │   └─ Default: _DATABASE_TYPE=none

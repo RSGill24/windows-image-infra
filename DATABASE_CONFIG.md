@@ -55,10 +55,9 @@ git push origin main
 When you push, Cloud Build automatically:
 
 1. ✅ **Step 0** - Reads `config.yaml` and validates the `database_type`
-2. ✅ **Step 1** - Runs Trivy security scans
-3. ✅ **Step 2** - Builds the Docker image
-4. ✅ **Step 3-4** - Configures auth and pushes to Artifact Registry
-5. ✅ **Step 5** - Displays configuration summary with next steps
+2. ✅ **Step 1** - Builds the Docker image
+3. ✅ **Step 2-3** - Configures auth and pushes to Artifact Registry
+4. ✅ **Step 4** - Displays configuration summary with next steps
 
 ### 4. Execute Cloud Run Job
 

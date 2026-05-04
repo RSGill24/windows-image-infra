@@ -15,6 +15,9 @@ echo "========================================================"
 echo "[INFO] Working directory: $(pwd)"
 echo "[INFO] Packer version:"
 packer version 2>&1 || echo "[WARN] Could not get packer version"
+echo ""
+echo "[INFO] Script PID: $$, PPID: $PPID"
+echo "[INFO] Shell: $SHELL, Bash Version: ${BASH_VERSION}"
 
 # ── Required environment variables ───────────────────────────
 : "${PROJECT_ID:?PROJECT_ID env var is required}"
@@ -69,6 +72,20 @@ fi
 export DATABASE_TYPE
 echo "[INFO] Database Type: ${DATABASE_TYPE}"
 
+# ── Display configuration summary ────────────────────────────
+echo ""
+echo "Configuration Summary:"
+echo "─────────────────────────────────────────────────────"
+echo "  PROJECT_ID: ${PROJECT_ID}"
+echo "  SOURCE_IMAGE_FAMILY: ${SOURCE_IMAGE_FAMILY}"
+echo "  IMAGE_FAMILY: ${IMAGE_FAMILY}"
+echo "  ZONE: ${ZONE}"
+echo "  MACHINE_TYPE: ${MACHINE_TYPE}"
+echo "  DATABASE_TYPE: ${DATABASE_TYPE}"
+echo "  PACKER_TEMPLATE: ${PACKER_TEMPLATE}"
+echo "─────────────────────────────────────────────────────"
+echo ""
+
 # ── Fetch WinRM password from Secret Manager ─────────────────
 echo "Fetching WinRM password from Secret Manager..."
 PACKER_PW=$(gcloud secrets versions access latest \
@@ -98,21 +115,61 @@ echo "[INFO] Template absolute path: $(cd "$(dirname "${PACKER_TEMPLATE}")" && p
 
 # ── Initialize Packer plugins ───────────────────────────────
 echo "Initializing Packer plugins..."
-if ! OUTPUT=$(packer init "${PACKER_TEMPLATE}" 2>&1); then
-  echo "[ERROR] Packer plugin initialization failed"
+echo "[DEBUG] Running: packer init ${PACKER_TEMPLATE}"
+if OUTPUT=$(packer init "${PACKER_TEMPLATE}" 2>&1); then
+  echo "[INFO] Packer plugins initialized successfully"
+  echo "$OUTPUT"
+else
+  INIT_EXIT_CODE=$?
+  echo "[ERROR] Packer plugin initialization failed (exit code: ${INIT_EXIT_CODE})"
   echo "[DEBUG] Error output:"
   echo "$OUTPUT"
   if [ -f "/tmp/packer-debug.log" ]; then
-    echo "[DEBUG] Packer debug log:"
+    echo ""
+    echo "[DEBUG] Packer debug log (/tmp/packer-debug.log):"
     cat "/tmp/packer-debug.log"
   fi
+  echo ""
+  echo "[DEBUG] Environment for debugging:"
+  echo "  PACKER_TEMPLATE: ${PACKER_TEMPLATE}"
+  echo "  Working Directory: $(pwd)"
+  echo "  Packer Version: $(packer version 2>&1 || echo 'FAILED')"
   exit 1
 fi
-echo "[INFO] Packer plugins initialized successfully"
 
 # ── Validate template ────────────────────────────────────────
 echo "Validating Packer template..."
-if ! packer validate \
+echo "[DEBUG] Running packer validate with:"
+echo "  project_id: ${PROJECT_ID}"
+echo "  source_image_project_id: ${SOURCE_IMAGE_PROJECT_ID}"
+echo "  source_image_family: ${SOURCE_IMAGE_FAMILY}"
+echo "  image_family: ${IMAGE_FAMILY}"
+echo "  database_type: ${DATABASE_TYPE}"
+
+if VALIDATION_OUTPUT=$(packer validate \
+  -var "project_id=${PROJECT_ID}" \
+  -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
+  -var "source_image_family=${SOURCE_IMAGE_FAMILY}" \
+  -var "service_account_email=${SERVICE_ACCOUNT_EMAIL}" \
+  -var "image_family=${IMAGE_FAMILY}" \
+  -var "machine_type=${MACHINE_TYPE}" \
+  -var "zone=${ZONE}" \
+  -var "database_type=${DATABASE_TYPE}" \
+  -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
+  -vaCheck gcloud authentication ─────────────────────────────
+echo "Checking gcloud authentication..."
+if ! gcloud auth list 2>&1 | grep -q "ACTIVE"; then
+  echo "[ERROR] gcloud is not authenticated. Cannot proceed with build."
+  echo "[DEBUG] gcloud auth list output:"
+  gcloud auth list || true
+  exit 1
+fi
+echo "[INFO] gcloud authentication verified"
+
+# ── Run Packer build ─────────────────────────────────────────
+echo "Starting Packer build with database customization..."
+echo "[DEBUG] Running packer build..."
+if BUILD_OUTPUT=$(packer build \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
   -var "source_image_family=${SOURCE_IMAGE_FAMILY}" \
@@ -124,18 +181,24 @@ if ! packer validate \
   -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
   -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
-  "${PACKER_TEMPLATE}" 2>&1; then
-  echo "[ERROR] Packer template validation failed"
+  "${PACKER_TEMPLATE}" 2>&1); then
+  echo "[INFO] Packer build started successfully"
+  echo "$BUILD_OUTPUT"
+else
+  BUILD_EXIT_CODE=$?
+  echo "[ERROR] Packer build failed (exit code: ${BUILD_EXIT_CODE})"
+  echo "$BUILD_OUTPUT"
+  if [ -f "/tmp/packer-debug.log" ]; then
+    echo ""
+    echo "[DEBUG] Last 100 lines of Packer debug log:"
+    tail -100 "/tmp/packer-debug.log"
+  fi
   exit 1
 fi
 
-# ── Run Packer build ─────────────────────────────────────────
-echo "Starting Packer build with database customization..."
-if ! packer build \
-  -var "project_id=${PROJECT_ID}" \
-  -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
-  -var "source_image_family=${SOURCE_IMAGE_FAMILY}" \
-  -var "service_account_email=${SERVICE_ACCOUNT_EMAIL}" \
+echo "========================================================"
+echo "Packer build completed successfully."
+echo "========================================================COUNT_EMAIL}" \
   -var "image_family=${IMAGE_FAMILY}" \
   -var "machine_type=${MACHINE_TYPE}" \
   -var "zone=${ZONE}" \

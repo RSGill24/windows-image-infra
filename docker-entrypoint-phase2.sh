@@ -19,45 +19,34 @@ echo ""
 echo "[INFO] Script PID: $$, PPID: $PPID"
 echo "[INFO] Shell: $SHELL, Bash Version: ${BASH_VERSION}"
 
-# ── Required environment variables ───────────────────────────
-: "${PROJECT_ID:?PROJECT_ID env var is required}"
-: "${SOURCE_IMAGE_PROJECT_ID:?SOURCE_IMAGE_PROJECT_ID env var is required}"
-: "${SOURCE_IMAGE_FAMILY:?SOURCE_IMAGE_FAMILY env var is required (Phase 1 image family)}"
-: "${IMAGE_FAMILY:?IMAGE_FAMILY env var is required}"
-: "${ZONE:?ZONE env var is required}"
-: "${MACHINE_TYPE:?MACHINE_TYPE env var is required}"
-: "${SERVICE_ACCOUNT_EMAIL:?SERVICE_ACCOUNT_EMAIL env var is required}"
-: "${WINRM_SECRET:?WINRM_SECRET env var is required}"
+# ── Hardcoded configuration values ───────────────────────────
+PROJECT_ID="big-mender-473219-r2"
+SOURCE_IMAGE_PROJECT_ID="big-mender-473219-r2"
+SOURCE_IMAGE_FAMILY="pww-disa--hardened-patched-1777652372"
+IMAGE_FAMILY="pww-windows-2022-db"
+ZONE="us-east4-b"
+MACHINE_TYPE="e2-standard-8"
+SERVICE_ACCOUNT_EMAIL="packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
+WINRM_SECRET="packer-winrm-password"
 
 # ── Optional environment variables with defaults ─────────────
-INSTALLATION_TARGET_DIR="${INSTALLATION_TARGET_DIR:=C:/Users/packer_user/installation/}"
-INSTALLATION_SOURCE_DIR="${INSTALLATION_SOURCE_DIR:=./scripts}"
-INSTALLATION_ENTRY_SCRIPT="${INSTALLATION_ENTRY_SCRIPT:=database_orchestrator.ps1}"
+INSTALLATION_TARGET_DIR="C:/Users/packer_user/installation/"
+INSTALLATION_SOURCE_DIR="./scripts"
+INSTALLATION_ENTRY_SCRIPT="database_orchestrator.ps1"
 
-# ── CRITICAL: Phase 2 uses customize_db.pkr.hcl ONLY ─────────
-# Hard-coded for Phase 2 database customization
-# This MUST NOT be overridden with Phase 1 or other templates
+# ── CRITICAL: Phase 2 uses customize_db.pkr.hcl ONLY ────────
 PACKER_TEMPLATE="customize_db.pkr.hcl"
-
-# Reject any attempt to use wrong template
-if [ ! -z "${PACKER_TEMPLATE_OVERRIDE:-}" ]; then
-  echo "[WARN] Ignoring PACKER_TEMPLATE_OVERRIDE env var: ${PACKER_TEMPLATE_OVERRIDE}"
-  echo "[WARN] Phase 2 always uses: ${PACKER_TEMPLATE}"
-fi
 
 echo "[INFO] Installation Target Dir: ${INSTALLATION_TARGET_DIR}"
 echo "[INFO] Installation Source Dir: ${INSTALLATION_SOURCE_DIR}"
 echo "[INFO] Installation Entry Script: ${INSTALLATION_ENTRY_SCRIPT}"
 
-# ── Load database type from config.yaml ────────────────────────
-CONFIG_FILE="${CONFIG_FILE:=./config.yaml}"
+# ── Load database type from config.yaml ──────────────────────
+CONFIG_FILE="./config.yaml"
 
 if [ -f "$CONFIG_FILE" ]; then
   echo "[INFO] Loading database configuration from $CONFIG_FILE..."
-  
-  # Parse YAML safely using grep and awk
   DATABASE_TYPE=$(grep -E "^database_type:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '\n\r')
-  
   if [ -z "$DATABASE_TYPE" ]; then
     echo "[WARN] database_type not found in config.yaml, defaulting to 'none'"
     DATABASE_TYPE="none"
@@ -73,8 +62,8 @@ if [[ "$DATABASE_TYPE" != "mysql" && "$DATABASE_TYPE" != "oracle" && "$DATABASE_
   exit 1
 fi
 
-# Allow override via environment variable (for advanced usage)
-if [ ! -z "${OVERRIDE_DATABASE_TYPE:-}" ]; then
+# Allow override via environment variable
+if [ -n "${OVERRIDE_DATABASE_TYPE:-}" ]; then
   echo "[INFO] Overriding database type via OVERRIDE_DATABASE_TYPE env var"
   DATABASE_TYPE="${OVERRIDE_DATABASE_TYPE}"
 fi
@@ -86,13 +75,15 @@ echo "[INFO] Database Type: ${DATABASE_TYPE}"
 echo ""
 echo "Configuration Summary:"
 echo "─────────────────────────────────────────────────────"
-echo "  PROJECT_ID: ${PROJECT_ID}"
-echo "  SOURCE_IMAGE_FAMILY: ${SOURCE_IMAGE_FAMILY}"
-echo "  IMAGE_FAMILY: ${IMAGE_FAMILY}"
-echo "  ZONE: ${ZONE}"
-echo "  MACHINE_TYPE: ${MACHINE_TYPE}"
-echo "  DATABASE_TYPE: ${DATABASE_TYPE}"
-echo "  PACKER_TEMPLATE: ${PACKER_TEMPLATE}"
+echo "  PROJECT_ID:              ${PROJECT_ID}"
+echo "  SOURCE_IMAGE_PROJECT_ID: ${SOURCE_IMAGE_PROJECT_ID}"
+echo "  SOURCE_IMAGE_FAMILY:     ${SOURCE_IMAGE_FAMILY}"
+echo "  IMAGE_FAMILY:            ${IMAGE_FAMILY}"
+echo "  ZONE:                    ${ZONE}"
+echo "  MACHINE_TYPE:            ${MACHINE_TYPE}"
+echo "  SERVICE_ACCOUNT_EMAIL:   ${SERVICE_ACCOUNT_EMAIL}"
+echo "  DATABASE_TYPE:           ${DATABASE_TYPE}"
+echo "  PACKER_TEMPLATE:         ${PACKER_TEMPLATE}"
 echo "─────────────────────────────────────────────────────"
 echo ""
 
@@ -113,21 +104,13 @@ if [ ! -f "${PACKER_TEMPLATE}" ]; then
   echo "[ERROR] Phase 2 requires: customize_db.pkr.hcl"
   echo ""
   echo "[DEBUG] Current working directory: $(pwd)"
-  echo "[DEBUG] Listed files in current directory:"
+  echo "[DEBUG] Files in current directory:"
   ls -lah
   echo ""
-  echo "[DEBUG] Looking for .pkr.hcl files in current directory:"
+  echo "[DEBUG] Looking for .pkr.hcl files:"
   find . -maxdepth 1 -name "*.pkr.hcl" -type f || echo "No .pkr.hcl files found"
   echo ""
-  echo "[ERROR] SOLUTION: Ensure Dockerfile COPY packer/customize_db.pkr.hcl ./customize_db.pkr.hcl"
-  exit 1
-fi
-
-# ── Verify correct template is being used ─────────────────────
-if [ "$(basename "${PACKER_TEMPLATE}")" != "customize_db.pkr.hcl" ]; then
-  echo "[ERROR] Wrong Packer template detected: ${PACKER_TEMPLATE}"
-  echo "[ERROR] Phase 2 only supports: customize_db.pkr.hcl"
-  echo "[ERROR] This appears to be a Phase 1 or incorrect template."
+  echo "[ERROR] SOLUTION: Ensure Dockerfile has: COPY customize_db.pkr.hcl ./customize_db.pkr.hcl"
   exit 1
 fi
 
@@ -135,39 +118,23 @@ echo "[INFO] Packer template: ${PACKER_TEMPLATE} ✓"
 echo "[INFO] Working directory: $(pwd)"
 echo "[INFO] Template absolute path: $(cd "$(dirname "${PACKER_TEMPLATE}")" && pwd)/$(basename "${PACKER_TEMPLATE}")"
 
-# ── Initialize Packer plugins ───────────────────────────────
+# ── Initialize Packer plugins ────────────────────────────────
 echo "Initializing Packer plugins..."
-echo "[DEBUG] Running: packer init ${PACKER_TEMPLATE}"
 if OUTPUT=$(packer init "${PACKER_TEMPLATE}" 2>&1); then
   echo "[INFO] Packer plugins initialized successfully"
   echo "$OUTPUT"
 else
   INIT_EXIT_CODE=$?
   echo "[ERROR] Packer plugin initialization failed (exit code: ${INIT_EXIT_CODE})"
-  echo "[DEBUG] Error output:"
   echo "$OUTPUT"
   if [ -f "/tmp/packer-debug.log" ]; then
-    echo ""
-    echo "[DEBUG] Packer debug log (/tmp/packer-debug.log):"
     cat "/tmp/packer-debug.log"
   fi
-  echo ""
-  echo "[DEBUG] Environment for debugging:"
-  echo "  PACKER_TEMPLATE: ${PACKER_TEMPLATE}"
-  echo "  Working Directory: $(pwd)"
-  echo "  Packer Version: $(packer version 2>&1 || echo 'FAILED')"
   exit 1
 fi
 
-# ── Validate template ────────────────────────────────────────
+# ── Validate template ─────────────────────────────────────────
 echo "Validating Packer template..."
-echo "[DEBUG] Running packer validate with:"
-echo "  project_id: ${PROJECT_ID}"
-echo "  source_image_project_id: ${SOURCE_IMAGE_PROJECT_ID}"
-echo "  source_image_family: ${SOURCE_IMAGE_FAMILY}"
-echo "  image_family: ${IMAGE_FAMILY}"
-echo "  database_type: ${DATABASE_TYPE}"
-
 if VALIDATION_OUTPUT=$(packer validate \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
@@ -188,27 +155,23 @@ else
   echo "[ERROR] Packer template validation failed (exit code: ${VALIDATE_EXIT_CODE})"
   echo "$VALIDATION_OUTPUT"
   if [ -f "/tmp/packer-debug.log" ]; then
-    echo ""
-    echo "[DEBUG] Packer debug log:"
     tail -50 "/tmp/packer-debug.log"
   fi
   exit 1
 fi
 
-# ── Check gcloud authentication ─────────────────────────────
+# ── Check gcloud authentication ───────────────────────────────
 echo "Checking gcloud authentication..."
 if ! gcloud auth list 2>&1 | grep -q "ACTIVE"; then
   echo "[ERROR] gcloud is not authenticated. Cannot proceed with build."
-  echo "[DEBUG] gcloud auth list output:"
   gcloud auth list || true
   exit 1
 fi
 echo "[INFO] gcloud authentication verified"
 
-# ── Run Packer build ─────────────────────────────────────────
+# ── Run Packer build ──────────────────────────────────────────
 echo "Starting Packer build with database customization..."
-echo "[DEBUG] Running packer build..."
-if BUILD_OUTPUT=$(packer build \
+if packer build \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
   -var "source_image_family=${SOURCE_IMAGE_FAMILY}" \
@@ -220,26 +183,20 @@ if BUILD_OUTPUT=$(packer build \
   -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
   -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
-  "${PACKER_TEMPLATE}" 2>&1); then
-  echo "[INFO] Packer build started successfully"
-  echo "$BUILD_OUTPUT"
+  "${PACKER_TEMPLATE}" 2>&1; then
+  echo "========================================================"
+  echo " Packer build completed successfully."
+  echo "========================================================"
 else
   BUILD_EXIT_CODE=$?
   echo "[ERROR] Packer build failed (exit code: ${BUILD_EXIT_CODE})"
-  echo "$BUILD_OUTPUT"
   if [ -f "/tmp/packer-debug.log" ]; then
-    echo ""
-    echo "[DEBUG] Last 100 lines of Packer debug log:"
     tail -100 "/tmp/packer-debug.log"
   fi
   exit 1
 fi
 
-echo "========================================================"
-echo "Packer build completed successfully."
-echo "========================================================"
-
-# ── Deprecate older images ───────────────────────────────────
+# ── Deprecate older images ────────────────────────────────────
 echo "Deprecating older images in family ${IMAGE_FAMILY}..."
 
 LATEST_IMAGE=$(gcloud compute images list \
@@ -249,24 +206,29 @@ LATEST_IMAGE=$(gcloud compute images list \
   --format="value(name)" \
   --limit=1)
 
-echo "Latest image: ${LATEST_IMAGE}"
-
-OLD_IMAGES=$(gcloud compute images list \
-  --project="${PROJECT_ID}" \
-  --filter="family=${IMAGE_FAMILY} AND name!=${LATEST_IMAGE}" \
-  --format="value(name)")
-
-if [ -z "${OLD_IMAGES}" ]; then
-  echo "No older images to deprecate."
+if [ -z "${LATEST_IMAGE}" ]; then
+  echo "[WARN] Could not find latest image, skipping deprecation."
 else
-  for IMAGE in ${OLD_IMAGES}; do
-    echo "Deprecating: ${IMAGE}"
-    gcloud compute images deprecate "${IMAGE}" \
-      --project="${PROJECT_ID}" \
-      --state=DEPRECATED \
-      --replacement="${LATEST_IMAGE}"
-  done
-  echo "Old images deprecated successfully."
+  echo "Latest image: ${LATEST_IMAGE}"
+
+  OLD_IMAGES=$(gcloud compute images list \
+    --project="${PROJECT_ID}" \
+    --filter="family=${IMAGE_FAMILY} AND name!=${LATEST_IMAGE}" \
+    --format="value(name)")
+
+  if [ -z "${OLD_IMAGES}" ]; then
+    echo "No older images to deprecate."
+  else
+    while IFS= read -r IMAGE; do
+      [ -z "$IMAGE" ] && continue
+      echo "Deprecating: ${IMAGE}"
+      gcloud compute images deprecate "${IMAGE}" \
+        --project="${PROJECT_ID}" \
+        --state=DEPRECATED \
+        --replacement="${LATEST_IMAGE}"
+    done <<< "${OLD_IMAGES}"
+    echo "Old images deprecated successfully."
+  fi
 fi
 
 echo "========================================================"

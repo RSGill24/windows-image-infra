@@ -24,7 +24,7 @@ variable "project_id" {
 }
 
 variable "source_image_project_id" {
-  type        = string
+  type        = list(string)
   description = "Project ID containing the source image"
 }
 

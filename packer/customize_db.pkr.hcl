@@ -1,7 +1,9 @@
 packer {
+  required_version = ">= 1.8.0"
+  
   required_plugins {
     googlecompute = {
-      version = "1.1.6"
+      version = ">= 1.1.6"
       source  = "github.com/hashicorp/googlecompute"
     }
   }
@@ -13,22 +15,50 @@ variable "packer_user_password" {
   sensitive = true
 }
 
-variable "project_id"              { type = string }
-variable "source_image_project_id" { type = string }
-variable "source_image_family"     { type = string }
-variable "service_account_email"   { type = string }
-variable "image_family"            { type = string }
-variable "machine_type"            { type = string }
-variable "zone"                    { type = string }
+variable "project_id" {
+  type = string
+}
+
+variable "source_image_project_id" {
+  type = string
+}
+
+variable "source_image_family" {
+  type = string
+}
+
+variable "service_account_email" {
+  type = string
+}
+
+variable "image_family" {
+  type = string
+}
+
+variable "machine_type" {
+  type = string
+}
+
+variable "zone" {
+  type = string
+}
 
 variable "database_type" {
   type    = string
   default = "none"
 }
 
-variable "installation_source_dir" { type = string }
-variable "installation_target_dir" { type = string }
-variable "installation_entry_script" { type = string }
+variable "installation_source_dir" {
+  type = string
+}
+
+variable "installation_target_dir" {
+  type = string
+}
+
+variable "installation_entry_script" {
+  type = string
+}
 
 source "googlecompute" "customize_with_db" {
   project_id              = var.project_id

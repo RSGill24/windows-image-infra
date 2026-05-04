@@ -137,12 +137,41 @@ build {
     ]
   }
 
-  # Step 2: Run database installation via Ansible
+  # Step 2: Write a dynamic Ansible inventory with the real GCP instance IP.
+  #
+  # Root cause of the previous error: when use_proxy=false, the Packer Ansible
+  # plugin builds its own inventory but only writes the alias "default" as the
+  # hostname — it does NOT populate ansible_host. Ansible then resolves
+  # "default" to 127.0.0.1 (localhost) and the WinRM connection is refused.
+  #
+  # Fix: use a shell-local provisioner to read the actual host that Packer
+  # connected to (available via PACKER_HOST or PACKER_WINRM_HOST env vars that
+  # the googlecompute plugin sets in the local process environment), then write
+  # an explicit ini inventory that Ansible uses instead.
+  provisioner "shell-local" {
+    environment_vars = [
+      "PACKER_PW=${var.packer_user_password}",
+      "DATABASE_TYPE=${var.database_type}"
+    ]
+    inline = [
+      "set -e",
+      "TARGET_HOST=\"${PACKER_HOST:-$PACKER_WINRM_HOST}\"",
+      "if [ -z \"$TARGET_HOST\" ]; then echo 'ERROR: Neither PACKER_HOST nor PACKER_WINRM_HOST is set. Cannot build inventory.'; exit 1; fi",
+      "INVENTORY=/tmp/packer-winrm-inventory.ini",
+      "echo '[windows_target]' > $INVENTORY",
+      "printf '%s ansible_connection=winrm ansible_winrm_scheme=https ansible_winrm_port=5986 ansible_winrm_transport=basic ansible_winrm_server_cert_validation=ignore ansible_user=packer_user ansible_password=%s\\n' \"$TARGET_HOST\" \"$PACKER_PW\" >> $INVENTORY",
+      "echo 'Ansible inventory written to' $INVENTORY",
+      "cat $INVENTORY"
+    ]
+  }
+
+  # Step 3: Run database installation via Ansible using the explicit inventory
   provisioner "ansible" {
     playbook_file = "${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
     user          = "packer_user"
     use_proxy     = false
     extra_arguments = [
+      "--inventory", "/tmp/packer-winrm-inventory.ini",
       "-e", "ansible_winrm_server_cert_validation=ignore",
       "-e", "ansible_winrm_scheme=https",
       "-e", "ansible_winrm_port=5986",

@@ -88,10 +88,10 @@ steps:
 
       docker build \
         --build-arg PACKER_VERSION=${_PACKER_VERSION} \
-        --tag "$$IMAGE_TAG:$SHORT_SHA" \
+        --tag "$$IMAGE_TAG:${SHORT_SHA}" \
         --tag "$$IMAGE_TAG:latest" \
-        --file "$DOCKER_PATH/Dockerfile" \
-        "$DOCKER_PATH"
+        --file "$$DOCKER_PATH/Dockerfile" \
+        "$$DOCKER_PATH"
 
       echo "Docker build complete."
 

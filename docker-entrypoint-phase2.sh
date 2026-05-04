@@ -12,6 +12,9 @@ echo "========================================================"
 echo " Phase 2: Windows Database Customization Builder"
 echo " $(date -u)"
 echo "========================================================"
+echo "[INFO] Working directory: $(pwd)"
+echo "[INFO] Packer version:"
+packer version 2>&1 || echo "[WARN] Could not get packer version"
 
 # ── Required environment variables ───────────────────────────
 : "${PROJECT_ID:?PROJECT_ID env var is required}"
@@ -75,13 +78,31 @@ export PACKER_PW
 
 # ── Packer logging ───────────────────────────────────────────
 export PACKER_LOG=1
+export PACKER_LOG_PATH="/tmp/packer-debug.log"
+
+# ── Verify Packer template exists ────────────────────────────
+if [ ! -f "${PACKER_TEMPLATE}" ]; then
+  echo "[ERROR] Packer template not found: ${PACKER_TEMPLATE}"
+  ls -la "$(dirname "${PACKER_TEMPLATE}")" || true
+  exit 1
+fi
+
+echo "[INFO] Packer template location: ${PACKER_TEMPLATE}"
+echo "[INFO] Current working directory: $(pwd)"
 
 # ── Initialize Packer plugins ───────────────────────────────
 echo "Initializing Packer plugins..."
-if ! packer init "${PACKER_TEMPLATE}" 2>&1; then
+if ! OUTPUT=$(packer init "${PACKER_TEMPLATE}" 2>&1); then
   echo "[ERROR] Packer plugin initialization failed"
+  echo "[DEBUG] Error output:"
+  echo "$OUTPUT"
+  if [ -f "/tmp/packer-debug.log" ]; then
+    echo "[DEBUG] Packer debug log:"
+    cat "/tmp/packer-debug.log"
+  fi
   exit 1
 fi
+echo "[INFO] Packer plugins initialized successfully"
 
 # ── Validate template ────────────────────────────────────────
 echo "Validating Packer template..."
@@ -118,6 +139,10 @@ if ! packer build \
   -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
   "${PACKER_TEMPLATE}" 2>&1; then
   echo "[ERROR] Packer build failed"
+  if [ -f "/tmp/packer-debug.log" ]; then
+    echo "[DEBUG] Packer debug log:"
+    tail -100 "/tmp/packer-debug.log"
+  fi
   exit 1
 fi
 

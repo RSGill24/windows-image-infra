@@ -76,9 +76,16 @@ export PACKER_PW
 # ── Packer logging ───────────────────────────────────────────
 export PACKER_LOG=1
 
+# ── Initialize Packer plugins ───────────────────────────────
+echo "Initializing Packer plugins..."
+if ! packer init "${PACKER_TEMPLATE}" 2>&1; then
+  echo "[ERROR] Packer plugin initialization failed"
+  exit 1
+fi
+
 # ── Validate template ────────────────────────────────────────
 echo "Validating Packer template..."
-packer validate \
+if ! packer validate \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
   -var "source_image_family=${SOURCE_IMAGE_FAMILY}" \
@@ -90,11 +97,14 @@ packer validate \
   -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
   -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
-  "${PACKER_TEMPLATE}"
+  "${PACKER_TEMPLATE}" 2>&1; then
+  echo "[ERROR] Packer template validation failed"
+  exit 1
+fi
 
 # ── Run Packer build ─────────────────────────────────────────
 echo "Starting Packer build with database customization..."
-packer build \
+if ! packer build \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
   -var "source_image_family=${SOURCE_IMAGE_FAMILY}" \
@@ -106,7 +116,10 @@ packer build \
   -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
   -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
-  "${PACKER_TEMPLATE}"
+  "${PACKER_TEMPLATE}" 2>&1; then
+  echo "[ERROR] Packer build failed"
+  exit 1
+fi
 
 echo "Packer build completed successfully."
 

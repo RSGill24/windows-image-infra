@@ -65,7 +65,7 @@ source "googlecompute" "customize_with_db" {
   use_iap                 = true
   use_internal_ip         = true
   omit_external_ip        = true
-  source_image_project_id = [var.source_image_project_id]
+  source_image_project_id = var.source_image_project_id
   source_image_family     = var.source_image_family
 
   communicator   = "winrm"

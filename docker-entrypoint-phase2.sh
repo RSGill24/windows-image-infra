@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
 # docker-entrypoint-phase2.sh
-# Phase 2: Database Customization Entrypoint
 # Runs inside the Cloud Run Job container.
 # Sources Phase 1 hardened image and adds database layer.
 # ============================================================

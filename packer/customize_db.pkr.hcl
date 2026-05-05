@@ -164,12 +164,17 @@ build {
       "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
       # ------------------------------------------------------------------
-      # 1. Detect the instance name via gcloud
+      # 1. Detect the instance name and IP via gcloud
       # ------------------------------------------------------------------
-      "echo 'Detecting instance name from gcloud...'",
+      "echo 'Detecting instance from gcloud...'",
       "INSTANCE_NAME=$(gcloud compute instances list --filter=\"tags.items:winrm AND zone:($ZONE)\" --format=\"value(name)\" --project=\"$PROJECT_ID\" | head -1)",
       "if [ -z \"$INSTANCE_NAME\" ]; then echo 'ERROR: Could not detect instance name'; gcloud compute instances list --filter=\"zone:($ZONE)\" --format=\"table(name,status)\" --project=\"$PROJECT_ID\" || true; exit 1; fi",
       "echo \"Instance name: $INSTANCE_NAME\"",
+      "",
+      "echo 'Fetching instance IP...'",
+      "INSTANCE_IP=$(gcloud compute instances describe \"$INSTANCE_NAME\" --zone=\"$ZONE\" --format=\"value(networkInterfaces[0].networkIP)\" --project=\"$PROJECT_ID\")",
+      "if [ -z \"$INSTANCE_IP\" ]; then echo 'ERROR: Could not get instance IP'; exit 1; fi",
+      "echo \"Instance internal IP: $INSTANCE_IP\"",
 
       # ------------------------------------------------------------------
       # 2. Open IAP tunnel on fixed port 15986
@@ -191,13 +196,15 @@ build {
       "echo 'Tunnel ready on 127.0.0.1:15986'",
 
       # ------------------------------------------------------------------
-      # 4. Write Ansible inventory using printf
+      # 4. Write Ansible inventory with actual instance IP
+      #    Ansible connects to the VM's IP through the IAP tunnel
       #    ansible_password passed via -e flag only, not written to disk
       # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
-      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=15986\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=15986\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' > \"$INVENTORY\"",
+      "printf '[windows]\\nwinrm_target ansible_host=%s ansible_port=15986\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=15986\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$INSTANCE_IP\" > \"$INVENTORY\"",
       "printf 'database_type=%s\\n' \"$DATABASE_TYPE\" >> \"$INVENTORY\"",
-      "echo 'Inventory written:'",
+      "echo \"\"",
+      "echo 'Ansible inventory created with instance IP '$INSTANCE_IP':'",
       "cat \"$INVENTORY\"",
 
       # ------------------------------------------------------------------

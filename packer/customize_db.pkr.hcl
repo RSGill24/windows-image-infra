@@ -139,17 +139,13 @@ build {
 
   # Step 2: Open a dedicated IAP tunnel on a fixed port and run ansible-playbook.
   #
-  # Why not the Packer Ansible plugin?
-  #   Packer's IAP tunnel uses a RANDOM local port. The Ansible plugin always
-  #   connects to 127.0.0.1:5986, which is never the right port => "Connection refused".
-  #
-  # Solution:
-  #   1. Pre-flight checks — fail fast if ansible/pywinrm/playbook are missing.
-  #   2. Find the instance via gcloud (tagged 'winrm' in the target zone).
-  #   3. Open a second IAP tunnel on a fixed port (15986).
-  #   4. Write an Ansible inventory pointing at 127.0.0.1:15986.
-  #   5. Run ansible-playbook directly.
+  # IMPORTANT: Packer shell-local uses /bin/sh by default.
+  # 'set -o pipefail' is bash-only and causes sh to exit with code 2 immediately.
+  # Fix: set interpreter = ["/bin/bash", "-c"] to force bash.
   provisioner "shell-local" {
+    # Force bash — /bin/sh does not support pipefail and will exit code 2
+    interpreter = ["/bin/bash", "-c"]
+
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
       "DATABASE_TYPE=${var.database_type}",
@@ -161,7 +157,7 @@ build {
       "set -euo pipefail",
 
       # ------------------------------------------------------------------
-      # Pre-flight checks — catch missing tools/files before the VM is up
+      # Pre-flight checks — fail fast before the VM is even touched
       # ------------------------------------------------------------------
       "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found on local machine'; exit 1; }",
       "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed. Run: pip install pywinrm'; exit 1; }",
@@ -178,8 +174,8 @@ build {
 
       # ------------------------------------------------------------------
       # 2. Open IAP tunnel on fixed port 15986
-      #    Register trap immediately so tunnel is always killed on exit,
-      #    whether the playbook succeeds, fails, or the script is interrupted.
+      #    Trap fires on any exit — success, failure, or interruption —
+      #    so the tunnel is always cleaned up.
       # ------------------------------------------------------------------
       "echo 'Opening dedicated IAP tunnel on port 15986...'",
       "gcloud compute start-iap-tunnel \"$INSTANCE_NAME\" 5986 --local-host-port=127.0.0.1:15986 --zone=\"$ZONE\" --project=\"$PROJECT_ID\" &",
@@ -197,11 +193,8 @@ build {
       "echo 'Tunnel ready on 127.0.0.1:15986'",
 
       # ------------------------------------------------------------------
-      # 4. Write Ansible inventory
-      #    - heredoc (<<) does NOT work inside Packer inline arrays —
-      #      each element runs in its own shell so use printf with \n.
-      #    - ansible_password is NOT written to the inventory file —
-      #      it is passed securely via -e flag on the command line only.
+      # 4. Write Ansible inventory using printf
+      #    ansible_password is passed via -e flag only, not written to disk
       # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
       "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=15986\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=15986\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' > \"$INVENTORY\"",
@@ -211,9 +204,8 @@ build {
 
       # ------------------------------------------------------------------
       # 5. Run the Ansible playbook
-      #    set +e so a non-zero exit does NOT kill the shell before $? is
-      #    captured. Without this, set -e exits immediately on failure and
-      #    PLAYBOOK_EXIT is never set.
+      #    set +e around the call so $? is captured before set -e can
+      #    kill the shell on a non-zero exit code.
       # ------------------------------------------------------------------
       "echo 'Running Ansible playbook...'",
       "set +e",
@@ -222,10 +214,7 @@ build {
       "set -e",
       "echo \"Playbook finished with exit code: $PLAYBOOK_EXIT\"",
 
-      # ------------------------------------------------------------------
-      # 6. Exit with playbook's code.
-      #    The trap from step 2 fires automatically and kills the tunnel.
-      # ------------------------------------------------------------------
+      # Trap handles tunnel cleanup. Exit with playbook's code.
       "exit $PLAYBOOK_EXIT"
     ]
   }

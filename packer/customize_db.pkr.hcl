@@ -137,17 +137,25 @@ build {
     ]
   }
 
-  # Step 2: Run ansible-playbook via Packer's EXISTING IAP tunnel.
+  # Step 2: Run ansible-playbook reusing Packer's existing IAP tunnel.
   #
-  # KEY INSIGHT from logs:
-  #   Packer already opened an IAP tunnel to connect via WinRM and it is
-  #   still running while this shell-local provisioner executes.
-  #   Opening a SECOND tunnel to port 5986 on the same VM races against
-  #   gcloud's own 60s connection test and always loses.
+  # Project structure (packer/ directory):
+  #   packer/
+  #     customize_db.pkr.hcl
+  #     ansible-playbook/
+  #       database_installation.yml   <- the playbook
+  #       install_mysql_tasks.yml
+  #       install_oracle_tasks.yml
+  #     scripts/                      <- installation_source_dir = ./scripts
   #
-  # Fix:
-  #   Find the local port Packer's existing tunnel is bound to using ss/lsof,
-  #   then point Ansible at 127.0.0.1:<that_port>. No second tunnel needed.
+  # Playbook path: ./scripts/../ansible-playbook/database_installation.yml
+  # = ./ansible-playbook/database_installation.yml  ✅ confirmed by pre-flight log
+  #
+  # WHY we reuse Packer's tunnel instead of opening a second one:
+  #   gcloud runs its own "Testing if tunnel connection works" check that takes
+  #   ~60s before a new tunnel is usable. Our nc poll expired in that window.
+  #   Packer's WinRM tunnel is already open and proven working (PowerShell ✅).
+  #   We just need to find which local port it bound to and reuse it.
   provisioner "shell-local" {
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
@@ -168,31 +176,43 @@ build {
       "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
       # ------------------------------------------------------------------
-      # Find the local port of Packer's existing IAP tunnel.
+      # Find the local port Packer's existing IAP tunnel is bound to.
       #
-      # Packer's tunnel process looks like:
-      #   gcloud compute start-iap-tunnel <instance> 5986 --local-host-port=127.0.0.1:<PORT>
+      # Packer passes --local-host-port=127.0.0.1:<PORT> to gcloud.
+      # That process is still running while this provisioner executes.
+      # We extract the port from its command line — no second tunnel needed.
       #
-      # We extract <PORT> from the running process args.
+      # Method 1: grep the gcloud process args for the local-host-port flag
+      # Method 2: fallback — scan ss for any 127.0.0.1 listener that accepts
+      #           a connection (i.e. the tunnel is actually up)
       # ------------------------------------------------------------------
-      "echo 'Finding Packer IAP tunnel port...'",
-      "TUNNEL_PORT=$(ps aux | grep 'start-iap-tunnel' | grep -v grep | grep -o 'local-host-port=127.0.0.1:[0-9]*' | cut -d: -f2 | head -1)",
+      "echo 'Finding Packer IAP tunnel local port...'",
+      "echo 'Running processes containing iap-tunnel:'",
+      "ps aux | grep 'iap-tunnel' | grep -v grep || true",
 
-      # Fallback: use ss to find any local port forwarding to 5986 on 127.0.0.1
+      "TUNNEL_PORT=''",
+
+      "# Method 1: extract from --local-host-port=127.0.0.1:<PORT> in process args",
+      "TUNNEL_PORT=$(ps aux | grep 'start-iap-tunnel' | grep -v grep | grep -o 'local-host-port=127\\.0\\.0\\.1:[0-9]*' | cut -d: -f2 | head -1 || true)",
+
       "if [ -z \"$TUNNEL_PORT\" ]; then",
-      "  echo 'ps grep failed, trying ss fallback...'",
-      "  TUNNEL_PORT=$(ss -tlnp 2>/dev/null | awk '/127\\.0\\.0\\.1/{print $4}' | cut -d: -f2 | grep -v '^5986$' | head -1)",
+      "  echo 'Method 1 failed. Trying Method 2: scan 127.0.0.1 listeners...'",
+      "  for PORT in $(ss -tlnp 2>/dev/null | grep '127\\.0\\.0\\.1' | awk '{print $4}' | cut -d: -f2 | sort -n); do",
+      "    nc -z 127.0.0.1 \"$PORT\" 2>/dev/null && TUNNEL_PORT=$PORT && break || true",
+      "  done",
       "fi",
 
-      "if [ -z \"$TUNNEL_PORT\" ]; then echo 'ERROR: Could not find Packer IAP tunnel port'; ps aux | grep iap || true; exit 1; fi",
-      "echo \"Found Packer IAP tunnel on local port: $TUNNEL_PORT\"",
+      "if [ -z \"$TUNNEL_PORT\" ]; then",
+      "  echo 'ERROR: Could not find Packer IAP tunnel port via any method'",
+      "  echo 'All 127.0.0.1 listeners:'",
+      "  ss -tlnp 2>/dev/null | grep '127\\.0\\.0\\.1' || true",
+      "  exit 1",
+      "fi",
 
-      # Verify the port is actually open
-      "nc -z 127.0.0.1 \"$TUNNEL_PORT\" 2>/dev/null || { echo \"ERROR: Port $TUNNEL_PORT is not reachable\"; exit 1; }",
-      "echo \"Port $TUNNEL_PORT confirmed reachable\"",
+      "echo \"Packer IAP tunnel found on local port: $TUNNEL_PORT\"",
 
       # ------------------------------------------------------------------
-      # Write Ansible inventory pointing at Packer's existing tunnel port
+      # Write Ansible inventory pointing at the existing tunnel port
       # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
       "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
@@ -202,7 +222,7 @@ build {
 
       # ------------------------------------------------------------------
       # Run the Ansible playbook
-      # set +e so $? is captured before the shell exits on failure
+      # set +e so $? is captured before the shell exits on non-zero
       # ------------------------------------------------------------------
       "echo 'Running Ansible playbook...'",
       "set +e",

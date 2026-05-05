@@ -139,17 +139,16 @@ build {
 
   # Step 2: Open a dedicated IAP tunnel on a fixed port and run ansible-playbook.
   #
-  # Root cause of all previous failures:
-  #   Packer opens its IAP tunnel on a RANDOM local port.
-  #   The Ansible plugin always tries 127.0.0.1:5986 which is never the right port.
-  #   Result: "Connection refused" every time.
+  # Why not the Packer Ansible plugin?
+  #   Packer's IAP tunnel uses a RANDOM local port. The Ansible plugin always
+  #   connects to 127.0.0.1:5986, which is never the right port => "Connection refused".
   #
-  # Fix:
-  #   1. Find the running instance name from Packer's own IAP tunnel process
-  #      (gcloud start-iap-tunnel is still running while provisioners execute).
-  #   2. Open a SECOND IAP tunnel on a fixed known port (15986).
-  #   3. Write an Ansible inventory pointing at 127.0.0.1:15986.
-  #   4. Run ansible-playbook directly — no Packer Ansible plugin involved.
+  # Solution:
+  #   1. Pre-flight checks — fail fast if ansible/pywinrm/playbook are missing.
+  #   2. Find the instance via gcloud (tagged 'winrm' in the target zone).
+  #   3. Open a second IAP tunnel on a fixed port (15986).
+  #   4. Write an Ansible inventory pointing at 127.0.0.1:15986.
+  #   5. Run ansible-playbook directly.
   provisioner "shell-local" {
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
@@ -159,58 +158,74 @@ build {
       "PLAYBOOK_PATH=${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
     ]
     inline = [
-      "set -e",
+      "set -euo pipefail",
 
-      # Find the running Packer instance by querying gcloud.
-      # Packer instances are tagged with 'winrm' and are in the specified zone.
-      "echo 'Detecting instance name from running gcloud instances...'",
-      "INSTANCE_NAME=$(gcloud compute instances list --filter=\"tags.items:winrm AND zone:${ZONE}\" --format=\"value(name)\" | head -1)",
-      "if [ -z \"$INSTANCE_NAME\" ]; then echo 'ERROR: Could not detect instance name from gcloud'; gcloud compute instances list --filter=\"zone:${ZONE}\" --format=\"table(name,status)\" || true; exit 1; fi",
+      # ------------------------------------------------------------------
+      # Pre-flight checks — catch missing tools/files before the VM is up
+      # ------------------------------------------------------------------
+      "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found on local machine'; exit 1; }",
+      "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed. Run: pip install pywinrm'; exit 1; }",
+      "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
+      "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
+
+      # ------------------------------------------------------------------
+      # 1. Detect the instance name via gcloud
+      # ------------------------------------------------------------------
+      "echo 'Detecting instance name from gcloud...'",
+      "INSTANCE_NAME=$(gcloud compute instances list --filter=\"tags.items:winrm AND zone:($ZONE)\" --format=\"value(name)\" --project=\"$PROJECT_ID\" | head -1)",
+      "if [ -z \"$INSTANCE_NAME\" ]; then echo 'ERROR: Could not detect instance name'; gcloud compute instances list --filter=\"zone:($ZONE)\" --format=\"table(name,status)\" --project=\"$PROJECT_ID\" || true; exit 1; fi",
       "echo \"Instance name: $INSTANCE_NAME\"",
 
-      # Open a second IAP tunnel on fixed port 15986
+      # ------------------------------------------------------------------
+      # 2. Open IAP tunnel on fixed port 15986
+      #    Register trap immediately so tunnel is always killed on exit,
+      #    whether the playbook succeeds, fails, or the script is interrupted.
+      # ------------------------------------------------------------------
       "echo 'Opening dedicated IAP tunnel on port 15986...'",
-      "gcloud compute start-iap-tunnel \"$INSTANCE_NAME\" 5986 --local-host-port=127.0.0.1:15986 --zone=$ZONE --project=$PROJECT_ID &",
+      "gcloud compute start-iap-tunnel \"$INSTANCE_NAME\" 5986 --local-host-port=127.0.0.1:15986 --zone=\"$ZONE\" --project=\"$PROJECT_ID\" &",
       "TUNNEL_PID=$!",
+      "trap 'echo Closing IAP tunnel...; kill \"$TUNNEL_PID\" 2>/dev/null || true; wait \"$TUNNEL_PID\" 2>/dev/null || true' EXIT",
       "echo \"Tunnel PID: $TUNNEL_PID\"",
 
-      # Wait for tunnel to be ready (poll up to 30s)
+      # ------------------------------------------------------------------
+      # 3. Wait for tunnel to be ready (poll up to 60s)
+      # ------------------------------------------------------------------
       "echo 'Waiting for tunnel to be ready...'",
       "READY=0",
-      "for i in $(seq 1 15); do nc -z 127.0.0.1 15986 2>/dev/null && READY=1 && break || sleep 2; done",
-      "if [ $READY -eq 0 ]; then echo 'ERROR: IAP tunnel did not become ready in 30s'; kill $TUNNEL_PID || true; exit 1; fi",
+      "for i in $(seq 1 30); do nc -z 127.0.0.1 15986 2>/dev/null && READY=1 && break || sleep 2; done",
+      "if [ \"$READY\" -eq 0 ]; then echo 'ERROR: IAP tunnel did not become ready in 60s'; exit 1; fi",
       "echo 'Tunnel ready on 127.0.0.1:15986'",
 
-      # Write Ansible inventory
+      # ------------------------------------------------------------------
+      # 4. Write Ansible inventory
+      #    - heredoc (<<) does NOT work inside Packer inline arrays —
+      #      each element runs in its own shell so use printf with \n.
+      #    - ansible_password is NOT written to the inventory file —
+      #      it is passed securely via -e flag on the command line only.
+      # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
-      "cat > $INVENTORY << 'INI'",
-      "[windows]",
-      "winrm_target ansible_host=127.0.0.1 ansible_port=15986",
-      "",
-      "[windows:vars]",
-      "ansible_connection=winrm",
-      "ansible_winrm_scheme=https",
-      "ansible_winrm_port=15986",
-      "ansible_winrm_transport=basic",
-      "ansible_winrm_server_cert_validation=ignore",
-      "ansible_user=packer_user",
-      "ansible_become=no",
-      "INI",
-      "echo \"ansible_password=$PACKER_PW\" >> $INVENTORY",
-      "echo \"database_type=$DATABASE_TYPE\" >> $INVENTORY",
+      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=15986\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=15986\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' > \"$INVENTORY\"",
+      "printf 'database_type=%s\\n' \"$DATABASE_TYPE\" >> \"$INVENTORY\"",
       "echo 'Inventory written:'",
-      "cat $INVENTORY",
+      "cat \"$INVENTORY\"",
 
-      # Run the playbook
+      # ------------------------------------------------------------------
+      # 5. Run the Ansible playbook
+      #    set +e so a non-zero exit does NOT kill the shell before $? is
+      #    captured. Without this, set -e exits immediately on failure and
+      #    PLAYBOOK_EXIT is never set.
+      # ------------------------------------------------------------------
       "echo 'Running Ansible playbook...'",
-      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i $INVENTORY -e ansible_password=$PACKER_PW -e database_type=$DATABASE_TYPE $PLAYBOOK_PATH",
+      "set +e",
+      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i \"$INVENTORY\" -e \"ansible_password=$PACKER_PW\" -e \"database_type=$DATABASE_TYPE\" \"$PLAYBOOK_PATH\"",
       "PLAYBOOK_EXIT=$?",
+      "set -e",
+      "echo \"Playbook finished with exit code: $PLAYBOOK_EXIT\"",
 
-      # Clean up tunnel
-      "echo 'Closing IAP tunnel...'",
-      "kill $TUNNEL_PID 2>/dev/null || true",
-      "wait $TUNNEL_PID 2>/dev/null || true",
-
+      # ------------------------------------------------------------------
+      # 6. Exit with playbook's code.
+      #    The trap from step 2 fires automatically and kills the tunnel.
+      # ------------------------------------------------------------------
       "exit $PLAYBOOK_EXIT"
     ]
   }

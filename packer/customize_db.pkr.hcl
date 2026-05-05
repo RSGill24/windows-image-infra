@@ -137,51 +137,81 @@ build {
     ]
   }
 
-  # Step 2: Run Ansible playbook.
+  # Step 2: Open a dedicated IAP tunnel on a fixed port and run ansible-playbook.
   #
-  # Root cause confirmed from logs:
-  #   "ESTABLISH WINRM CONNECTION TO 127.0.0.1"
+  # Root cause of all previous failures:
+  #   Packer opens its IAP tunnel on a RANDOM local port.
+  #   The Ansible plugin always tries 127.0.0.1:5986 which is never the right port.
+  #   Result: "Connection refused" every time.
   #
-  # Packer uses IAP which creates a local tunnel: 127.0.0.1:<iap_port> -> VM:5986
-  # In proxy mode, Packer writes 127.0.0.1 as ansible_host into the inventory,
-  # which is correct — Ansible SHOULD connect to 127.0.0.1 through the IAP tunnel.
-  # But Ansible is using port 5986 instead of the IAP tunnel's local port.
-  #
-  # The fix: use_proxy=false so Ansible does NOT use Packer's proxy/inventory
-  # at all. Instead we pass the connection entirely through the playbook vars
-  # which already have all WinRM settings defined. We must also pass
-  # ansible_host explicitly pointing to 127.0.0.1 and ansible_port pointing
-  # to the IAP tunnel port that Packer opened locally.
-  #
-  # The IAP tunnel local port is exposed by Packer as: {{ build `PackerHTTPPort` }}
-  # but for WinRM over IAP the correct approach is to let Packer handle
-  # the tunnel and tell Ansible to connect through it via 127.0.0.1 and
-  # the forwarded port. Packer exposes this via the GeneratedData.
-  #
-  # Since we cannot get the dynamic IAP port at prepare time, the cleanest
-  # solution is to use use_proxy=false and pass the WinRM details directly,
-  # letting pywinrm connect to 127.0.0.1 on the same port Packer tunneled.
-  provisioner "ansible" {
-    playbook_file = "${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
-    user          = "packer_user"
-    use_proxy     = false
-    extra_arguments = [
-      "-e", "ansible_host=127.0.0.1",
-      "-e", "ansible_port=5986",
-      "-e", "ansible_connection=winrm",
-      "-e", "ansible_winrm_scheme=https",
-      "-e", "ansible_winrm_port=5986",
-      "-e", "ansible_winrm_transport=basic",
-      "-e", "ansible_winrm_server_cert_validation=ignore",
-      "-e", "ansible_user=packer_user",
-      "-e", "ansible_password=${var.packer_user_password}",
-      "-e", "database_type=${var.database_type}",
-      "-vvv"
-    ]
-    ansible_env_vars = [
-      "ANSIBLE_HOST_KEY_CHECKING=False",
+  # Fix:
+  #   1. Find the running instance name from Packer's own IAP tunnel process
+  #      (gcloud start-iap-tunnel is still running while provisioners execute).
+  #   2. Open a SECOND IAP tunnel on a fixed known port (15986).
+  #   3. Write an Ansible inventory pointing at 127.0.0.1:15986.
+  #   4. Run ansible-playbook directly — no Packer Ansible plugin involved.
+  provisioner "shell-local" {
+    environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
-      "DATABASE_TYPE=${var.database_type}"
+      "DATABASE_TYPE=${var.database_type}",
+      "ZONE=${var.zone}",
+      "PROJECT_ID=${var.project_id}",
+      "PLAYBOOK_PATH=${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
+    ]
+    inline = [
+      "set -e",
+
+      # The gcloud start-iap-tunnel process is still running while provisioners
+      # execute. Extract the instance name from its command line.
+      "echo 'Detecting instance name from running IAP tunnel process...'",
+      "INSTANCE_NAME=$(ps aux | grep 'start-iap-tunnel' | grep -v grep | awk '{for(i=1;i<=NF;i++) if($i==\"start-iap-tunnel\") print $(i+1)}' | head -1)",
+      "if [ -z \"$INSTANCE_NAME\" ]; then echo 'ERROR: Could not detect instance name from IAP tunnel process'; ps aux | grep -i iap || true; exit 1; fi",
+      "echo \"Instance name: $INSTANCE_NAME\"",
+
+      # Open a second IAP tunnel on fixed port 15986
+      "echo 'Opening dedicated IAP tunnel on port 15986...'",
+      "gcloud compute start-iap-tunnel \"$INSTANCE_NAME\" 5986 --local-host-port=127.0.0.1:15986 --zone=$ZONE --project=$PROJECT_ID &",
+      "TUNNEL_PID=$!",
+      "echo \"Tunnel PID: $TUNNEL_PID\"",
+
+      # Wait for tunnel to be ready (poll up to 30s)
+      "echo 'Waiting for tunnel to be ready...'",
+      "READY=0",
+      "for i in $(seq 1 15); do nc -z 127.0.0.1 15986 2>/dev/null && READY=1 && break || sleep 2; done",
+      "if [ $READY -eq 0 ]; then echo 'ERROR: IAP tunnel did not become ready in 30s'; kill $TUNNEL_PID || true; exit 1; fi",
+      "echo 'Tunnel ready on 127.0.0.1:15986'",
+
+      # Write Ansible inventory
+      "INVENTORY=/tmp/packer_ansible_hosts.ini",
+      "cat > $INVENTORY << 'INI'",
+      "[windows]",
+      "winrm_target ansible_host=127.0.0.1 ansible_port=15986",
+      "",
+      "[windows:vars]",
+      "ansible_connection=winrm",
+      "ansible_winrm_scheme=https",
+      "ansible_winrm_port=15986",
+      "ansible_winrm_transport=basic",
+      "ansible_winrm_server_cert_validation=ignore",
+      "ansible_user=packer_user",
+      "ansible_become=no",
+      "INI",
+      "echo \"ansible_password=$PACKER_PW\" >> $INVENTORY",
+      "echo \"database_type=$DATABASE_TYPE\" >> $INVENTORY",
+      "echo 'Inventory written:'",
+      "cat $INVENTORY",
+
+      # Run the playbook
+      "echo 'Running Ansible playbook...'",
+      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i $INVENTORY -e ansible_password=$PACKER_PW -e database_type=$DATABASE_TYPE $PLAYBOOK_PATH",
+      "PLAYBOOK_EXIT=$?",
+
+      # Clean up tunnel
+      "echo 'Closing IAP tunnel...'",
+      "kill $TUNNEL_PID 2>/dev/null || true",
+      "wait $TUNNEL_PID 2>/dev/null || true",
+
+      "exit $PLAYBOOK_EXIT"
     ]
   }
 }

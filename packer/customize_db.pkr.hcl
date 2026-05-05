@@ -125,7 +125,7 @@ EOF
 build {
   sources = ["sources.googlecompute.customize_with_db"]
 
-  # Step 1: Confirm connection and prep environment
+  # Step 1: Confirm WinRM connection and prep the Windows environment
   provisioner "powershell" {
     inline = [
       "Write-Host 'Connected as:' $env:USERNAME",
@@ -137,45 +137,26 @@ build {
     ]
   }
 
-  # Step 2: Write a dynamic Ansible inventory with the real GCP instance IP.
+  # Step 2: Run Ansible playbook.
   #
-  # Root cause of the previous error: when use_proxy=false, the Packer Ansible
-  # plugin builds its own inventory but only writes the alias "default" as the
-  # hostname — it does NOT populate ansible_host. Ansible then resolves
-  # "default" to 127.0.0.1 (localhost) and the WinRM connection is refused.
+  # use_proxy is intentionally omitted (defaults to true).
+  # In proxy mode the Packer Ansible plugin correctly injects the real
+  # instance IP as ansible_host into the inventory it generates.
+  # Setting use_proxy=false causes Packer to write only the alias "default"
+  # with no ansible_host, which makes Ansible fall back to localhost — that
+  # was the root cause of the previous "Connection refused on localhost:5986".
   #
-  # Fix: use a shell-local provisioner to read the actual host that Packer
-  # connected to (available via PACKER_HOST or PACKER_WINRM_HOST env vars that
-  # the googlecompute plugin sets in the local process environment), then write
-  # an explicit ini inventory that Ansible uses instead.
-  provisioner "shell-local" {
-    environment_vars = [
-      "PACKER_PW=${var.packer_user_password}",
-      "DATABASE_TYPE=${var.database_type}"
-    ]
-    inline = [
-      "set -e",
-      "TARGET_HOST=\"$${PACKER_HOST:-$PACKER_WINRM_HOST}\"",
-      "if [ -z \"$TARGET_HOST\" ]; then echo 'ERROR: Neither PACKER_HOST nor PACKER_WINRM_HOST is set. Cannot build inventory.'; exit 1; fi",
-      "INVENTORY=/tmp/packer-winrm-inventory.ini",
-      "echo '[windows_target]' > $INVENTORY",
-      "printf '%s ansible_connection=winrm ansible_winrm_scheme=https ansible_winrm_port=5986 ansible_winrm_transport=basic ansible_winrm_server_cert_validation=ignore ansible_user=packer_user ansible_password=%s\\n' \"$TARGET_HOST\" \"$PACKER_PW\" >> $INVENTORY",
-      "echo 'Ansible inventory written to' $INVENTORY",
-      "cat $INVENTORY"
-    ]
-  }
-
-  # Step 3: Run database installation via Ansible using the explicit inventory
+  # The WinRM connection vars are passed via extra_arguments so Ansible
+  # knows to use WinRM rather than SSH for the actual task execution.
   provisioner "ansible" {
     playbook_file = "${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
     user          = "packer_user"
-    use_proxy     = false
     extra_arguments = [
-      "--inventory", "/tmp/packer-winrm-inventory.ini",
-      "-e", "ansible_winrm_server_cert_validation=ignore",
+      "-e", "ansible_connection=winrm",
       "-e", "ansible_winrm_scheme=https",
       "-e", "ansible_winrm_port=5986",
       "-e", "ansible_winrm_transport=basic",
+      "-e", "ansible_winrm_server_cert_validation=ignore",
       "-e", "ansible_user=packer_user",
       "-e", "ansible_password=${var.packer_user_password}",
       "-e", "database_type=${var.database_type}"

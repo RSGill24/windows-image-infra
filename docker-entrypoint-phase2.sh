@@ -2,7 +2,7 @@
 # ============================================================
 # docker-entrypoint-phase2.sh
 # Runs inside the Cloud Run Job container.
-# Sources Phase 1 hardened image and adds database layer.
+# Sources Phase 1 hardened image and adds Oracle Client layer.
 # ============================================================
 
 set -euo pipefail

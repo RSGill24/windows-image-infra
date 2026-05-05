@@ -137,12 +137,17 @@ build {
     ]
   }
 
-  # Step 2: Open a dedicated IAP tunnel on a fixed port and run ansible-playbook.
+  # Step 2: Run ansible-playbook via Packer's EXISTING IAP tunnel.
   #
-  # NOTE: Packer shell-local inline runs under /bin/sh -e (not bash).
-  # 'set -o pipefail' is bash-only — using it causes sh to exit code 2 immediately.
-  # 'interpreter' is only valid with 'script', not 'inline'.
-  # Fix: use 'set -eu' which is POSIX sh compatible and gives the same protection.
+  # KEY INSIGHT from logs:
+  #   Packer already opened an IAP tunnel to connect via WinRM and it is
+  #   still running while this shell-local provisioner executes.
+  #   Opening a SECOND tunnel to port 5986 on the same VM races against
+  #   gcloud's own 60s connection test and always loses.
+  #
+  # Fix:
+  #   Find the local port Packer's existing tunnel is bound to using ss/lsof,
+  #   then point Ansible at 127.0.0.1:<that_port>. No second tunnel needed.
   provisioner "shell-local" {
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
@@ -152,64 +157,52 @@ build {
       "PLAYBOOK_PATH=${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
     ]
     inline = [
-      # set -eu works in /bin/sh. set -o pipefail is bash-only — never use it here.
       "set -eu",
 
       # ------------------------------------------------------------------
-      # Pre-flight checks — fail fast before anything else runs
+      # Pre-flight checks
       # ------------------------------------------------------------------
-      "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found on local machine'; exit 1; }",
+      "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found'; exit 1; }",
       "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed. Run: pip install pywinrm'; exit 1; }",
       "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
       "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
       # ------------------------------------------------------------------
-      # 1. Detect the instance name and IP via gcloud
+      # Find the local port of Packer's existing IAP tunnel.
+      #
+      # Packer's tunnel process looks like:
+      #   gcloud compute start-iap-tunnel <instance> 5986 --local-host-port=127.0.0.1:<PORT>
+      #
+      # We extract <PORT> from the running process args.
       # ------------------------------------------------------------------
-      "echo 'Detecting instance from gcloud...'",
-      "INSTANCE_NAME=$(gcloud compute instances list --filter=\"tags.items:winrm AND zone:($ZONE)\" --format=\"value(name)\" --project=\"$PROJECT_ID\" | head -1)",
-      "if [ -z \"$INSTANCE_NAME\" ]; then echo 'ERROR: Could not detect instance name'; gcloud compute instances list --filter=\"zone:($ZONE)\" --format=\"table(name,status)\" --project=\"$PROJECT_ID\" || true; exit 1; fi",
-      "echo \"Instance name: $INSTANCE_NAME\"",
-      "",
-      "echo 'Fetching instance IP...'",
-      "INSTANCE_IP=$(gcloud compute instances describe \"$INSTANCE_NAME\" --zone=\"$ZONE\" --format=\"value(networkInterfaces[0].networkIP)\" --project=\"$PROJECT_ID\")",
-      "if [ -z \"$INSTANCE_IP\" ]; then echo 'ERROR: Could not get instance IP'; exit 1; fi",
-      "echo \"Instance internal IP: $INSTANCE_IP\"",
+      "echo 'Finding Packer IAP tunnel port...'",
+      "TUNNEL_PORT=$(ps aux | grep 'start-iap-tunnel' | grep -v grep | grep -o 'local-host-port=127.0.0.1:[0-9]*' | cut -d: -f2 | head -1)",
+
+      # Fallback: use ss to find any local port forwarding to 5986 on 127.0.0.1
+      "if [ -z \"$TUNNEL_PORT\" ]; then",
+      "  echo 'ps grep failed, trying ss fallback...'",
+      "  TUNNEL_PORT=$(ss -tlnp 2>/dev/null | awk '/127\\.0\\.0\\.1/{print $4}' | cut -d: -f2 | grep -v '^5986$' | head -1)",
+      "fi",
+
+      "if [ -z \"$TUNNEL_PORT\" ]; then echo 'ERROR: Could not find Packer IAP tunnel port'; ps aux | grep iap || true; exit 1; fi",
+      "echo \"Found Packer IAP tunnel on local port: $TUNNEL_PORT\"",
+
+      # Verify the port is actually open
+      "nc -z 127.0.0.1 \"$TUNNEL_PORT\" 2>/dev/null || { echo \"ERROR: Port $TUNNEL_PORT is not reachable\"; exit 1; }",
+      "echo \"Port $TUNNEL_PORT confirmed reachable\"",
 
       # ------------------------------------------------------------------
-      # 2. Open IAP tunnel on fixed port 15986
-      #    Trap fires on any exit so tunnel is always cleaned up.
-      # ------------------------------------------------------------------
-      "echo 'Opening dedicated IAP tunnel on port 15986...'",
-      "gcloud compute start-iap-tunnel \"$INSTANCE_NAME\" 5986 --local-host-port=127.0.0.1:15986 --zone=\"$ZONE\" --project=\"$PROJECT_ID\" &",
-      "TUNNEL_PID=$!",
-      "trap 'echo Closing IAP tunnel...; kill \"$TUNNEL_PID\" 2>/dev/null || true; wait \"$TUNNEL_PID\" 2>/dev/null || true' EXIT",
-      "echo \"Tunnel PID: $TUNNEL_PID\"",
-
-      # ------------------------------------------------------------------
-      # 3. Wait for tunnel to be ready (poll up to 60s)
-      # ------------------------------------------------------------------
-      "echo 'Waiting for tunnel to be ready...'",
-      "READY=0",
-      "for i in $(seq 1 30); do nc -z 127.0.0.1 15986 2>/dev/null && READY=1 && break || sleep 2; done",
-      "if [ \"$READY\" -eq 0 ]; then echo 'ERROR: IAP tunnel did not become ready in 60s'; exit 1; fi",
-      "echo 'Tunnel ready on 127.0.0.1:15986'",
-
-      # ------------------------------------------------------------------
-      # 4. Write Ansible inventory with actual instance IP
-      #    Ansible connects to the VM's IP through the IAP tunnel
-      #    ansible_password passed via -e flag only, not written to disk
+      # Write Ansible inventory pointing at Packer's existing tunnel port
       # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
-      "printf '[windows]\\nwinrm_target ansible_host=%s ansible_port=15986\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=15986\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$INSTANCE_IP\" > \"$INVENTORY\"",
+      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
       "printf 'database_type=%s\\n' \"$DATABASE_TYPE\" >> \"$INVENTORY\"",
-      "echo \"\"",
-      "echo 'Ansible inventory created with instance IP '$INSTANCE_IP':'",
+      "echo 'Inventory written:'",
       "cat \"$INVENTORY\"",
 
       # ------------------------------------------------------------------
-      # 5. Run the Ansible playbook
-      #    set +e so the shell does not die before $? is captured.
+      # Run the Ansible playbook
+      # set +e so $? is captured before the shell exits on failure
       # ------------------------------------------------------------------
       "echo 'Running Ansible playbook...'",
       "set +e",
@@ -218,7 +211,6 @@ build {
       "set -e",
       "echo \"Playbook finished with exit code: $PLAYBOOK_EXIT\"",
 
-      # Trap handles tunnel cleanup on EXIT automatically.
       "exit $PLAYBOOK_EXIT"
     ]
   }

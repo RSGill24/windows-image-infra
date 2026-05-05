@@ -139,13 +139,11 @@ build {
 
   # Step 2: Open a dedicated IAP tunnel on a fixed port and run ansible-playbook.
   #
-  # IMPORTANT: Packer shell-local uses /bin/sh by default.
-  # 'set -o pipefail' is bash-only and causes sh to exit with code 2 immediately.
-  # Fix: set interpreter = ["/bin/bash", "-c"] to force bash.
+  # NOTE: Packer shell-local inline runs under /bin/sh -e (not bash).
+  # 'set -o pipefail' is bash-only — using it causes sh to exit code 2 immediately.
+  # 'interpreter' is only valid with 'script', not 'inline'.
+  # Fix: use 'set -eu' which is POSIX sh compatible and gives the same protection.
   provisioner "shell-local" {
-    # Force bash — /bin/sh does not support pipefail and will exit code 2
-    interpreter = ["/bin/bash", "-c"]
-
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
       "DATABASE_TYPE=${var.database_type}",
@@ -154,10 +152,11 @@ build {
       "PLAYBOOK_PATH=${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
     ]
     inline = [
-      "set -euo pipefail",
+      # set -eu works in /bin/sh. set -o pipefail is bash-only — never use it here.
+      "set -eu",
 
       # ------------------------------------------------------------------
-      # Pre-flight checks — fail fast before the VM is even touched
+      # Pre-flight checks — fail fast before anything else runs
       # ------------------------------------------------------------------
       "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found on local machine'; exit 1; }",
       "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed. Run: pip install pywinrm'; exit 1; }",
@@ -174,8 +173,7 @@ build {
 
       # ------------------------------------------------------------------
       # 2. Open IAP tunnel on fixed port 15986
-      #    Trap fires on any exit — success, failure, or interruption —
-      #    so the tunnel is always cleaned up.
+      #    Trap fires on any exit so tunnel is always cleaned up.
       # ------------------------------------------------------------------
       "echo 'Opening dedicated IAP tunnel on port 15986...'",
       "gcloud compute start-iap-tunnel \"$INSTANCE_NAME\" 5986 --local-host-port=127.0.0.1:15986 --zone=\"$ZONE\" --project=\"$PROJECT_ID\" &",
@@ -194,7 +192,7 @@ build {
 
       # ------------------------------------------------------------------
       # 4. Write Ansible inventory using printf
-      #    ansible_password is passed via -e flag only, not written to disk
+      #    ansible_password passed via -e flag only, not written to disk
       # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
       "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=15986\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=15986\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' > \"$INVENTORY\"",
@@ -204,8 +202,7 @@ build {
 
       # ------------------------------------------------------------------
       # 5. Run the Ansible playbook
-      #    set +e around the call so $? is captured before set -e can
-      #    kill the shell on a non-zero exit code.
+      #    set +e so the shell does not die before $? is captured.
       # ------------------------------------------------------------------
       "echo 'Running Ansible playbook...'",
       "set +e",
@@ -214,7 +211,7 @@ build {
       "set -e",
       "echo \"Playbook finished with exit code: $PLAYBOOK_EXIT\"",
 
-      # Trap handles tunnel cleanup. Exit with playbook's code.
+      # Trap handles tunnel cleanup on EXIT automatically.
       "exit $PLAYBOOK_EXIT"
     ]
   }

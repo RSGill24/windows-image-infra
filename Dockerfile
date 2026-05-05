@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-transport-https \
     python3 \
     ansible \
+    procps \
     python3-winrm \
     && rm -rf /var/lib/apt/lists/*
 

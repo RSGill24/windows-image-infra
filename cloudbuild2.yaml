@@ -44,7 +44,6 @@ steps:
         exit 1
       fi
       
-      echo "Database Type: $$client"
     
       
       echo "$$client" > /workspace/client.txt

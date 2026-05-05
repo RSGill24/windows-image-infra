@@ -41,37 +41,20 @@ echo "[INFO] Installation Target Dir: ${INSTALLATION_TARGET_DIR}"
 echo "[INFO] Installation Source Dir: ${INSTALLATION_SOURCE_DIR}"
 echo "[INFO] Installation Entry Script: ${INSTALLATION_ENTRY_SCRIPT}"
 
-# ── Load database type from config.yaml ──────────────────────
 CONFIG_FILE="./config.yaml"
 
 if [ -f "$CONFIG_FILE" ]; then
   echo "[INFO] Loading oracle client from $CONFIG_FILE..."
-  DATABASE_TYPE=$(grep -E "^oracle_file:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '\n\r')
-  if [ -z "$DATABASE_TYPE" ]; then
+ client_type=$(grep -E "^oracle_file:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '\n\r')
+  if [ -z "$client_type" ]; then
     echo "[WARN] oracle_client not found in config.yaml, defaulting to 'none'"
-    DATABASE_TYPE="none"
+   client_type="none"
   fi
 else
   echo "[WARN] Config file $CONFIG_FILE not found, defaulting to 'none'"
-  DATABASE_TYPE="none"
+  client_type="none"
 fi
 
-# Validate database type
-if [[ "$DATABASE_TYPE" != "mysql" && "$DATABASE_TYPE" != "oracle" && "$DATABASE_TYPE" != "none" ]]; then
-  echo "[ERROR] Invalid database_type '${DATABASE_TYPE}'. Must be 'mysql', 'oracle', or 'none'"
-  exit 1
-fi
-
-# Allow override via environment variable
-if [ -n "${OVERRIDE_DATABASE_TYPE:-}" ]; then
-  echo "[INFO] Overriding database type via OVERRIDE_DATABASE_TYPE env var"
-  DATABASE_TYPE="${OVERRIDE_DATABASE_TYPE}"
-fi
-
-export DATABASE_TYPE
-echo "[INFO] Database Type: ${DATABASE_TYPE}"
-
-# ── Display configuration summary ────────────────────────────
 echo ""
 echo "Configuration Summary:"
 echo "─────────────────────────────────────────────────────"
@@ -82,7 +65,7 @@ echo "  IMAGE_FAMILY:            ${IMAGE_FAMILY}"
 echo "  ZONE:                    ${ZONE}"
 echo "  MACHINE_TYPE:            ${MACHINE_TYPE}"
 echo "  SERVICE_ACCOUNT_EMAIL:   ${SERVICE_ACCOUNT_EMAIL}"
-echo "  DATABASE_TYPE:           ${DATABASE_TYPE}"
+echo "  client_type:             ${client_type}"
 echo "  PACKER_TEMPLATE:         ${PACKER_TEMPLATE}"
 echo "─────────────────────────────────────────────────────"
 echo ""
@@ -143,7 +126,6 @@ if VALIDATION_OUTPUT=$(packer validate \
   -var "image_family=${IMAGE_FAMILY}" \
   -var "machine_type=${MACHINE_TYPE}" \
   -var "zone=${ZONE}" \
-  -var "database_type=${DATABASE_TYPE}" \
   -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
   -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \
@@ -179,7 +161,6 @@ if packer build \
   -var "image_family=${IMAGE_FAMILY}" \
   -var "machine_type=${MACHINE_TYPE}" \
   -var "zone=${ZONE}" \
-  -var "database_type=${DATABASE_TYPE}" \
   -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}" \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
   -var "installation_entry_script=${INSTALLATION_ENTRY_SCRIPT}" \

@@ -9,7 +9,7 @@
 set -euo pipefail
 
 echo "========================================================"
-echo " Phase 2: Windows Database Customization Builder"
+echo " Phase 2: Windows client Customization Builder"
 echo " $(date -u)"
 echo "========================================================"
 echo "[INFO] Working directory: $(pwd)"
@@ -32,7 +32,7 @@ WINRM_SECRET="packer-winrm-password"
 # ── Optional environment variables with defaults ─────────────
 INSTALLATION_TARGET_DIR="C:/Users/packer_user/installation/"
 INSTALLATION_SOURCE_DIR="./scripts"
-INSTALLATION_ENTRY_SCRIPT="database_orchestrator.ps1"
+INSTALLATION_ENTRY_SCRIPT="oracle.ps1"
 
 # ── CRITICAL: Phase 2 uses customize_db.pkr.hcl ONLY ────────
 PACKER_TEMPLATE="customize_db.pkr.hcl"
@@ -45,10 +45,10 @@ echo "[INFO] Installation Entry Script: ${INSTALLATION_ENTRY_SCRIPT}"
 CONFIG_FILE="./config.yaml"
 
 if [ -f "$CONFIG_FILE" ]; then
-  echo "[INFO] Loading database configuration from $CONFIG_FILE..."
-  DATABASE_TYPE=$(grep -E "^database_type:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '\n\r')
+  echo "[INFO] Loading oracle client from $CONFIG_FILE..."
+  DATABASE_TYPE=$(grep -E "^oracle_file:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '\n\r')
   if [ -z "$DATABASE_TYPE" ]; then
-    echo "[WARN] database_type not found in config.yaml, defaulting to 'none'"
+    echo "[WARN] oracle_client not found in config.yaml, defaulting to 'none'"
     DATABASE_TYPE="none"
   fi
 else
@@ -170,7 +170,7 @@ fi
 echo "[INFO] gcloud authentication verified"
 
 # ── Run Packer build ──────────────────────────────────────────
-echo "Starting Packer build with database customization..."
+echo "Starting Packer build with oracle customization..."
 if packer build \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \

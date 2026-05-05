@@ -139,19 +139,41 @@ build {
 
   # Step 2: Run Ansible playbook.
   #
-  # The playbook already defines all WinRM connection vars and reads
-  # ansible_password from env PACKER_PW and database_type from env DATABASE_TYPE.
-  # We pass those via ansible_env_vars so Ansible's lookup('env', ...) works.
+  # Root cause confirmed from logs:
+  #   "ESTABLISH WINRM CONNECTION TO 127.0.0.1"
   #
-  # We also pass them explicitly via -e to override in case the env lookup
-  # fails, ensuring the password and database type are always set.
+  # Packer uses IAP which creates a local tunnel: 127.0.0.1:<iap_port> -> VM:5986
+  # In proxy mode, Packer writes 127.0.0.1 as ansible_host into the inventory,
+  # which is correct — Ansible SHOULD connect to 127.0.0.1 through the IAP tunnel.
+  # But Ansible is using port 5986 instead of the IAP tunnel's local port.
   #
-  # use_proxy is omitted (defaults to true) so Packer correctly injects
-  # the real GCP instance IP as ansible_host into the generated inventory.
+  # The fix: use_proxy=false so Ansible does NOT use Packer's proxy/inventory
+  # at all. Instead we pass the connection entirely through the playbook vars
+  # which already have all WinRM settings defined. We must also pass
+  # ansible_host explicitly pointing to 127.0.0.1 and ansible_port pointing
+  # to the IAP tunnel port that Packer opened locally.
+  #
+  # The IAP tunnel local port is exposed by Packer as: {{ build `PackerHTTPPort` }}
+  # but for WinRM over IAP the correct approach is to let Packer handle
+  # the tunnel and tell Ansible to connect through it via 127.0.0.1 and
+  # the forwarded port. Packer exposes this via the GeneratedData.
+  #
+  # Since we cannot get the dynamic IAP port at prepare time, the cleanest
+  # solution is to use use_proxy=false and pass the WinRM details directly,
+  # letting pywinrm connect to 127.0.0.1 on the same port Packer tunneled.
   provisioner "ansible" {
     playbook_file = "${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
     user          = "packer_user"
+    use_proxy     = false
     extra_arguments = [
+      "-e", "ansible_host=127.0.0.1",
+      "-e", "ansible_port=5986",
+      "-e", "ansible_connection=winrm",
+      "-e", "ansible_winrm_scheme=https",
+      "-e", "ansible_winrm_port=5986",
+      "-e", "ansible_winrm_transport=basic",
+      "-e", "ansible_winrm_server_cert_validation=ignore",
+      "-e", "ansible_user=packer_user",
       "-e", "ansible_password=${var.packer_user_password}",
       "-e", "database_type=${var.database_type}",
       "-vvv"

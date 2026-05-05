@@ -17,8 +17,6 @@ substitutions:
 
 steps:
 
-# ── Step 0: Load Database Configuration from config.yaml ──────────────
-# Reads the database_type from config.yaml and exports as env var
 
 - id: 'load-config'
   name: 'gcr.io/cloud-builders/gke-deploy'
@@ -28,7 +26,7 @@ steps:
   - |
       set -euo pipefail
 
-      echo "=== Loading Database Configuration from YAML ==="
+      echo "=== Loading oracle client ==="
 
       if [ -f "config.yaml" ]; then
         CONFIG_PATH="config.yaml"
@@ -39,26 +37,18 @@ steps:
         exit 1
       fi
 
-      echo "Reading database configuration from $$CONFIG_PATH"
+      echo "Reading config file"
       
-      # Parse YAML safely using grep and awk
-      DATABASE_TYPE=$(grep -E "^database_type:" "$$CONFIG_PATH" | awk '{print $2}' | tr -d '\n\r')
-      
-      if [ -z "$$DATABASE_TYPE" ]; then
-        echo "ERROR: database_type not found in config.yaml"
+      if [ -z "$$client" ]; then
+        echo "ERROR: client not found in config.yaml"
         exit 1
       fi
       
-      echo "Database Type: $$DATABASE_TYPE"
+      echo "Database Type: $$client"
+    
       
-      # Validate database type
-      if [[ "$$DATABASE_TYPE" != "mysql" && "$$DATABASE_TYPE" != "oracle" && "$$DATABASE_TYPE" != "none" ]]; then
-        echo "ERROR: Invalid database_type '$$DATABASE_TYPE'. Must be 'mysql', 'oracle', or 'none'"
-        exit 1
-      fi
-      
-      echo "$$DATABASE_TYPE" > /workspace/database_type.txt
-      cat /workspace/database_type.txt
+      echo "$$client" > /workspace/client.txt
+      cat /workspace/client.txt
 
 
 

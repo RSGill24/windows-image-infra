@@ -155,7 +155,7 @@ build {
     ]
     inline = [
       "set -e",
-      "TARGET_HOST=\"${PACKER_HOST:-$PACKER_WINRM_HOST}\"",
+      "TARGET_HOST=\"$${PACKER_HOST:-$PACKER_WINRM_HOST}\"",
       "if [ -z \"$TARGET_HOST\" ]; then echo 'ERROR: Neither PACKER_HOST nor PACKER_WINRM_HOST is set. Cannot build inventory.'; exit 1; fi",
       "INVENTORY=/tmp/packer-winrm-inventory.ini",
       "echo '[windows_target]' > $INVENTORY",

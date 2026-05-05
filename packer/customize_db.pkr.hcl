@@ -161,11 +161,11 @@ build {
     inline = [
       "set -e",
 
-      # The gcloud start-iap-tunnel process is still running while provisioners
-      # execute. Extract the instance name from its command line.
-      "echo 'Detecting instance name from running IAP tunnel process...'",
-      "INSTANCE_NAME=$(ps aux | grep 'start-iap-tunnel' | grep -v grep | awk '{for(i=1;i<=NF;i++) if($i==\"start-iap-tunnel\") print $(i+1)}' | head -1)",
-      "if [ -z \"$INSTANCE_NAME\" ]; then echo 'ERROR: Could not detect instance name from IAP tunnel process'; ps aux | grep -i iap || true; exit 1; fi",
+      # Find the running Packer instance by querying gcloud.
+      # Packer instances are tagged with 'winrm' and are in the specified zone.
+      "echo 'Detecting instance name from running gcloud instances...'",
+      "INSTANCE_NAME=$(gcloud compute instances list --filter=\"tags.items:winrm AND zone:${ZONE}\" --format=\"value(name)\" | head -1)",
+      "if [ -z \"$INSTANCE_NAME\" ]; then echo 'ERROR: Could not detect instance name from gcloud'; gcloud compute instances list --filter=\"zone:${ZONE}\" --format=\"table(name,status)\" || true; exit 1; fi",
       "echo \"Instance name: $INSTANCE_NAME\"",
 
       # Open a second IAP tunnel on fixed port 15986

@@ -3,14 +3,7 @@
   hosts: all
   gather_facts: yes
   vars:
-    ansible_connection: winrm
-    ansible_winrm_transport: basic
-    ansible_winrm_server_cert_validation: ignore
-    ansible_winrm_port: 5986
-    ansible_winrm_scheme: https
-    ansible_user: packer_user
-    ansible_password: "{{ lookup('env', 'PACKER_PW') }}"
-    database_type: "{{ lookup('env', 'DATABASE_TYPE') | default('none') }}"
+    database_type: "{{ database_type | default('none') }}"
     installation_target_dir: "C:/Users/packer_user/installation/"
 
   tasks:
@@ -20,13 +13,13 @@
           Database Type: {{ database_type }}
           Target Directory: {{ installation_target_dir }}
           Ansible Host: {{ inventory_hostname }}
-          Connection: WinRM (Port 5986)
+          Connection: WinRM
 
-    - name: Install MySQL
+    - name: Install MySQL Client
       include_tasks: install_mysql_tasks.yml
       when: database_type | lower == 'mysql'
 
-    - name: Install Oracle
+    - name: Install Oracle Client
       include_tasks: install_oracle_tasks.yml
       when: database_type | lower == 'oracle'
 

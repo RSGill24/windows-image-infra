@@ -1,100 +1,88 @@
 ---
-# MySQL Installation Tasks via Ansible
-# Downloads and installs MySQL Server 8.0 on Windows
+# MySQL Client Installation Tasks via Ansible
+# Installs MySQL Client tools using Chocolatey on Windows
 
-- name: Display MySQL Installation Starting
+- name: Display MySQL Client Installation Starting
   debug:
     msg: |
       ╔════════════════════════════════════════╗
-      ║   Installing MySQL Server 8.0          ║
+      ║   Installing MySQL Client Tools 8.0    ║
       ╠════════════════════════════════════════╣
-      ║ Download: MySQL Community Edition 8.0
-      ║ Port: 3306
-      ║ Service: MySQL80
+      ║ Method: Chocolatey Package Manager
+      ║ Tools: mysql, mysqldump, mysqlcheck
+      ║ Installation: Client Only
       ╚════════════════════════════════════════╝
 
-- name: Create temporary directory for MySQL download
-  win_file:
-    path: "C:\\Temp"
-    state: directory
+# ---------------------------------------------------------------
+# Step 1: Install Chocolatey (if not already installed)
+# ---------------------------------------------------------------
+- name: Check if Chocolatey is installed
+  win_command: choco --version
+  register: choco_version
+  failed_when: false
+  ignore_errors: yes
 
-- name: Download MySQL 8.0 installer
-  win_get_url:
-    url: "https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.36-winx64.msi"
-    dest: "C:\\Temp\\mysql-installer.msi"
-    timeout: 300
-  register: mysql_download
-  failed_when: mysql_download.failed
+- name: Install Chocolatey
+  win_shell: |
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    Write-Host "Chocolatey installed successfully"
+  when: choco_version.rc != 0
+  register: choco_install
 
-- name: Verify MySQL installer downloaded
-  win_stat:
-    path: "C:\\Temp\\mysql-installer.msi"
-  register: mysql_installer_stat
-  failed_when: not mysql_installer_stat.stat.exists
-
-- name: Install MySQL via MSI
-  win_package:
-    path: "C:\\Temp\\mysql-installer.msi"
-    product_id: "MySQL 8.0"
-    state: present
-    arguments: 
-      - "INSTALLDIR=C:\\Program Files\\MySQL\\MySQL Server 8.0"
-      - "PORT=3306"
-      - "SKIPINITDB=1"
-  register: mysql_install
-  failed_when: mysql_install.failed
-
-- name: Create MySQL service
-  win_service:
-    name: MySQL80
-    display_name: "MySQL80"
-    path: "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysqld.exe"
-    state: started
-    start_mode: auto
-  register: mysql_service
-  failed_when: mysql_service.failed
-
-- name: Verify MySQL service is running
-  win_service_info:
-    name: MySQL80
-  register: mysql_service_info
-
-- name: Display MySQL service status
+- name: Display Chocolatey installation status
   debug:
-    msg: "MySQL80 service status: {{ mysql_service_info.services[0].state }}"
+    msg: "Chocolatey {{ 'installed' if choco_version.rc != 0 else 'already installed' }}"
 
-- name: Configure Windows Firewall for MySQL
-  win_firewall_rule:
-    name: "MySQL on port 3306"
-    direction: in
-    action: allow
-    protocol: tcp
-    localport: 3306
+# ---------------------------------------------------------------
+# Step 2: Install MySQL Client via Chocolatey
+# ---------------------------------------------------------------
+- name: Install MySQL Client via Chocolatey
+  win_chocolatey:
+    name: mysql
     state: present
-    enabled: yes
+  register: mysql_install
 
-- name: Verify MySQL connectivity on port 3306
-  win_telnet:
-    host: localhost
-    port: 3306
-  register: mysql_port_check
-  failed_when: mysql_port_check.failed
-  retries: 3
-  delay: 5
+- name: MySQL client installation confirmed
+  debug:
+    msg: "MySQL client installed successfully"
 
-- name: Remove MySQL installer
-  win_file:
-    path: "C:\\Temp\\mysql-installer.msi"
-    state: absent
+# ---------------------------------------------------------------
+# Step 3: Verify installation
+# ---------------------------------------------------------------
+- name: Verify mysql is available
+  win_command: mysql --version
+  register: mysql_version
+  failed_when: false
+  ignore_errors: yes
 
-- name: Display MySQL Installation Complete
+- name: Display MySQL Client version
+  debug:
+    msg: "MySQL Client version: {{ mysql_version.stdout | default('Unable to determine version') }}"
+
+- name: Verify mysqldump is available
+  win_command: mysqldump --version
+  register: mysqldump_check
+  failed_when: false
+  ignore_errors: yes
+
+- name: Display mysqldump version
+  debug:
+    msg: "mysqldump version: {{ mysqldump_check.stdout | default('Unable to determine version') }}"
+
+- name: Display MySQL Client Installation Complete
   debug:
     msg: |
       ╔════════════════════════════════════════╗
-      ║   MySQL Installation Complete          ║
+      ║   MySQL Client Installation Complete   ║
       ╠════════════════════════════════════════╣
-      ║ ✓ Service: MySQL80 (Running)
-      ║ ✓ Port: 3306 (Firewall Open)
-      ║ ✓ Auto-start: Enabled
+      ║ ✓ Installation Method: Chocolatey
+      ║ ✓ Tools: mysql, mysqldump, mysqlcheck
+      ║ ✓ PATH: Automatically configured
       ║ Status: SUCCESS
       ╚════════════════════════════════════════╝
+
+      Next steps:
+      1. Run: mysql -h <hostname> -u <username> -p
+      2. Test: mysql --version
+      3. Backup: mysqldump -u <user> -h <host> -p <database> > backup.sql

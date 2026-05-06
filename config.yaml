@@ -18,5 +18,5 @@
 #   database_type: mysql
 #   database_type: oracle
 #   database_type: none
-database_type: mysql
+database_type: oracle
 

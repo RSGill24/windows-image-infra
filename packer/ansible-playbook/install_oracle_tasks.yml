@@ -1,163 +1,137 @@
 ---
-# Oracle Installation Tasks via Ansible
-# Downloads and installs Oracle Database 23c Free on Windows
+# Oracle Client Installation Tasks via Ansible
+# Downloads Oracle Instant Client 19.30 from GCS bucket and installs on Windows
 
-- name: Display Oracle Installation Starting
+- name: Display Oracle Client Installation Starting
   debug:
     msg: |
       ╔════════════════════════════════════════╗
-      ║   Installing Oracle Database 23c Free  ║
+      ║   Installing Oracle Client 19.30       ║
       ╠════════════════════════════════════════╣
-      ║ Download: Oracle Database Free Edition
-      ║ Version: 23c
-      ║ Listener Port: 1521
-      ║ Enterprise Manager: 5500
+      ║ Source: GCS Bucket
+      ║ Package: Instant Client Basic 19.30
+      ║ Installation: Client Only
       ╚════════════════════════════════════════╝
 
-- name: Create temporary directories for Oracle
+# ---------------------------------------------------------------
+# Step 1: Create required directories
+# ---------------------------------------------------------------
+- name: Create required directories
   win_file:
     path: "{{ item }}"
     state: directory
   loop:
     - "C:\\Temp"
     - "C:\\Temp\\oracle_extract"
-    - "C:\\Oracle"
+    - "C:\\Oracle\\client"
+    - "C:\\Oracle\\client\\network\\admin"
 
-- name: Download Oracle 23c Free Edition
-  win_get_url:
-    url: "https://download.oracle.com/otn/nt/oracle23/OracleDatabase23Free_Windows.zip"
-    dest: "C:\\Temp\\oracle23c-free.zip"
-    timeout: 600
+# ---------------------------------------------------------------
+# Step 2: Download Oracle Instant Client from GCS bucket
+# ---------------------------------------------------------------
+- name: Download Oracle Instant Client from GCS bucket
+  win_shell: |
+    $dest = "C:\Temp\oracle-client.zip"
+    $url = "https://storage.googleapis.com/org-sec-agents-bucket/oracle/instantclient-basic-windows.x64-19.30.0.0.0dbru.zip"
+    Write-Host "Downloading Oracle Instant Client from GCS..."
+    $client = New-Object System.Net.WebClient
+    $client.DownloadFile($url, $dest)
+    Write-Host "Download complete"
   register: oracle_download
-  ignore_errors: yes
-  failed_when: false
+  failed_when: oracle_download.rc != 0
 
-- name: Check if Oracle installer exists
+- name: Verify Oracle zip downloaded
   win_stat:
-    path: "C:\\Temp\\oracle23c-free.zip"
+    path: "C:\\Temp\\oracle-client.zip"
   register: oracle_zip_stat
+  failed_when: not oracle_zip_stat.stat.exists
 
-- name: Extract Oracle installer (if exists)
-  win_unzip:
-    src: "C:\\Temp\\oracle23c-free.zip"
-    dest: "C:\\Temp\\oracle_extract"
-    rm: no
-  when: oracle_zip_stat.stat.exists
+# ---------------------------------------------------------------
+# Step 3: Extract and install
+# ---------------------------------------------------------------
+- name: Extract Oracle Instant Client
+  win_shell: |
+    Expand-Archive -Path "C:\Temp\oracle-client.zip" -DestinationPath "C:\Temp\oracle_extract" -Force
+    Write-Host "Extraction complete"
   register: oracle_extract
+  failed_when: oracle_extract.rc != 0
 
-- name: Find Oracle setup.exe
+- name: Find extracted Oracle directory
   win_find:
     path: "C:\\Temp\\oracle_extract"
-    patterns: "setup.exe"
-    recurse: yes
-  register: oracle_setup_exe
-  when: oracle_zip_stat.stat.exists
+    patterns: "instantclient*"
+    file_type: directory
+    recurse: no
+  register: oracle_extracted_dir
+  failed_when: oracle_extracted_dir.files | length == 0
 
-- name: Install Oracle Database (if setup found)
-  win_command: |
-    "{{ oracle_setup_exe.files[0].path }}" /auditInstallDir=C:\Oracle\product\23c /silent
-  when: 
-    - oracle_zip_stat.stat.exists
-    - oracle_setup_exe.files | length > 0
-  register: oracle_install
-  failed_when: false
-  timeout: 1800
+- name: Copy Oracle Client files to installation directory
+  win_shell: |
+    $src = "{{ oracle_extracted_dir.files[0].path }}"
+    Get-ChildItem -Path $src | Copy-Item -Destination "C:\Oracle\client" -Recurse -Force
+    Write-Host "Oracle Client files copied to C:\Oracle\client"
+  register: oracle_copy
+  failed_when: oracle_copy.rc != 0
 
-- name: Display Oracle installation result
-  debug:
-    msg: "Oracle installation completed with exit code: {{ oracle_install.rc | default('N/A') }}"
-  when: oracle_zip_stat.stat.exists
-
-- name: Display Oracle manual setup instructions (if not auto-installed)
-  debug:
-    msg: |
-      ⚠ Oracle installation notes:
-      - Automated download may require authentication
-      - Pre-staged installer location: C:\Temp\oracle23c-free.zip
-      - Manual setup required from: https://www.oracle.com/database/free/
-      - Setup executable: Setup.exe in extracted directory
-  when: not oracle_zip_stat.stat.exists
-
+# ---------------------------------------------------------------
+# Step 4: Set environment variables
+# ---------------------------------------------------------------
 - name: Set ORACLE_HOME environment variable
-  win_environment:
-    name: ORACLE_HOME
-    value: "C:\\Oracle\\product\\23c"
-    level: machine
-    state: present
+  win_shell: |
+    [Environment]::SetEnvironmentVariable('ORACLE_HOME', 'C:\Oracle\client', 'Machine')
+    Write-Host "ORACLE_HOME set to C:\Oracle\client"
 
-- name: Add ORACLE_HOME/bin to PATH
-  win_path:
-    elements:
-      - "C:\\Oracle\\product\\23c\\bin"
-    scope: machine
-    state: present
+- name: Set TNS_ADMIN environment variable
+  win_shell: |
+    [Environment]::SetEnvironmentVariable('TNS_ADMIN', 'C:\Oracle\client\network\admin', 'Machine')
+    Write-Host "TNS_ADMIN set to C:\Oracle\client\network\admin"
 
-- name: Configure Windows Firewall for Oracle Listener (1521)
-  win_firewall_rule:
-    name: "Oracle Listener on port 1521"
-    direction: in
-    action: allow
-    protocol: tcp
-    localport: 1521
-    state: present
-    enabled: yes
+- name: Add Oracle Client to system PATH
+  win_shell: |
+    $path = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    if ($path -notlike '*Oracle*client*') {
+      [Environment]::SetEnvironmentVariable('PATH', $path + ';C:\Oracle\client', 'Machine')
+      Write-Host "PATH updated with Oracle client"
+    } else {
+      Write-Host "PATH already contains Oracle client"
+    }
 
-- name: Configure Windows Firewall for Oracle EM Express (5500)
-  win_firewall_rule:
-    name: "Oracle Enterprise Manager on port 5500"
-    direction: in
-    action: allow
-    protocol: tcp
-    localport: 5500
-    state: present
-    enabled: yes
-
-- name: Check for Oracle services
-  win_service_info:
-    name: "OracleServiceXE"
-  register: oracle_service_info
-  failed_when: false
-  ignore_errors: yes
-
-- name: Start Oracle service (if exists)
-  win_service:
-    name: OracleServiceXE
-    state: started
-    start_mode: auto
-  when: 
-    - oracle_service_info.services | length > 0
-  register: oracle_service_start
-  failed_when: false
-
-- name: Create Oracle directories
-  win_file:
-    path: "{{ item }}"
-    state: directory
-  loop:
-    - "C:\\Oracle\\product\\23c\\bin"
-    - "C:\\Oracle\\product\\23c\\network\\admin"
-  failed_when: false
-  ignore_errors: yes
-
-- name: Display Oracle Installation Complete
-  debug:
-    msg: |
-      ╔════════════════════════════════════════╗
-      ║   Oracle Installation Complete         ║
-      ╠════════════════════════════════════════╣
-      ║ ✓ ORACLE_HOME: C:\Oracle\product\23c
-      ║ ✓ Firewall: Ports 1521, 5500 open
-      ║ ✓ Environment: PATH updated
-      ║ Note: Further configuration may be needed
-      ║ Status: SETUP READY
-      ╚════════════════════════════════════════╝
-
-- name: Cleanup Oracle temporary files
+# ---------------------------------------------------------------
+# Step 5: Cleanup temp files
+# ---------------------------------------------------------------
+- name: Remove temporary files
   win_file:
     path: "{{ item }}"
     state: absent
   loop:
-    - "C:\\Temp\\oracle23c-free.zip"
+    - "C:\\Temp\\oracle-client.zip"
     - "C:\\Temp\\oracle_extract"
   failed_when: false
-  ignore_errors: yes
+
+# ---------------------------------------------------------------
+# Step 6: Verify installation
+# ---------------------------------------------------------------
+- name: Verify Oracle client directory has files
+  win_find:
+    path: "C:\\Oracle\\client"
+    patterns: "*.dll"
+    recurse: no
+  register: oracle_dlls
+  failed_when: oracle_dlls.files | length == 0
+
+- name: Display Oracle Client Installation Complete
+  debug:
+    msg: |
+      ╔════════════════════════════════════════╗
+      ║   Oracle Client Installation Complete  ║
+      ╠════════════════════════════════════════╣
+      ║ ✓ Location: C:\Oracle\client
+      ║ ✓ ORACLE_HOME: C:\Oracle\client
+      ║ ✓ TNS_ADMIN: C:\Oracle\client\network\admin
+      ║ ✓ PATH: Updated (System-wide)
+      ║ Status: SUCCESS
+      ╚════════════════════════════════════════╝
+
+      Next steps:
+      1. Add tnsnames.ora to C:\Oracle\client\network\admin\
+      2. Configure your application to use ORACLE_HOME

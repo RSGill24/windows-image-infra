@@ -139,30 +139,31 @@ build {
 
   # Step 2: Run ansible-playbook reusing Packer's existing IAP tunnel.
   #
-  # Project structure (packer/ directory):
-  #   packer/
+  # Container layout (WORKDIR /workspace in Dockerfile):
+  #   /workspace/
   #     customize_db.pkr.hcl
   #     ansible-playbook/
-  #       database_installation.yml   <- the playbook
+  #       database_installation.yml   <- PLAYBOOK_PATH
   #       install_mysql_tasks.yml
   #       install_oracle_tasks.yml
-  #     scripts/                      <- installation_source_dir = ./scripts
+  #     scripts/
   #
-  # Playbook path: ./scripts/../ansible-playbook/database_installation.yml
-  # = ./ansible-playbook/database_installation.yml  ✅ confirmed by pre-flight log
+  # Packer tunnel confirmed from logs:
+  #   gcloud compute start-iap-tunnel ... --local-host-port=localhost:8372
+  #   NOTE: Packer uses "localhost" not "127.0.0.1" as the bind address.
   #
-  # WHY we reuse Packer's tunnel instead of opening a second one:
-  #   gcloud runs its own "Testing if tunnel connection works" check that takes
-  #   ~60s before a new tunnel is usable. Our nc poll expired in that window.
-  #   Packer's WinRM tunnel is already open and proven working (PowerShell ✅).
-  #   We just need to find which local port it bound to and reuse it.
+  # Port detection: read directly from /proc/*/cmdline (no ps/ss needed).
+  #   cat /proc/*/cmdline outputs null-separated bytes per process.
+  #   tr '\0' '\n' splits to one arg per line.
+  #   grep finds the --local-host-port=localhost:<PORT> arg.
+  #   grep -o '[0-9]*$' extracts just the port number from the end.
   provisioner "shell-local" {
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
       "DATABASE_TYPE=${var.database_type}",
       "ZONE=${var.zone}",
       "PROJECT_ID=${var.project_id}",
-      "PLAYBOOK_PATH=${var.installation_source_dir}/../ansible-playbook/database_installation.yml"
+      "PLAYBOOK_PATH=/workspace/ansible-playbook/database_installation.yml"
     ]
     inline = [
       "set -eu",
@@ -171,48 +172,36 @@ build {
       # Pre-flight checks
       # ------------------------------------------------------------------
       "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found'; exit 1; }",
-      "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed. Run: pip install pywinrm'; exit 1; }",
+      "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed'; exit 1; }",
       "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
       "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
       # ------------------------------------------------------------------
-      # Find the local port Packer's existing IAP tunnel is bound to.
+      # Find Packer's IAP tunnel port from /proc cmdline.
       #
-      # Packer passes --local-host-port=127.0.0.1:<PORT> to gcloud.
-      # That process is still running while this provisioner executes.
-      # We extract the port from its command line — no second tunnel needed.
-      #
-      # Method 1: grep the gcloud process args for the local-host-port flag
-      # Method 2: fallback — scan ss for any 127.0.0.1 listener that accepts
-      #           a connection (i.e. the tunnel is actually up)
+      # Each /proc/<pid>/cmdline has args separated by null bytes (\0).
+      # We pipe all of them through tr to get one arg per line, then grep
+      # for the local-host-port argument and extract the port number.
+      # Works with both "localhost:<PORT>" and "127.0.0.1:<PORT>".
       # ------------------------------------------------------------------
-      "echo 'Finding Packer IAP tunnel local port...'",
-      "echo 'Running processes containing iap-tunnel:'",
-      "ps aux | grep 'iap-tunnel' | grep -v grep || true",
-
-      "TUNNEL_PORT=''",
-
-      "# Method 1: extract from --local-host-port=127.0.0.1:<PORT> in process args",
-      "TUNNEL_PORT=$(ps aux | grep 'start-iap-tunnel' | grep -v grep | grep -o 'local-host-port=127\\.0\\.0\\.1:[0-9]*' | cut -d: -f2 | head -1 || true)",
+      "echo 'Finding Packer IAP tunnel port...'",
+      "TUNNEL_PORT=$(cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -o 'local-host-port=[^ ]*' | grep -o '[0-9]*$' | head -1 || true)",
 
       "if [ -z \"$TUNNEL_PORT\" ]; then",
-      "  echo 'Method 1 failed. Trying Method 2: scan 127.0.0.1 listeners...'",
-      "  for PORT in $(ss -tlnp 2>/dev/null | grep '127\\.0\\.0\\.1' | awk '{print $4}' | cut -d: -f2 | sort -n); do",
-      "    nc -z 127.0.0.1 \"$PORT\" 2>/dev/null && TUNNEL_PORT=$PORT && break || true",
-      "  done",
-      "fi",
-
-      "if [ -z \"$TUNNEL_PORT\" ]; then",
-      "  echo 'ERROR: Could not find Packer IAP tunnel port via any method'",
-      "  echo 'All 127.0.0.1 listeners:'",
-      "  ss -tlnp 2>/dev/null | grep '127\\.0\\.0\\.1' || true",
+      "  echo 'ERROR: Could not find IAP tunnel port in /proc. Dumping iap-related cmdline args:'",
+      "  cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -i 'iap\\|local-host-port' || true",
       "  exit 1",
       "fi",
 
-      "echo \"Packer IAP tunnel found on local port: $TUNNEL_PORT\"",
+      "echo \"Found IAP tunnel on port: $TUNNEL_PORT\"",
+
+      # Confirm port is reachable
+      "nc -z localhost \"$TUNNEL_PORT\" 2>/dev/null || { echo \"ERROR: localhost:$TUNNEL_PORT not reachable\"; exit 1; }",
+      "echo \"Port $TUNNEL_PORT confirmed reachable\"",
 
       # ------------------------------------------------------------------
-      # Write Ansible inventory pointing at the existing tunnel port
+      # Write Ansible inventory
+      # ansible_host=127.0.0.1 works even when tunnel is bound to localhost
       # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
       "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
@@ -222,7 +211,6 @@ build {
 
       # ------------------------------------------------------------------
       # Run the Ansible playbook
-      # set +e so $? is captured before the shell exits on non-zero
       # ------------------------------------------------------------------
       "echo 'Running Ansible playbook...'",
       "set +e",

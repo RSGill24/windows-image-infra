@@ -204,7 +204,7 @@ build {
       "READY=0",
       "ELAPSED=0",
       "for i in $(seq 1 360); do",
-      "  HTTP_CODE=$(curl -sk -o /dev/null -w '%%{http_code}' --max-time 8 \"https://localhost:$TUNNEL_PORT/wsman\" 2>/dev/null || true)",
+      "  HTTP_CODE=$(curl -sk -X POST -o /dev/null -w '%%{http_code}' --max-time 8 \"https://localhost:$TUNNEL_PORT/wsman\" 2>/dev/null || true)",
       "  if [ \"$HTTP_CODE\" = '401' ] || [ \"$HTTP_CODE\" = '200' ] || [ \"$HTTP_CODE\" = '405' ]; then",
       "    READY=1",
       "    echo \"  [attempt $i | elapsed $${ELAPSED}s] SUCCESS — WinRM responded HTTP $HTTP_CODE. Starting Ansible immediately.\"",

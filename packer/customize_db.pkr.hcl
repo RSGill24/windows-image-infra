@@ -139,24 +139,10 @@ build {
 
   # Step 2: Run ansible-playbook reusing Packer's existing IAP tunnel.
   #
-  # Container layout (WORKDIR /workspace in Dockerfile):
-  #   /workspace/
-  #     customize_db.pkr.hcl
-  #     ansible-playbook/
-  #       database_installation.yml   <- PLAYBOOK_PATH
-  #       install_mysql_tasks.yml
-  #       install_oracle_tasks.yml
-  #     scripts/
-  #
-  # Packer tunnel confirmed from logs:
-  #   gcloud compute start-iap-tunnel ... --local-host-port=localhost:8372
-  #   NOTE: Packer uses "localhost" not "127.0.0.1" as the bind address.
-  #
-  # Port detection: read directly from /proc/*/cmdline (no ps/ss needed).
-  #   cat /proc/*/cmdline outputs null-separated bytes per process.
-  #   tr '\0' '\n' splits to one arg per line.
-  #   grep finds the --local-host-port=localhost:<PORT> arg.
-  #   grep -o '[0-9]*$' extracts just the port number from the end.
+  # The tunnel port is found via /proc cmdline.
+  # We then WAIT for the port to be reachable (retry loop up to 60s)
+  # because the tunnel process exists before it is fully ready to accept
+  # connections — a single nc check fails in that window.
   provisioner "shell-local" {
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
@@ -177,31 +163,44 @@ build {
       "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
       # ------------------------------------------------------------------
-      # Find Packer's IAP tunnel port from /proc cmdline.
-      #
-      # Each /proc/<pid>/cmdline has args separated by null bytes (\0).
-      # We pipe all of them through tr to get one arg per line, then grep
-      # for the local-host-port argument and extract the port number.
-      # Works with both "localhost:<PORT>" and "127.0.0.1:<PORT>".
+      # Find Packer's IAP tunnel port from /proc cmdline
       # ------------------------------------------------------------------
       "echo 'Finding Packer IAP tunnel port...'",
       "TUNNEL_PORT=$(cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -o 'local-host-port=[^ ]*' | grep -o '[0-9]*$' | head -1 || true)",
 
       "if [ -z \"$TUNNEL_PORT\" ]; then",
-      "  echo 'ERROR: Could not find IAP tunnel port in /proc. Dumping iap-related cmdline args:'",
+      "  echo 'ERROR: Could not find IAP tunnel port in /proc'",
       "  cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -i 'iap\\|local-host-port' || true",
       "  exit 1",
       "fi",
 
       "echo \"Found IAP tunnel on port: $TUNNEL_PORT\"",
 
-      # Confirm port is reachable
-      "nc -z localhost \"$TUNNEL_PORT\" 2>/dev/null || { echo \"ERROR: localhost:$TUNNEL_PORT not reachable\"; exit 1; }",
-      "echo \"Port $TUNNEL_PORT confirmed reachable\"",
+      # ------------------------------------------------------------------
+      # Wait for tunnel port to be reachable (retry up to 60s).
+      # The tunnel process starts before it is ready to accept connections.
+      # A single nc check fails in that startup window — we must poll.
+      # ------------------------------------------------------------------
+      "echo \"Waiting for localhost:$TUNNEL_PORT to become reachable...\"",
+      "READY=0",
+      "for i in $(seq 1 30); do",
+      "  if nc -z localhost \"$TUNNEL_PORT\" 2>/dev/null; then",
+      "    READY=1",
+      "    break",
+      "  fi",
+      "  echo \"  attempt $i/30 — not ready yet, waiting 2s...\"",
+      "  sleep 2",
+      "done",
+
+      "if [ \"$READY\" -eq 0 ]; then",
+      "  echo \"ERROR: localhost:$TUNNEL_PORT did not become reachable in 60s\"",
+      "  exit 1",
+      "fi",
+
+      "echo \"Port $TUNNEL_PORT is reachable — proceeding with Ansible\"",
 
       # ------------------------------------------------------------------
       # Write Ansible inventory
-      # ansible_host=127.0.0.1 works even when tunnel is bound to localhost
       # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
       "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",

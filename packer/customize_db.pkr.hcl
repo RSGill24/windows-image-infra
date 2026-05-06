@@ -139,10 +139,18 @@ build {
 
   # Step 2: Run ansible-playbook reusing Packer's existing IAP tunnel.
   #
-  # The tunnel port is found via /proc cmdline.
-  # We then WAIT for the port to be reachable (retry loop up to 60s)
-  # because the tunnel process exists before it is fully ready to accept
-  # connections — a single nc check fails in that window.
+  # PROBE STRATEGY — curl, not nc:
+  #   The IAP tunnel is an HTTP/2 CONNECT proxy. `nc -z` does a raw TCP
+  #   connect and always reports the port as closed even when the tunnel is
+  #   working (WinRM already proved it works in Step 1).
+  #   `curl --insecure https://localhost:PORT/wsman` sends a real HTTPS
+  #   request through the tunnel. WinRM replies HTTP 401 (auth required)
+  #   when it is alive — that 401 is our green light to proceed.
+  #
+  # TIMING — breaks IMMEDIATELY on success, does NOT wait 60 minutes:
+  #   Checks every 10 seconds. If IAP connects in 2 minutes, the loop
+  #   breaks at that exact moment and Ansible starts right away.
+  #   60 minutes is only the hard ceiling if something is truly broken.
   provisioner "shell-local" {
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
@@ -159,6 +167,7 @@ build {
       # ------------------------------------------------------------------
       "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found'; exit 1; }",
       "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed'; exit 1; }",
+      "command -v curl >/dev/null 2>&1 || { echo 'ERROR: curl not found'; exit 1; }",
       "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
       "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
@@ -177,27 +186,43 @@ build {
       "echo \"Found IAP tunnel on port: $TUNNEL_PORT\"",
 
       # ------------------------------------------------------------------
-      # Wait for tunnel port to be reachable (retry up to 60s).
-      # The tunnel process starts before it is ready to accept connections.
-      # A single nc check fails in that startup window — we must poll.
+      # Poll WinRM every 10 seconds.
+      # BREAKS IMMEDIATELY the moment IAP responds successfully.
+      # Maximum 360 attempts x 10s = 60 minutes hard ceiling.
+      #
+      # curl flags:
+      #   -s            silent
+      #   -k            skip SSL cert validation (self-signed on Windows)
+      #   -o /dev/null  discard response body
+      #   -w '%{http_code}'  capture only the HTTP status code
+      #   --max-time 8  abort this single attempt after 8s (keeps us
+      #                 within the 10s interval even on a hung tunnel)
+      #
+      # Success condition: HTTP 401 (WinRM alive, wants credentials)
+      #                 or HTTP 200 (WinRM alive, already authed)
       # ------------------------------------------------------------------
-      "echo \"Waiting for localhost:$TUNNEL_PORT to become reachable...\"",
+      "echo \"Polling IAP tunnel on localhost:$TUNNEL_PORT every 10s — max 60 min. Proceeds immediately on success.\"",
       "READY=0",
-      "for i in $(seq 1 30); do",
-      "  if nc -z localhost \"$TUNNEL_PORT\" 2>/dev/null; then",
+      "ELAPSED=0",
+      "for i in $(seq 1 360); do",
+      "  HTTP_CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 \"https://localhost:$TUNNEL_PORT/wsman\" 2>/dev/null || true)",
+      "  if [ \"$HTTP_CODE\" = '401' ] || [ \"$HTTP_CODE\" = '200' ]; then",
       "    READY=1",
+      "    echo \"  [attempt $i | elapsed ${ELAPSED}s] SUCCESS — WinRM responded HTTP $HTTP_CODE. Starting Ansible immediately.\"",
       "    break",
       "  fi",
-      "  echo \"  attempt $i/30 — not ready yet, waiting 2s...\"",
-      "  sleep 2",
+      "  echo \"  [attempt $i | elapsed ${ELAPSED}s] HTTP '$HTTP_CODE' — tunnel not ready yet, retrying in 10s...\"",
+      "  sleep 10",
+      "  ELAPSED=$((ELAPSED + 10))",
       "done",
 
       "if [ \"$READY\" -eq 0 ]; then",
-      "  echo \"ERROR: localhost:$TUNNEL_PORT did not become reachable in 60s\"",
+      "  echo \"ERROR: WinRM on localhost:$TUNNEL_PORT did not respond after 60 minutes (360 attempts).\"",
+      "  echo \"Last HTTP code received: $HTTP_CODE\"",
+      "  echo \"Active IAP tunnel processes:\"",
+      "  cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -i 'iap\\|local-host-port\\|start-iap' || true",
       "  exit 1",
       "fi",
-
-      "echo \"Port $TUNNEL_PORT is reachable — proceeding with Ansible\"",
 
       # ------------------------------------------------------------------
       # Write Ansible inventory

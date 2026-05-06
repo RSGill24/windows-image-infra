@@ -88,6 +88,8 @@ source "googlecompute" "customize_with_db" {
   enable_vtpm                 = true
 
   disk_size  = 250
+  network    = "app-network"
+  subnetwork = "app-subnet1"
   tags       = ["winrm"]
 
   image_family = var.image_family

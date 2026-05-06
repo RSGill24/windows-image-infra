@@ -125,7 +125,7 @@
       ╔════════════════════════════════════════╗
       ║   Oracle Client Installation Complete  ║
       ╠════════════════════════════════════════╣
-      ║ ✓ Location: C:\Oracle\client
+      ║ ✓ Location: C:\Oracle\client\
       ║ ✓ ORACLE_HOME: C:\Oracle\client
       ║ ✓ TNS_ADMIN: C:\Oracle\client\network\admin
       ║ ✓ PATH: Updated (System-wide)

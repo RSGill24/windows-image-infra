@@ -5,7 +5,7 @@ substitutions:
   _ZONE: "us-east4-b"
   _IMAGE_FAMILY: "pww-windows-2022-oracle-client-dev"  # Phase 2 output for Oracle Client
   _WINRM_SECRET: "packer-winrm-password"
-  _PACKER_TEMPLATE: "win2022-oracle-client-dev/packer/customize_db.pkr.hcl"
+  _PACKER_TEMPLATE: "win2022-oracle-client-dev/packer/customize.pkr.hcl"
   _PACKER_VERSION: "1.9.4"
   _INSTALLATION_SOURCE_DIR: "./ansible-playbook"
   _INSTALLATION_TARGET_DIR: "C:/Users/packer_user/installation/"

@@ -1,5 +1,5 @@
 ---
-- name: Phase 2 - Database Customization via Ansible
+- name: Phase 2 - Ansible Main playbook
   hosts: all
   gather_facts: yes
   vars:

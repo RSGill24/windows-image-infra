@@ -25,7 +25,7 @@ INSTALLATION_TARGET_DIR="C:/Users/packer_user/installation/"
 INSTALLATION_SOURCE_DIR="./ansible-playbook"  # Directory containing database installation playbooks
 INSTALLATION_ENTRY_SCRIPT=""  # Not used - database setup handled by Ansible playbook
 
-PACKER_TEMPLATE="customize_db.pkr.hcl"
+PACKER_TEMPLATE="customize.pkr.hcl"
 
 echo "[INFO] Installation Target Dir: ${INSTALLATION_TARGET_DIR}"
 echo "[INFO] Installation Source Dir: ${INSTALLATION_SOURCE_DIR}"

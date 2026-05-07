@@ -37,7 +37,7 @@ RUN curl -fSL \
 
 WORKDIR /workspace
 
-COPY win2022-oracle-client-dev/packer/customize_db.pkr.hcl ./customize_db.pkr.hcl
+COPY win2022-oracle-client-dev/packer/customize.pkr.hcl ./customize.pkr.hcl
 
 COPY win2022-oracle-client-dev/packer/ansible-playbook/ ./ansible-playbook/
 
@@ -46,13 +46,13 @@ COPY win2022-oracle-client-dev/packer/scripts/config.yaml ./config.yaml
 COPY win2022-oracle-client-dev/docker-entrypoint-oracle-client.sh ./docker-entrypoint-oracle-client.sh
 RUN chmod +x ./docker-entrypoint-oracle-client.sh
 
-ENV PACKER_TEMPLATE="customize_db.pkr.hcl"
+ENV PACKER_TEMPLATE="customize.pkr.hcl"
 
-RUN packer init ./customize_db.pkr.hcl
+RUN packer init ./customize.pkr.hcl
 
 RUN echo "=== Verifying Container Setup ===" && \
     ls -la config.yaml && \
-    ls -la customize_db.pkr.hcl && \
+    ls -la customize.pkr.hcl && \
     ls -la docker-entrypoint-oracle-client.sh && \
     test -d ansible-playbook && echo "Ansible playbooks ready" || echo "Ansible playbooks not found" && \
     echo "=== Setup verification complete ===" && \

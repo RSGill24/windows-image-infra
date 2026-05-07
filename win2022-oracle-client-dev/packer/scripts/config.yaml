@@ -1,0 +1,7 @@
+# Database type to install
+# Change this value to switch databases before pushing to GitHub
+# Examples:
+#   database_type: mysql
+#   database_type: oracle
+#   database_type: none
+database_type: oracle

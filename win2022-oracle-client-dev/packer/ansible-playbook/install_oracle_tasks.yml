@@ -1,17 +1,4 @@
 ---
-# Oracle Instant Client 19.30 + SQL*Plus Installation
-# Downloads from GCS bucket via Private Google Access
-
-- name: Display Oracle Client Installation Starting
-  debug:
-    msg: |
-      ╔════════════════════════════════════════╗
-      ║   Installing Oracle Client 19.30       ║
-      ╠════════════════════════════════════════╣
-      ║ Packages: Instant Client Basic + SQL*Plus
-      ║ Source  : GCS Bucket (Private Google Access)
-      ╚════════════════════════════════════════╝
-
 - name: Create required directories
   win_file:
     path: "{{ item }}"
@@ -22,16 +9,11 @@
     - "C:\\Oracle\\client"
     - "C:\\Oracle\\client\\network\\admin"
 
-# ---- gsutil check ----
 - name: Check if gsutil is available
   win_shell: gsutil version
   register: gsutil_check
   failed_when: false
   changed_when: false
-
-- name: Display gsutil status
-  debug:
-    msg: "gsutil: {{ gsutil_check.stdout | default('NOT FOUND') }}"
 
 - name: Install Google Cloud SDK if gsutil is missing
   when: gsutil_check.rc != 0
@@ -40,13 +22,10 @@
       win_shell: |
         $client = New-Object System.Net.WebClient
         $client.DownloadFile("https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe", "C:\Temp\GoogleCloudSDKInstaller.exe")
-        Write-Host "SDK installer downloaded"
-      failed_when: false
 
     - name: Install Google Cloud SDK silently
       win_shell: |
         Start-Process -FilePath "C:\Temp\GoogleCloudSDKInstaller.exe" -ArgumentList "/S", "/allusers" -Wait -NoNewWindow
-        Write-Host "SDK installed"
 
     - name: Verify gsutil after install
       win_shell: |
@@ -55,13 +34,11 @@
       register: gsutil_verify
       failed_when: gsutil_verify.rc != 0
 
-# ---- Download Basic + SQL*Plus ----
 - name: Download Oracle Instant Client Basic from GCS
   win_shell: |
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
     & gsutil cp gs://org-sec-agents-bucket/oracle/instantclient-basic-windows.x64-19.30.0.0.0dbru.zip C:\Temp\oracle-basic.zip
     if ($LASTEXITCODE -ne 0) { throw "Download failed" }
-    Write-Host "Basic package downloaded"
   register: basic_download
   failed_when: basic_download.rc != 0
 
@@ -70,7 +47,6 @@
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
     & gsutil cp gs://org-sec-agents-bucket/oracle/instantclient-sqlplus-windows.x64-19.30.0.0.0dbru.zip C:\Temp\oracle-sqlplus.zip
     if ($LASTEXITCODE -ne 0) { throw "Download failed" }
-    Write-Host "SQL*Plus package downloaded"
   register: sqlplus_download
   failed_when: sqlplus_download.rc != 0
 
@@ -83,18 +59,13 @@
     - "C:\\Temp\\oracle-basic.zip"
     - "C:\\Temp\\oracle-sqlplus.zip"
 
-# ---- Extract both packages ----
 - name: Extract Oracle Basic package
   win_shell: |
     Expand-Archive -Path "C:\Temp\oracle-basic.zip" -DestinationPath "C:\Temp\oracle_extract" -Force
-    Write-Host "Basic extraction complete"
-  failed_when: false
 
 - name: Extract Oracle SQL*Plus package
   win_shell: |
     Expand-Archive -Path "C:\Temp\oracle-sqlplus.zip" -DestinationPath "C:\Temp\oracle_extract" -Force
-    Write-Host "SQL*Plus extraction complete"
-  failed_when: false
 
 - name: Find extracted Oracle directory
   win_find:
@@ -105,36 +76,26 @@
   register: oracle_extracted_dir
   failed_when: oracle_extracted_dir.files | length == 0
 
-- name: Copy all Oracle files to installation directory
+- name: Copy Oracle files to installation directory
   win_shell: |
     $src = "{{ oracle_extracted_dir.files[0].path }}"
-    Write-Host "Copying from $src to C:\Oracle\client"
     Get-ChildItem -Path $src | Copy-Item -Destination "C:\Oracle\client" -Recurse -Force
-    Write-Host "Copy complete"
-  failed_when: false
 
-# ---- Environment variables ----
 - name: Set ORACLE_HOME
   win_shell: |
     [Environment]::SetEnvironmentVariable('ORACLE_HOME', 'C:\Oracle\client', 'Machine')
-    Write-Host "ORACLE_HOME set"
 
 - name: Set TNS_ADMIN
   win_shell: |
     [Environment]::SetEnvironmentVariable('TNS_ADMIN', 'C:\Oracle\client\network\admin', 'Machine')
-    Write-Host "TNS_ADMIN set"
 
 - name: Add Oracle to system PATH
   win_shell: |
     $path = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
     if ($path -notlike '*Oracle*client*') {
       [Environment]::SetEnvironmentVariable('PATH', $path + ';C:\Oracle\client', 'Machine')
-      Write-Host "PATH updated"
-    } else {
-      Write-Host "PATH already contains Oracle"
     }
 
-# ---- Cleanup ----
 - name: Remove temporary files
   win_file:
     path: "{{ item }}"
@@ -146,7 +107,6 @@
     - "C:\\Temp\\GoogleCloudSDKInstaller.exe"
   failed_when: false
 
-# ---- Verify ----
 - name: Verify DLLs present
   win_find:
     paths: "C:\\Oracle\\client"
@@ -160,8 +120,3 @@
     path: "C:\\Oracle\\client\\sqlplus.exe"
   register: sqlplus_stat
   failed_when: not sqlplus_stat.stat.exists
-
-- name: Display Installation Complete
-  debug:
-    msg: |
-      Oracle Client Installation Complete

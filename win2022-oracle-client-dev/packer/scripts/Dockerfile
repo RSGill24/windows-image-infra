@@ -32,30 +32,17 @@ RUN curl -fSL \
     "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip" \
     -o /tmp/packer.zip && \
     unzip /tmp/packer.zip -d /usr/local/bin/ && \
-    rm -f /tmp/packer.zip && \
-    packer version
+    rm -f /tmp/packer.zip
 
 WORKDIR /workspace
 
 COPY win2022-oracle-client-dev/packer/customize.pkr.hcl ./customize.pkr.hcl
-
 COPY win2022-oracle-client-dev/packer/ansible-playbook/ ./ansible-playbook/
-
-COPY win2022-oracle-client-dev/packer/scripts/config.yaml ./config.yaml
-
 COPY win2022-oracle-client-dev/docker-entrypoint-oracle-client.sh ./docker-entrypoint-oracle-client.sh
-RUN chmod +x ./docker-entrypoint-oracle-client.sh
+
+RUN chmod +x ./docker-entrypoint-oracle-client.sh && \
+    packer init ./customize.pkr.hcl
 
 ENV PACKER_TEMPLATE="customize.pkr.hcl"
-
-RUN packer init ./customize.pkr.hcl
-
-RUN echo "=== Verifying Container Setup ===" && \
-    ls -la config.yaml && \
-    ls -la customize.pkr.hcl && \
-    ls -la docker-entrypoint-oracle-client.sh && \
-    test -d ansible-playbook && echo "Ansible playbooks ready" || echo "Ansible playbooks not found" && \
-    echo "=== Setup verification complete ===" && \
-    pwd && ls -la
 
 ENTRYPOINT ["./docker-entrypoint-oracle-client.sh"]

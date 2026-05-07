@@ -24,8 +24,7 @@ variable "project_id" {
 }
 
 variable "source_image_project_id" {
-  type        = string
-  description = "Project ID containing the source image"
+  type = string
 }
 
 variable "source_image_family" {
@@ -48,11 +47,6 @@ variable "zone" {
   type = string
 }
 
-variable "database_type" {
-  type    = string
-  default = "none"
-}
-
 variable "installation_source_dir" {
   type = string
 }
@@ -61,11 +55,7 @@ variable "installation_target_dir" {
   type = string
 }
 
-variable "installation_entry_script" {
-  type = string
-}
-
-source "googlecompute" "customize_with_db" {
+source "googlecompute" "customize_with_oracle" {
   project_id              = var.project_id
   use_iap                 = true
   use_internal_ip         = true
@@ -78,7 +68,7 @@ source "googlecompute" "customize_with_db" {
   winrm_password = var.packer_user_password
   winrm_use_ssl  = true
   winrm_insecure = true
-  winrm_use_ntlm = true        # NTLM — works on DISA-hardened images where Basic auth is blocked by GPO
+  winrm_use_ntlm = true
   winrm_port     = 5986
   winrm_timeout  = "90m"
 
@@ -88,72 +78,53 @@ source "googlecompute" "customize_with_db" {
   enable_integrity_monitoring = true
   enable_vtpm                 = true
 
-  disk_size  = 250
-  tags       = ["winrm"]
+  network    = "app-network"
+  subnetwork = "app-subnet1"
+
+  disk_size = 250
+  tags      = ["winrm"]
 
   image_family = var.image_family
-  image_name   = "pww-disa-hardened-${var.database_type}-db-{{timestamp}}"
+  image_name   = "pww-disa-hardened-oracle-client-{{timestamp}}"
   machine_type = var.machine_type
 
   metadata = {
     windows-startup-script-ps1 = <<EOF
-# ---------------------------------------------------------------
-# Step 1: Create packer_user FIRST before anything else
-# ---------------------------------------------------------------
 net user packer_user "${var.packer_user_password}" /add /y
 net localgroup Administrators packer_user /add
 
-# ---------------------------------------------------------------
-# Step 2: Registry fixes — run BEFORE WinRM config
-# Use reg.exe directly — more reliable than PowerShell on
-# DISA-hardened images where registry provider may be restricted
-# ---------------------------------------------------------------
+# reg.exe is more reliable than PowerShell on DISA-hardened images
+# where the registry provider may be restricted by GPO
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f
 
-# ---------------------------------------------------------------
-# Step 3: WinRM full configuration
-# ---------------------------------------------------------------
 winrm quickconfig -q
 Enable-PSRemoting -Force -SkipNetworkProfileCheck
 
-# Self-signed cert for HTTPS listener
 $cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
 $thumb = $cert.Thumbprint
 
-# Remove existing HTTPS listeners and recreate cleanly
 Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
 New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
 
-# Auth — enable Basic AND Negotiate (NTLM)
 Set-Item -Path WSMan:\localhost\Service\Auth\Basic       -Value $true
 Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate   -Value $true
 Set-Item -Path WSMan:\localhost\Service\Auth\CredSSP     -Value $false
 Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
 
-# Generous timeouts — prevents RemoteDisconnected during Gathering Facts
+# Generous timeouts and shell limits prevent RemoteDisconnected during Ansible Gathering Facts
 Set-Item -Path WSMan:\localhost\MaxTimeoutms             -Value 1800000
-
-# Increase envelope and shell memory limits for Ansible Facts gathering
 Set-Item -Path WSMan:\localhost\MaxEnvelopeSizekb        -Value 8192
 winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="2048"}'
 winrm set winrm/config/winrs '@{MaxShellsPerUser="10"}'
 
-# ---------------------------------------------------------------
-# Step 4: Firewall — allow WinRM HTTPS
-# ---------------------------------------------------------------
 netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
 
-# ---------------------------------------------------------------
-# Step 5: seclogon service — required for NTLM secondary logon
-# ---------------------------------------------------------------
+# seclogon required for NTLM secondary logon
 Set-Service -Name seclogon -StartupType Manual
 Start-Service -Name seclogon
 
-# ---------------------------------------------------------------
-# Step 6: Settle time — let DISA GPO fully apply before Packer
-# connects, prevents mid-init disconnects on hardened images
-# ---------------------------------------------------------------
+# Let DISA GPO fully apply before Packer connects
 Start-Sleep -Seconds 30
 
 Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM NTLM setup complete" -EntryType Information
@@ -162,44 +133,24 @@ EOF
 }
 
 build {
-  sources = ["sources.googlecompute.customize_with_db"]
+  sources = ["sources.googlecompute.customize_with_oracle"]
 
-  # ---------------------------------------------------------------
-  # Step 1: Confirm WinRM+NTLM connection and prep environment
-  # ---------------------------------------------------------------
   provisioner "powershell" {
     inline = [
       "Write-Host 'Connected as:' $env:USERNAME",
       "Write-Host 'Computer    :' $env:COMPUTERNAME",
-
-      # Ensure packer_user is in Administrators (idempotent)
-      "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop; Write-Host 'packer_user added to Administrators' } catch { Write-Host 'packer_user already in Administrators (expected)' }",
-
-      # Ensure seclogon is running (needed for NTLM)
+      "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop } catch {}",
       "Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue",
       "Start-Service -Name seclogon -ErrorAction SilentlyContinue",
-      "Write-Host 'seclogon status:' (Get-Service seclogon).Status",
-
-      # Belt-and-suspenders registry fix via PowerShell
       "New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'LocalAccountTokenFilterPolicy' -Value 1 -PropertyType DWord -Force | Out-Null",
-      "Write-Host 'LocalAccountTokenFilterPolicy confirmed'",
-
-      # Re-confirm WinRM limits (GPO may have reset them after startup script)
       "Set-Item -Path WSMan:\\localhost\\MaxTimeoutms -Value 1800000 -ErrorAction SilentlyContinue",
-      "Set-Item -Path WSMan:\\localhost\\MaxEnvelopeSizekb -Value 8192 -ErrorAction SilentlyContinue",
-      "Write-Host 'WinRM timeouts confirmed'",
-
-      "Write-Host 'Environment ready for Ansible-based database installation.'"
+      "Set-Item -Path WSMan:\\localhost\\MaxEnvelopeSizekb -Value 8192 -ErrorAction SilentlyContinue"
     ]
   }
 
-  # ---------------------------------------------------------------
-  # Step 2: Run ansible-playbook reusing Packer's existing IAP tunnel
-  # ---------------------------------------------------------------
   provisioner "shell-local" {
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
-      "DATABASE_TYPE=${var.database_type}",
       "ZONE=${var.zone}",
       "PROJECT_ID=${var.project_id}",
       "PLAYBOOK_PATH=/workspace/ansible-playbook/main.yml"
@@ -207,80 +158,42 @@ build {
     inline = [
       "set -eu",
 
-      # ------------------------------------------------------------------
-      # Pre-flight checks
-      # ------------------------------------------------------------------
       "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found'; exit 1; }",
       "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed'; exit 1; }",
       "command -v curl >/dev/null 2>&1 || { echo 'ERROR: curl not found'; exit 1; }",
       "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
-      "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
-      # ------------------------------------------------------------------
-      # Find Packer's IAP tunnel port from /proc cmdline
-      # ------------------------------------------------------------------
-      "echo 'Finding Packer IAP tunnel port...'",
+      # Reuse Packer's existing IAP tunnel by reading its port from /proc cmdline
       "TUNNEL_PORT=$(cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -o 'local-host-port=[^ ]*' | grep -o '[0-9]*$' | head -1 || true)",
-
-      "if [ -z \"$TUNNEL_PORT\" ]; then",
-      "  echo 'ERROR: Could not find IAP tunnel port in /proc'",
-      "  cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -i 'iap\\|local-host-port' || true",
-      "  exit 1",
-      "fi",
-
+      "if [ -z \"$TUNNEL_PORT\" ]; then echo 'ERROR: Could not find IAP tunnel port in /proc'; exit 1; fi",
       "echo \"Found IAP tunnel on port: $TUNNEL_PORT\"",
 
-      # ------------------------------------------------------------------
-      # Poll WinRM every 10s — break immediately on success
-      # ------------------------------------------------------------------
-      "echo \"Polling IAP tunnel on localhost:$TUNNEL_PORT every 10s — max 60 min.\"",
       "READY=0",
       "ELAPSED=0",
       "for i in $(seq 1 360); do",
       "  HTTP_CODE=$(curl -sk -X POST -o /dev/null -w '%%{http_code}' --max-time 8 \"https://localhost:$TUNNEL_PORT/wsman\" 2>/dev/null || true)",
       "  if [ \"$HTTP_CODE\" = '401' ] || [ \"$HTTP_CODE\" = '411' ] || [ \"$HTTP_CODE\" = '405' ]; then",
       "    READY=1",
-      "    echo \"  [attempt $i | elapsed $${ELAPSED}s] SUCCESS — WinRM responded HTTP $HTTP_CODE. Starting Ansible immediately.\"",
+      "    echo \"  [attempt $i | elapsed $${ELAPSED}s] WinRM ready (HTTP $HTTP_CODE)\"",
       "    break",
       "  fi",
-      "  echo \"  [attempt $i | elapsed $${ELAPSED}s] HTTP '$HTTP_CODE' — tunnel not ready yet, retrying in 10s...\"",
+      "  echo \"  [attempt $i | elapsed $${ELAPSED}s] HTTP '$HTTP_CODE' — retrying in 10s\"",
       "  sleep 10",
       "  ELAPSED=$((ELAPSED + 10))",
       "done",
 
-      "if [ \"$READY\" -eq 0 ]; then",
-      "  echo \"ERROR: WinRM on localhost:$TUNNEL_PORT did not respond after 60 minutes.\"",
-      "  echo \"Last HTTP code: $HTTP_CODE\"",
-      "  exit 1",
-      "fi",
+      "if [ \"$READY\" -eq 0 ]; then echo \"ERROR: WinRM did not respond after 60 minutes\"; exit 1; fi",
 
-      # ------------------------------------------------------------------
-      # Settle delay — prevents RemoteDisconnected on Gathering Facts
-      # Gives DISA GPO time to finish applying after WinRM connects
-      # ------------------------------------------------------------------
-      "echo 'Waiting 30s for Windows to fully settle after WinRM connect...'",
+      # Settle delay prevents RemoteDisconnected on Gathering Facts
       "sleep 30",
-      "echo 'Windows settled — proceeding to Ansible.'",
 
-      # ------------------------------------------------------------------
-      # Write Ansible inventory with generous NTLM timeouts
-      # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
       "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=ntlm\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=60\\nansible_winrm_operation_timeout_sec=120\\nansible_winrm_read_timeout_sec=150\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
-      "printf 'database_type=%s\\n' \"$DATABASE_TYPE\" >> \"$INVENTORY\"",
-      "echo 'Inventory written:'",
-      "cat \"$INVENTORY\"",
 
-      # ------------------------------------------------------------------
-      # Run the Ansible playbook
-      # ------------------------------------------------------------------
-      "echo 'Running Ansible playbook...'",
       "set +e",
-      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i \"$INVENTORY\" -e \"ansible_password=$PACKER_PW\" -e \"database_type=$DATABASE_TYPE\" \"$PLAYBOOK_PATH\"",
+      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i \"$INVENTORY\" -e \"ansible_password=$PACKER_PW\" \"$PLAYBOOK_PATH\"",
       "PLAYBOOK_EXIT=$?",
       "set -e",
-      "echo \"Playbook finished with exit code: $PLAYBOOK_EXIT\"",
-
       "exit $PLAYBOOK_EXIT"
     ]
   }

@@ -1,9 +1,9 @@
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
   _SOURCE_IMAGE_PROJECT_ID: "big-mender-473219-r2"
-  _SOURCE_IMAGE_FAMILY: "pww-windows-2022-hardened"  # Phase 1 output
+  _SOURCE_IMAGE_FAMILY: "pww-windows-2022-hardened"
   _ZONE: "us-east4-b"
-  _IMAGE_FAMILY: "pww-windows-2022-oracle-client-dev"  # Phase 2 output for Oracle Client
+  _IMAGE_FAMILY: "pww-windows-2022-oracle-client-dev"
   _WINRM_SECRET: "packer-winrm-password"
   _PACKER_TEMPLATE: "win2022-oracle-client-dev/packer/customize.pkr.hcl"
   _PACKER_VERSION: "1.9.4"
@@ -13,76 +13,9 @@ substitutions:
   _REGION: "us-east4"
   _AR_REPO: "packer-images"
   _IMAGE_NAME: "windows-packer-oracle-client-customizer"
-  _DATABASE_TYPE: "oracle"  # Hardcoded for Oracle Client
 
 steps:
 
-- id: 'load-config'
-  name: 'gcr.io/cloud-builders/gke-deploy'
-  entrypoint: bash
-  args:
-  - -c
-  - |
-      set -euo pipefail
-
-      echo "=== Loading Database Configuration from YAML ==="
-
-      if [ -f "win2022-oracle-client-dev/packer/scripts/config.yaml" ]; then
-        CONFIG_PATH="win2022-oracle-client-dev/packer/scripts/config.yaml"
-      else
-        echo "ERROR: config.yaml not found at win2022-oracle-client-dev/packer/scripts/config.yaml"
-        exit 1
-      fi
-
-      echo "Reading database configuration from $$CONFIG_PATH"
-      
-      DATABASE_TYPE=$(grep -E "^database_type:" "$$CONFIG_PATH" | awk '{print $2}' | tr -d '\n\r')
-      
-      if [ -z "$$DATABASE_TYPE" ]; then
-        echo "ERROR: database_type not found in config.yaml"
-        exit 1
-      fi
-      
-      echo "Database Type: $$DATABASE_TYPE"
-      
-      if [[ "$$DATABASE_TYPE" != "oracle" ]]; then
-        echo "WARNING: Expected database_type 'oracle' but found '$$DATABASE_TYPE'"
-        echo "This build is specifically for Oracle Client customization"
-      fi
-      
-      echo "$$DATABASE_TYPE" > /workspace/database_type.txt
-      cat /workspace/database_type.txt
-
-- id: 'display-config'
-  name: 'gcr.io/cloud-builders/gke-deploy'
-  entrypoint: bash
-  args:
-  - -c
-  - |
-      set -euo pipefail
-
-      echo "╔════════════════════════════════════════════════╗"
-      echo "║   Phase 2: Oracle Client Build Configuration   ║"
-      echo "╠════════════════════════════════════════════════╣"
-      echo "║"
-      echo "║ Build Type: Oracle Client for Windows 2022"
-      echo "║"
-      echo "║ Configuration:"
-      echo "║  PROJECT_ID:              ${_PROJECT_ID}"
-      echo "║  SOURCE_IMAGE_FAMILY:     ${_SOURCE_IMAGE_FAMILY}"
-      echo "║  TARGET_IMAGE_FAMILY:     ${_IMAGE_FAMILY}"
-      echo "║  ZONE:                    ${_ZONE}"
-      echo "║  MACHINE_TYPE:            ${_MACHINE_TYPE}"
-      echo "║  DATABASE_TYPE:           ${_DATABASE_TYPE}"
-      echo "║  PACKER_TEMPLATE:         ${_PACKER_TEMPLATE}"
-      echo "║"
-      echo "║ Artifact Registry:"
-      echo "║  REGION:                  ${_REGION}"
-      echo "║  REPOSITORY:              ${_AR_REPO}"
-      echo "║  IMAGE_NAME:              ${_IMAGE_NAME}"
-      echo "║"
-      echo "╚════════════════════════════════════════════════╝"
-      
 - id: 'docker-build'
   name: 'gcr.io/cloud-builders/docker'
   entrypoint: bash
@@ -90,19 +23,13 @@ steps:
   - -c
   - |
       set -euo pipefail
-
       IMAGE_TAG="${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}"
-
-      echo "Building Phase 2 Docker image for Oracle Client: $$IMAGE_TAG"
-
       docker build \
         --build-arg PACKER_VERSION=${_PACKER_VERSION} \
         --tag "$$IMAGE_TAG:${SHORT_SHA}" \
         --tag "$$IMAGE_TAG:latest" \
         --file "win2022-oracle-client-dev/packer/scripts/Dockerfile" \
         "."
-
-      echo "Docker build complete."
 
 - id: 'configure-docker-auth'
   name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -111,9 +38,7 @@ steps:
   - -c
   - |
       set -euo pipefail
-      echo "Configuring Docker auth for Artifact Registry..."
       gcloud auth configure-docker ${_REGION}-docker.pkg.dev --quiet
-      echo "Auth configured."
 
 - id: 'docker-push'
   name: 'gcr.io/cloud-builders/docker'
@@ -121,31 +46,6 @@ steps:
   - push
   - '--all-tags'
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}'
-
-- id: 'display-summary'
-  name: 'gcr.io/cloud-builders/gke-deploy'
-  entrypoint: bash
-  args:
-  - -c
-  - |
-      set -euo pipefail
-
-     
-      echo "  Phase 2 Oracle Client: Build Complete "
-      
-  
-      
-      CONFIG_PATH="win2022-oracle-client-dev/packer/scripts/config.yaml"
-      
-      if [ -f "$$CONFIG_PATH" ]; then
-        DATABASE_TYPE=$(grep -E "^database_type:" "$$CONFIG_PATH" | awk '{print $2}' | tr -d '\n\r')
-      else
-        DATABASE_TYPE="unknown"
-      fi
-      
-      
-      echo "BUILD STATUS: SUCCESS"
-      
 
 images:
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA'

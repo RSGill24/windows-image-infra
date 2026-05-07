@@ -12,12 +12,17 @@ ARG CLOUD_SDK_VERSION=471.0.0
 # ── System dependencies ──────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    wget \
+    software-properties-common \
     unzip \
     jq \
     ca-certificates \
     gnupg \
     apt-transport-https \
     python3 \
+    jq \
+    netcat-openbsd \
+    iproute2 \
     ansible \
     procps \
     python3-winrm \

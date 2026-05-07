@@ -1,6 +1,6 @@
 ---
 # Oracle Instant Client 19.30 + SQL*Plus Installation
-# Downloads from GCS bucket via Private Google Access
+
 
 - name: Display Oracle Client Installation Starting
   debug:

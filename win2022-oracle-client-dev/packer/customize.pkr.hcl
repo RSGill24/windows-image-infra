@@ -89,6 +89,7 @@ source "googlecompute" "customize_with_oracle" {
   machine_type = var.machine_type
 
   metadata = {
+    enable-oslogin = "FALSE"
     windows-startup-script-ps1 = <<EOF
 net user packer_user "${var.packer_user_password}" /add /y
 net localgroup Administrators packer_user /add

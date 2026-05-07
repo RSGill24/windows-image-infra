@@ -78,6 +78,7 @@ source "googlecompute" "customize_with_db" {
   winrm_password = var.packer_user_password
   winrm_use_ssl  = true
   winrm_insecure = true
+  winrm_use_ntlm = true   # Use NTLM — works on DISA-hardened images where Basic auth is blocked by GPO
   winrm_port     = 5986
   winrm_timeout  = "90m"
 
@@ -98,26 +99,60 @@ source "googlecompute" "customize_with_db" {
 
   metadata = {
     windows-startup-script-ps1 = <<EOF
+# ---------------------------------------------------------------
+# Create packer_user before anything else
+# ---------------------------------------------------------------
 net user packer_user "${var.packer_user_password}" /add /y
 net localgroup Administrators packer_user /add
 
-winrm quickconfig -q
-Enable-PSRemoting -Force
+# ---------------------------------------------------------------
+# Registry: allow local accounts to authenticate over network
+# Must run BEFORE WinRM config so GPO doesn't win the race
+# Using reg.exe directly — more reliable than PowerShell on
+# DISA-hardened images where registry provider may be restricted
+# ---------------------------------------------------------------
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f
 
+# ---------------------------------------------------------------
+# WinRM configuration
+# Enable both Negotiate (NTLM) and Basic — DISA GPO may disable
+# Basic but Negotiate/NTLM must remain available
+# ---------------------------------------------------------------
+winrm quickconfig -q
+Enable-PSRemoting -Force -SkipNetworkProfileCheck
+
+# Generate self-signed cert for HTTPS listener
 $cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
 $thumb = $cert.Thumbprint
 
+# Remove any existing HTTPS listeners and recreate
 Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
 New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
 
+# Auth — enable both Basic and Negotiate (NTLM)
 Set-Item -Path WSMan:\localhost\Service\Auth\Basic       -Value $true
 Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate   -Value $true
+Set-Item -Path WSMan:\localhost\Service\Auth\CredSSP     -Value $false
 Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
 Set-Item -Path WSMan:\localhost\MaxTimeoutms             -Value 1800000
 
+# Increase max envelope and shell memory limits
+Set-Item -Path WSMan:\localhost\MaxEnvelopeSizekb        -Value 8192
+winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="2048"}'
+
+# ---------------------------------------------------------------
+# Firewall — allow WinRM HTTPS through Windows Firewall
+# ---------------------------------------------------------------
 netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
 
-Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM setup complete" -EntryType Information
+# ---------------------------------------------------------------
+# seclogon service — required for NTLM secondary logon
+# ---------------------------------------------------------------
+Set-Service -Name seclogon -StartupType Manual
+Start-Service -Name seclogon
+
+Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM setup complete with NTLM auth" -EntryType Information
 EOF
   }
 }
@@ -125,32 +160,33 @@ EOF
 build {
   sources = ["sources.googlecompute.customize_with_db"]
 
-  # Step 1: Confirm WinRM connection and prep the Windows environment
+  # ---------------------------------------------------------------
+  # Step 1: Confirm WinRM+NTLM connection and prep environment
+  # ---------------------------------------------------------------
   provisioner "powershell" {
     inline = [
       "Write-Host 'Connected as:' $env:USERNAME",
-      "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop } catch {}",
+      "Write-Host 'Computer:' $env:COMPUTERNAME",
+
+      # Ensure packer_user is in Administrators (idempotent)
+      "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop; Write-Host 'packer_user added to Administrators' } catch { Write-Host 'packer_user already in Administrators (expected)' }",
+
+      # Ensure seclogon is running (needed for NTLM)
       "Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue",
       "Start-Service -Name seclogon -ErrorAction SilentlyContinue",
+      "Write-Host 'seclogon service status:' (Get-Service seclogon).Status",
+
+      # Re-apply LocalAccountTokenFilterPolicy via PowerShell as belt-and-suspenders
       "New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'LocalAccountTokenFilterPolicy' -Value 1 -PropertyType DWord -Force | Out-Null",
+      "Write-Host 'LocalAccountTokenFilterPolicy set'",
+
       "Write-Host 'Environment ready for Ansible-based database installation.'"
     ]
   }
 
-  # Step 2: Run ansible-playbook reusing Packer's existing IAP tunnel.
-  #
-  # PROBE STRATEGY — curl, not nc:
-  #   The IAP tunnel is an HTTP/2 CONNECT proxy. `nc -z` does a raw TCP
-  #   connect and always reports the port as closed even when the tunnel is
-  #   working (WinRM already proved it works in Step 1).
-  #   `curl --insecure https://localhost:PORT/wsman` sends a real HTTPS
-  #   request through the tunnel. WinRM replies HTTP 401 (auth required)
-  #   when it is alive — that 401 is our green light to proceed.
-  #
-  # TIMING — breaks IMMEDIATELY on success, does NOT wait 60 minutes:
-  #   Checks every 10 seconds. If IAP connects in 2 minutes, the loop
-  #   breaks at that exact moment and Ansible starts right away.
-  #   60 minutes is only the hard ceiling if something is truly broken.
+  # ---------------------------------------------------------------
+  # Step 2: Run ansible-playbook reusing Packer's existing IAP tunnel
+  # ---------------------------------------------------------------
   provisioner "shell-local" {
     environment_vars = [
       "PACKER_PW=${var.packer_user_password}",
@@ -162,18 +198,14 @@ build {
     inline = [
       "set -eu",
 
-      # ------------------------------------------------------------------
       # Pre-flight checks
-      # ------------------------------------------------------------------
       "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found'; exit 1; }",
       "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed'; exit 1; }",
       "command -v curl >/dev/null 2>&1 || { echo 'ERROR: curl not found'; exit 1; }",
       "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
       "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
-      # ------------------------------------------------------------------
       # Find Packer's IAP tunnel port from /proc cmdline
-      # ------------------------------------------------------------------
       "echo 'Finding Packer IAP tunnel port...'",
       "TUNNEL_PORT=$(cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -o 'local-host-port=[^ ]*' | grep -o '[0-9]*$' | head -1 || true)",
 
@@ -185,24 +217,8 @@ build {
 
       "echo \"Found IAP tunnel on port: $TUNNEL_PORT\"",
 
-      # ------------------------------------------------------------------
-      # Poll WinRM every 10 seconds.
-      # BREAKS IMMEDIATELY the moment IAP responds successfully.
-      # Maximum 360 attempts x 10s = 60 minutes hard ceiling.
-      #
-      # curl flags:
-      #   -s            silent
-      #   -k            skip SSL cert validation (self-signed on Windows)
-      #   -o /dev/null  discard response body
-      #   -w '%%{http_code}'  capture only the HTTP status code
-      #   --max-time 8  abort this single attempt after 8s (keeps us
-      #                 within the 10s interval even on a hung tunnel)
-      #
-      # Success condition: HTTP 401 (auth required), 200 (ok), or 405 (method not allowed)
-      #   All three prove WinRM is alive and reachable through the tunnel.
-      #                 or HTTP 200 (WinRM alive, already authed)
-      # ------------------------------------------------------------------
-      "echo \"Polling IAP tunnel on localhost:$TUNNEL_PORT every 10s — max 60 min. Proceeds immediately on success.\"",
+      # Poll WinRM — break immediately on success
+      "echo \"Polling IAP tunnel on localhost:$TUNNEL_PORT every 10s — max 60 min.\"",
       "READY=0",
       "ELAPSED=0",
       "for i in $(seq 1 360); do",
@@ -218,25 +234,19 @@ build {
       "done",
 
       "if [ \"$READY\" -eq 0 ]; then",
-      "  echo \"ERROR: WinRM on localhost:$TUNNEL_PORT did not respond after 60 minutes (360 attempts).\"",
-      "  echo \"Last HTTP code received: $HTTP_CODE\"",
-      "  echo \"Active IAP tunnel processes:\"",
-      "  cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -i 'iap\\|local-host-port\\|start-iap' || true",
+      "  echo \"ERROR: WinRM on localhost:$TUNNEL_PORT did not respond after 60 minutes.\"",
+      "  echo \"Last HTTP code: $HTTP_CODE\"",
       "  exit 1",
       "fi",
 
-      # ------------------------------------------------------------------
-      # Write Ansible inventory
-      # ------------------------------------------------------------------
+      # Write Ansible inventory — use ntlm transport to match Packer
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
-      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
+      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=ntlm\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
       "printf 'database_type=%s\\n' \"$DATABASE_TYPE\" >> \"$INVENTORY\"",
       "echo 'Inventory written:'",
       "cat \"$INVENTORY\"",
 
-      # ------------------------------------------------------------------
-      # Run the Ansible playbook
-      # ------------------------------------------------------------------
+      # Run Ansible playbook
       "echo 'Running Ansible playbook...'",
       "set +e",
       "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i \"$INVENTORY\" -e \"ansible_password=$PACKER_PW\" -e \"database_type=$DATABASE_TYPE\" \"$PLAYBOOK_PATH\"",

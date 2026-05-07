@@ -76,7 +76,6 @@
 # ---------------------------------------------------------------
 - name: Download Oracle Instant Client from GCS bucket via gsutil
   win_shell: |
-    # Refresh PATH to pick up gsutil if just installed
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
 
     $dest = "C:\Temp\oracle-client.zip"
@@ -117,7 +116,7 @@
 
 - name: Find extracted Oracle directory
   win_find:
-    path: "C:\\Temp\\oracle_extract"
+    paths: "C:\\Temp\\oracle_extract"      # fixed: was 'path', correct param is 'paths'
     patterns: "instantclient*"
     file_type: directory
     recurse: no
@@ -174,7 +173,7 @@
 # ---------------------------------------------------------------
 - name: Verify Oracle client directory has DLL files
   win_find:
-    path: "C:\\Oracle\\client"
+    paths: "C:\\Oracle\\client"            # fixed: was 'path', correct param is 'paths'
     patterns: "*.dll"
     recurse: no
   register: oracle_dlls

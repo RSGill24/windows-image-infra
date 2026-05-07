@@ -78,7 +78,7 @@ source "googlecompute" "customize_with_db" {
   winrm_password = var.packer_user_password
   winrm_use_ssl  = true
   winrm_insecure = true
-  winrm_use_ntlm = true   # Use NTLM — works on DISA-hardened images where Basic auth is blocked by GPO
+  winrm_use_ntlm = true        # NTLM — works on DISA-hardened images where Basic auth is blocked by GPO
   winrm_port     = 5986
   winrm_timeout  = "90m"
 
@@ -100,59 +100,65 @@ source "googlecompute" "customize_with_db" {
   metadata = {
     windows-startup-script-ps1 = <<EOF
 # ---------------------------------------------------------------
-# Create packer_user before anything else
+# Step 1: Create packer_user FIRST before anything else
 # ---------------------------------------------------------------
 net user packer_user "${var.packer_user_password}" /add /y
 net localgroup Administrators packer_user /add
 
 # ---------------------------------------------------------------
-# Registry: allow local accounts to authenticate over network
-# Must run BEFORE WinRM config so GPO doesn't win the race
-# Using reg.exe directly — more reliable than PowerShell on
+# Step 2: Registry fixes — run BEFORE WinRM config
+# Use reg.exe directly — more reliable than PowerShell on
 # DISA-hardened images where registry provider may be restricted
 # ---------------------------------------------------------------
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f
 
 # ---------------------------------------------------------------
-# WinRM configuration
-# Enable both Negotiate (NTLM) and Basic — DISA GPO may disable
-# Basic but Negotiate/NTLM must remain available
+# Step 3: WinRM full configuration
 # ---------------------------------------------------------------
 winrm quickconfig -q
 Enable-PSRemoting -Force -SkipNetworkProfileCheck
 
-# Generate self-signed cert for HTTPS listener
+# Self-signed cert for HTTPS listener
 $cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
 $thumb = $cert.Thumbprint
 
-# Remove any existing HTTPS listeners and recreate
+# Remove existing HTTPS listeners and recreate cleanly
 Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
 New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
 
-# Auth — enable both Basic and Negotiate (NTLM)
+# Auth — enable Basic AND Negotiate (NTLM)
 Set-Item -Path WSMan:\localhost\Service\Auth\Basic       -Value $true
 Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate   -Value $true
 Set-Item -Path WSMan:\localhost\Service\Auth\CredSSP     -Value $false
 Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
+
+# Generous timeouts — prevents RemoteDisconnected during Gathering Facts
 Set-Item -Path WSMan:\localhost\MaxTimeoutms             -Value 1800000
 
-# Increase max envelope and shell memory limits
+# Increase envelope and shell memory limits for Ansible Facts gathering
 Set-Item -Path WSMan:\localhost\MaxEnvelopeSizekb        -Value 8192
 winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="2048"}'
+winrm set winrm/config/winrs '@{MaxShellsPerUser="10"}'
 
 # ---------------------------------------------------------------
-# Firewall — allow WinRM HTTPS through Windows Firewall
+# Step 4: Firewall — allow WinRM HTTPS
 # ---------------------------------------------------------------
 netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
 
 # ---------------------------------------------------------------
-# seclogon service — required for NTLM secondary logon
+# Step 5: seclogon service — required for NTLM secondary logon
 # ---------------------------------------------------------------
 Set-Service -Name seclogon -StartupType Manual
 Start-Service -Name seclogon
 
-Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM setup complete with NTLM auth" -EntryType Information
+# ---------------------------------------------------------------
+# Step 6: Settle time — let DISA GPO fully apply before Packer
+# connects, prevents mid-init disconnects on hardened images
+# ---------------------------------------------------------------
+Start-Sleep -Seconds 30
+
+Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM NTLM setup complete" -EntryType Information
 EOF
   }
 }
@@ -166,7 +172,7 @@ build {
   provisioner "powershell" {
     inline = [
       "Write-Host 'Connected as:' $env:USERNAME",
-      "Write-Host 'Computer:' $env:COMPUTERNAME",
+      "Write-Host 'Computer    :' $env:COMPUTERNAME",
 
       # Ensure packer_user is in Administrators (idempotent)
       "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop; Write-Host 'packer_user added to Administrators' } catch { Write-Host 'packer_user already in Administrators (expected)' }",
@@ -174,11 +180,16 @@ build {
       # Ensure seclogon is running (needed for NTLM)
       "Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue",
       "Start-Service -Name seclogon -ErrorAction SilentlyContinue",
-      "Write-Host 'seclogon service status:' (Get-Service seclogon).Status",
+      "Write-Host 'seclogon status:' (Get-Service seclogon).Status",
 
-      # Re-apply LocalAccountTokenFilterPolicy via PowerShell as belt-and-suspenders
+      # Belt-and-suspenders registry fix via PowerShell
       "New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'LocalAccountTokenFilterPolicy' -Value 1 -PropertyType DWord -Force | Out-Null",
-      "Write-Host 'LocalAccountTokenFilterPolicy set'",
+      "Write-Host 'LocalAccountTokenFilterPolicy confirmed'",
+
+      # Re-confirm WinRM limits (GPO may have reset them after startup script)
+      "Set-Item -Path WSMan:\\localhost\\MaxTimeoutms -Value 1800000 -ErrorAction SilentlyContinue",
+      "Set-Item -Path WSMan:\\localhost\\MaxEnvelopeSizekb -Value 8192 -ErrorAction SilentlyContinue",
+      "Write-Host 'WinRM timeouts confirmed'",
 
       "Write-Host 'Environment ready for Ansible-based database installation.'"
     ]
@@ -198,14 +209,18 @@ build {
     inline = [
       "set -eu",
 
+      # ------------------------------------------------------------------
       # Pre-flight checks
+      # ------------------------------------------------------------------
       "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found'; exit 1; }",
       "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed'; exit 1; }",
       "command -v curl >/dev/null 2>&1 || { echo 'ERROR: curl not found'; exit 1; }",
       "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
       "echo \"Pre-flight OK — playbook confirmed at: $PLAYBOOK_PATH\"",
 
+      # ------------------------------------------------------------------
       # Find Packer's IAP tunnel port from /proc cmdline
+      # ------------------------------------------------------------------
       "echo 'Finding Packer IAP tunnel port...'",
       "TUNNEL_PORT=$(cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -o 'local-host-port=[^ ]*' | grep -o '[0-9]*$' | head -1 || true)",
 
@@ -217,7 +232,9 @@ build {
 
       "echo \"Found IAP tunnel on port: $TUNNEL_PORT\"",
 
-      # Poll WinRM — break immediately on success
+      # ------------------------------------------------------------------
+      # Poll WinRM every 10s — break immediately on success
+      # ------------------------------------------------------------------
       "echo \"Polling IAP tunnel on localhost:$TUNNEL_PORT every 10s — max 60 min.\"",
       "READY=0",
       "ELAPSED=0",
@@ -239,14 +256,26 @@ build {
       "  exit 1",
       "fi",
 
-      # Write Ansible inventory — use ntlm transport to match Packer
+      # ------------------------------------------------------------------
+      # Settle delay — prevents RemoteDisconnected on Gathering Facts
+      # Gives DISA GPO time to finish applying after WinRM connects
+      # ------------------------------------------------------------------
+      "echo 'Waiting 30s for Windows to fully settle after WinRM connect...'",
+      "sleep 30",
+      "echo 'Windows settled — proceeding to Ansible.'",
+
+      # ------------------------------------------------------------------
+      # Write Ansible inventory with generous NTLM timeouts
+      # ------------------------------------------------------------------
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
-      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=ntlm\\nansible_winrm_server_cert_validation=ignore\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
+      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=ntlm\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=60\\nansible_winrm_operation_timeout_sec=120\\nansible_winrm_read_timeout_sec=150\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
       "printf 'database_type=%s\\n' \"$DATABASE_TYPE\" >> \"$INVENTORY\"",
       "echo 'Inventory written:'",
       "cat \"$INVENTORY\"",
 
-      # Run Ansible playbook
+      # ------------------------------------------------------------------
+      # Run the Ansible playbook
+      # ------------------------------------------------------------------
       "echo 'Running Ansible playbook...'",
       "set +e",
       "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i \"$INVENTORY\" -e \"ansible_password=$PACKER_PW\" -e \"database_type=$DATABASE_TYPE\" \"$PLAYBOOK_PATH\"",

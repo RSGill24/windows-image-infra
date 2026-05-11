@@ -149,7 +149,7 @@ build {
       "PACKER_PW=${var.packer_user_password}",
       "ZONE=${var.zone}",
       "PROJECT_ID=${var.project_id}",
-      "PLAYBOOK_PATH=/workspace/ansible-playbook/main.yml",
+      "PLAYBOOK_PATH=/home/rajindergill0925/rstudio/windows-image-infra/win2022-oracle-client-dev/packer/ansible-playbook/main.yml",
       # Component flags forwarded to Ansible
       "INSTALL_ORACLE=${var.install_oracle}",
       "INSTALL_RSTUDIO=${var.install_rstudio}",
@@ -174,24 +174,24 @@ build {
       "  HTTP_CODE=$(curl -sk -X POST -o /dev/null -w '%%{http_code}' --max-time 8 \"https://localhost:$TUNNEL_PORT/wsman\" 2>/dev/null || true)",
       "  if [ \"$HTTP_CODE\" = '401' ] || [ \"$HTTP_CODE\" = '411' ] || [ \"$HTTP_CODE\" = '405' ]; then",
       "    READY=1",
-      "    echo \"  [attempt $i | elapsed ${ELAPSED}s] WinRM ready (HTTP $HTTP_CODE)\"",
+      "    echo \"  [attempt $i | elapsed $${ELAPSED}s] WinRM ready (HTTP $HTTP_CODE)\"",
       "    break",
       "  fi",
-      "  echo \"  [attempt $i | elapsed ${ELAPSED}s] HTTP '$HTTP_CODE' — retrying in 10s\"",
+      "  echo \"  [attempt $i | elapsed $${ELAPSED}s] HTTP '$HTTP_CODE' — retrying in 10s\"",
       "  sleep 10",
-      "  ELAPSED=$((ELAPSED + 10))",
+      "  ELAPSED=$(($${ELAPSED} + 10))",
       "done",
 
       "if [ \"$READY\" -eq 0 ]; then echo \"ERROR: WinRM did not respond after 60 minutes\"; exit 1; fi",
 
-      "sleep 30",
+      "sleep 60",
 
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
-      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=ntlm\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=60\\nansible_winrm_operation_timeout_sec=120\\nansible_winrm_read_timeout_sec=150\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
+      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=60\\nansible_winrm_operation_timeout_sec=120\\nansible_winrm_read_timeout_sec=150\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
 
       "set +e",
       # Pass component flags as ansible extra-vars
-      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook \\",
+      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -vvv \\",
       "  -i \"$INVENTORY\" \\",
       "  -e \"ansible_password=$PACKER_PW\" \\",
       "  -e \"install_oracle=$INSTALL_ORACLE\" \\",

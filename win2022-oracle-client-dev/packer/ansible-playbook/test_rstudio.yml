@@ -1,0 +1,86 @@
+---
+- name: Install R and RStudio
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check if Chocolatey is already installed
+      win_stat:
+        path: "C:\\ProgramData\\chocolatey\\bin\\choco.exe"
+      register: choco_stat
+    - name: Install Chocolatey package manager
+      when: not choco_stat.stat.exists
+      win_shell: |
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+      register: choco_install
+      failed_when: choco_install.rc != 0
+    - name: Verify Chocolatey installed
+      win_shell: choco --version
+      register: choco_version
+      failed_when: choco_version.rc != 0
+      changed_when: false
+    - name: Log Chocolatey version
+      debug:
+        msg: "Chocolatey version: {{ choco_version.stdout | trim }}"
+    - name: Ensure chocolatey.org community source is present
+      win_shell: |
+        $src = choco source list | Select-String "chocolatey"
+        if (-not $src) {
+          choco source add --name="chocolatey" --source="https://community.chocolatey.org/api/v2/" --priority=0
+        }
+      changed_when: false
+    - name: Check if R is already installed
+      win_stat:
+        path: "C:\\Program Files\\R"
+      register: r_dir_stat
+    - name: Install R via Chocolatey
+      when: not r_dir_stat.stat.exists
+      win_shell: |
+        choco install r.project --yes --no-progress --limit-output --source="https://community.chocolatey.org/api/v2/"
+        if ($LASTEXITCODE -ne 0) { throw "R installation failed with exit code $LASTEXITCODE" }
+      register: r_install
+      failed_when: r_install.rc != 0
+    - name: Verify R installation
+      win_shell: |
+        $rExe = Get-ChildItem "C:\Program Files\R" -Filter "Rscript.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $rExe) { throw "Rscript.exe not found" }
+        & $rExe.FullName --version
+      register: r_version
+      failed_when: r_version.rc != 0
+      changed_when: false
+    - name: Log R version
+      debug:
+        msg: "R version: {{ r_version.stdout | trim }}"
+    - name: Add R to system PATH
+      win_shell: |
+        $rBin = (Get-ChildItem "C:\Program Files\R" -Filter "Rscript.exe" -Recurse | Select-Object -First 1).DirectoryName
+        $currentPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+        if ($currentPath -notlike "*$rBin*") {
+          [Environment]::SetEnvironmentVariable('PATH', "$currentPath;$rBin", 'Machine')
+        }
+      changed_when: false
+    - name: Check if RStudio is already installed
+      win_stat:
+        path: "C:\\Program Files\\RStudio\\rstudio.exe"
+      register: rstudio_stat
+    - name: Install RStudio Desktop via Chocolatey
+      when: not rstudio_stat.stat.exists
+      win_shell: |
+        choco install r.studio --yes --no-progress --limit-output
+        if ($LASTEXITCODE -ne 0) { throw "RStudio installation failed with exit code $LASTEXITCODE" }
+      register: rstudio_install
+      failed_when: rstudio_install.rc != 0
+    - name: Verify RStudio binary exists
+      win_stat:
+        path: "C:\\Program Files\\RStudio\\rstudio.exe"
+      register: rstudio_bin
+      failed_when: not rstudio_bin.stat.exists
+    - name: Log RStudio installation success
+      debug:
+        msg: "RStudio installed successfully at C:\\Program Files\\RStudio"
+    - name: Clear Chocolatey download cache
+      win_shell: |
+        choco cache remove --all --yes --no-progress 2>$null
+      failed_when: false
+      changed_when: false

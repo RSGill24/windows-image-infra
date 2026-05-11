@@ -149,7 +149,7 @@ build {
       "PACKER_PW=${var.packer_user_password}",
       "ZONE=${var.zone}",
       "PROJECT_ID=${var.project_id}",
-      "PLAYBOOK_PATH=/home/rajindergill0925/rstudio/windows-image-infra/win2022-oracle-client-dev/packer/ansible-playbook/main.yml",
+      "PLAYBOOK_PATH=/workspace/ansible-playbook/main.yml",
       # Component flags forwarded to Ansible
       "INSTALL_ORACLE=${var.install_oracle}",
       "INSTALL_RSTUDIO=${var.install_rstudio}",

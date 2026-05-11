@@ -88,8 +88,6 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
         }
 
         # ── Component-selection flags ───────────────────────────────────────
-        # Set these Terraform vars (or override at scheduler level) to control
-        # which software is installed in the image.
         env {
           name  = "INSTALL_ORACLE"
           value = tostring(var.install_oracle)
@@ -103,15 +101,13 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
           value = tostring(var.install_conda)
         }
 
-        # ── Secrets ─────────────────────────────────────────────────────────
+        # ── Secret name (NOT the password itself) ───────────────────────────
+        # docker-entrypoint.sh calls:
+        #   gcloud secrets versions access latest --secret $WINRM_SECRET
+        # So this must be the Secret Manager secret ID, not the password value.
         env {
-          name = "WINRM_SECRET"
-          value_source {
-            secret_key_ref {
-              secret  = "packer-winrm-password"
-              version = "latest"
-            }
-          }
+          name  = "WINRM_SECRET"
+          value = "packer-winrm-password"
         }
       }
     }
@@ -120,18 +116,16 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
 
 ################################################################################
 # Cloud Scheduler – triggers the Cloud Run job on a schedule
-# The overrides block lets you flip component flags per-schedule without
-# redeploying the job.
 ################################################################################
 
 resource "google_cloud_scheduler_job" "windows_image_builder_schedule" {
   name             = "windows-image-builder-schedule"
   description      = "Scheduled build of the parameterized Windows image"
-  schedule         = "0 2 * * 1"   # every Monday at 02:00 UTC — adjust as needed
+  schedule         = "0 2 * * 1"   # every Monday at 02:00 UTC
   time_zone        = "UTC"
   project          = var.project_id
   region           = var.region
-  attempt_deadline = "3660s"
+  attempt_deadline = "1800s"
 
   retry_config {
     retry_count = 1
@@ -145,17 +139,15 @@ resource "google_cloud_scheduler_job" "windows_image_builder_schedule" {
       service_account_email = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
     }
 
-    # ── Runtime overrides: swap these to change which components are built ──
-    # Example body installs Oracle + RStudio but NOT conda.
-    # Adjust the env values to match your desired combination.
+    # ── Runtime overrides ───────────────────────────────────────────────────
     body = base64encode(jsonencode({
       overrides = {
         containerOverrides = [{
           name = "windows-packer-builder"
           env = [
-            { name = "INSTALL_ORACLE",  value = tostring(var.install_oracle) },
+            { name = "INSTALL_ORACLE",  value = tostring(var.install_oracle)  },
             { name = "INSTALL_RSTUDIO", value = tostring(var.install_rstudio) },
-            { name = "INSTALL_CONDA",   value = tostring(var.install_conda) }
+            { name = "INSTALL_CONDA",   value = tostring(var.install_conda)   }
           ]
         }]
       }
@@ -166,3 +158,4 @@ resource "google_cloud_scheduler_job" "windows_image_builder_schedule" {
     }
   }
 }
+

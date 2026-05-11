@@ -1,0 +1,122 @@
+---
+- name: Create required directories
+  win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "C:\\Temp"
+    - "C:\\Temp\\oracle_extract"
+    - "C:\\Oracle\\client"
+    - "C:\\Oracle\\client\\network\\admin"
+
+- name: Check if gsutil is available
+  win_shell: gsutil version
+  register: gsutil_check
+  failed_when: false
+  changed_when: false
+
+- name: Install Google Cloud SDK if gsutil is missing
+  when: gsutil_check.rc != 0
+  block:
+    - name: Download Google Cloud SDK installer
+      win_shell: |
+        $client = New-Object System.Net.WebClient
+        $client.DownloadFile("https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe", "C:\Temp\GoogleCloudSDKInstaller.exe")
+
+    - name: Install Google Cloud SDK silently
+      win_shell: |
+        Start-Process -FilePath "C:\Temp\GoogleCloudSDKInstaller.exe" -ArgumentList "/S", "/allusers" -Wait -NoNewWindow
+
+    - name: Verify gsutil after install
+      win_shell: |
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+        gsutil version
+      register: gsutil_verify
+      failed_when: gsutil_verify.rc != 0
+
+- name: Download Oracle Instant Client Basic from GCS
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/oracle/instantclient-basic-windows.x64-19.30.0.0.0dbru.zip C:\Temp\oracle-basic.zip
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
+  register: basic_download
+  failed_when: basic_download.rc != 0
+
+- name: Download Oracle SQL*Plus from GCS
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/oracle/instantclient-sqlplus-windows.x64-19.30.0.0.0dbru.zip C:\Temp\oracle-sqlplus.zip
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
+  register: sqlplus_download
+  failed_when: sqlplus_download.rc != 0
+
+- name: Verify both zips downloaded
+  win_stat:
+    path: "{{ item }}"
+  register: zip_stat
+  failed_when: not zip_stat.stat.exists
+  loop:
+    - "C:\\Temp\\oracle-basic.zip"
+    - "C:\\Temp\\oracle-sqlplus.zip"
+
+- name: Extract Oracle Basic package
+  win_shell: |
+    Expand-Archive -Path "C:\Temp\oracle-basic.zip" -DestinationPath "C:\Temp\oracle_extract" -Force
+
+- name: Extract Oracle SQL*Plus package
+  win_shell: |
+    Expand-Archive -Path "C:\Temp\oracle-sqlplus.zip" -DestinationPath "C:\Temp\oracle_extract" -Force
+
+- name: Find extracted Oracle directory
+  win_find:
+    paths: "C:\\Temp\\oracle_extract"
+    patterns: "instantclient*"
+    file_type: directory
+    recurse: no
+  register: oracle_extracted_dir
+  failed_when: oracle_extracted_dir.files | length == 0
+
+- name: Copy Oracle files to installation directory
+  win_shell: |
+    $src = "{{ oracle_extracted_dir.files[0].path }}"
+    Get-ChildItem -Path $src | Copy-Item -Destination "C:\Oracle\client" -Recurse -Force
+
+- name: Set ORACLE_HOME
+  win_shell: |
+    [Environment]::SetEnvironmentVariable('ORACLE_HOME', 'C:\Oracle\client', 'Machine')
+
+- name: Set TNS_ADMIN
+  win_shell: |
+    [Environment]::SetEnvironmentVariable('TNS_ADMIN', 'C:\Oracle\client\network\admin', 'Machine')
+
+- name: Add Oracle to system PATH
+  win_shell: |
+    $path = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    if ($path -notlike '*Oracle*client*') {
+      [Environment]::SetEnvironmentVariable('PATH', $path + ';C:\Oracle\client', 'Machine')
+    }
+
+- name: Remove temporary files
+  win_file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "C:\\Temp\\oracle-basic.zip"
+    - "C:\\Temp\\oracle-sqlplus.zip"
+    - "C:\\Temp\\oracle_extract"
+    - "C:\\Temp\\GoogleCloudSDKInstaller.exe"
+  failed_when: false
+
+- name: Verify DLLs present
+  win_find:
+    paths: "C:\\Oracle\\client"
+    patterns: "*.dll"
+    recurse: no
+  register: oracle_dlls
+  failed_when: oracle_dlls.files | length == 0
+
+- name: Verify sqlplus.exe present
+  win_stat:
+    path: "C:\\Oracle\\client\\sqlplus.exe"
+  register: sqlplus_stat
+  failed_when: not sqlplus_stat.stat.exists

@@ -1,0 +1,43 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 2 – Parameterized Windows Image Customization
+#
+# Controlled by three boolean variables passed in via ansible-playbook -e:
+#   install_oracle  (default: false)
+#   install_rstudio (default: false)
+#   install_conda   (default: false)
+#
+# Cloud Run / Terraform passes these as environment variables:
+#   INSTALL_ORACLE, INSTALL_RSTUDIO, INSTALL_CONDA  →  "true" / "false"
+# The entrypoint script converts them to -e flags below.
+# ──────────────────────────────────────────────────────────────────────────────
+- name: Phase 2 – Parameterized Image Customization
+  hosts: all
+  gather_facts: yes
+
+  vars:
+    # Defaults – all off; entrypoint overrides via -e flags
+    install_oracle:  false
+    install_rstudio: false
+    install_conda:   false
+
+    # Shared paths
+    installation_target_dir: "C:/Users/packer_user/installation/"
+    temp_dir: "C:\\Temp"
+
+  tasks:
+
+    # ── Oracle Client ──────────────────────────────────────────────────────────
+    - name: Install Oracle Instant Client
+      include_tasks: install_oracle_tasks.yml
+      when: install_oracle | bool
+
+    # ── RStudio ────────────────────────────────────────────────────────────────
+    - name: Install RStudio (via Chocolatey)
+      include_tasks: install_rstudio_tasks.yml
+      when: install_rstudio | bool
+
+    # ── Conda (Miniconda) ──────────────────────────────────────────────────────
+    - name: Install Conda / Miniconda (via Chocolatey)
+      include_tasks: install_conda_tasks.yml
+      when: install_conda | bool

@@ -4,7 +4,6 @@ substitutions:
   # NAMING CONVENTION: picks up Phase 1 output family — nmfs-[os]-[version]
   _SOURCE_IMAGE_FAMILY: "nmfs-windows-2022"
   _ZONE: "us-east4-b"
-  # NAMING CONVENTION: nmfs-[os]-[version] for Phase 2 family
   _IMAGE_FAMILY: "nmfs-windows-2022"
   _WINRM_SECRET: "packer-winrm-password"
   _PACKER_TEMPLATE: "win2022-oracle-client-dev/packer/customize.pkr.hcl"

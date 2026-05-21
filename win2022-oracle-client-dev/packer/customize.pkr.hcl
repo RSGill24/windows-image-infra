@@ -55,7 +55,9 @@ variable "installation_target_dir" {
   type = string
 }
 
-source "googlecompute" "customize_with_oracle" {
+# NAMING CONVENTION: nmfs-[os]-[version] for family, nmfs-[os/version]-[timestamp] for images
+# Phase 2 picks up from Phase 1's nmfs-windows-2022 family
+source "googlecompute" "nmfs_windows_2022_oracle" {
   project_id              = var.project_id
   use_iap                 = true
   use_internal_ip         = true
@@ -85,7 +87,7 @@ source "googlecompute" "customize_with_oracle" {
   tags      = ["winrm"]
 
   image_family = var.image_family
-  image_name   = "pww-disa-hardened-oracle-client-{{timestamp}}"
+  image_name   = "nmfs-windows-2022-oracle-client-{{timestamp}}"
   machine_type = var.machine_type
 
   metadata = {
@@ -134,7 +136,7 @@ EOF
 }
 
 build {
-  sources = ["sources.googlecompute.customize_with_oracle"]
+  sources = ["sources.googlecompute.nmfs_windows_2022_oracle"]
 
   provisioner "powershell" {
     inline = [

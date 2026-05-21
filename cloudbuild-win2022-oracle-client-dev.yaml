@@ -1,9 +1,11 @@
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
   _SOURCE_IMAGE_PROJECT_ID: "big-mender-473219-r2"
-  _SOURCE_IMAGE_FAMILY: "pww-windows-2022-hardened"
+  # NAMING CONVENTION: picks up Phase 1 output family — nmfs-[os]-[version]
+  _SOURCE_IMAGE_FAMILY: "nmfs-windows-2022"
   _ZONE: "us-east4-b"
-  _IMAGE_FAMILY: "pww-windows-2022-oracle-client-dev"
+  # NAMING CONVENTION: nmfs-[os]-[version]-[purpose] for Phase 2 family
+  _IMAGE_FAMILY: "nmfs-windows-2022-oracle-client"
   _WINRM_SECRET: "packer-winrm-password"
   _PACKER_TEMPLATE: "win2022-oracle-client-dev/packer/customize.pkr.hcl"
   _PACKER_VERSION: "1.9.4"
@@ -11,11 +13,13 @@ substitutions:
   _INSTALLATION_TARGET_DIR: "C:/Users/packer_user/installation/"
   _MACHINE_TYPE: "e2-standard-8"
   _REGION: "us-east4"
-  _AR_REPO: "packer-images"
-  _IMAGE_NAME: "windows-packer-oracle-client-customizer"
+  # NAMING CONVENTION: nmfs-packer-images for repo
+  _AR_REPO: "nmfs-packer-images"
+  # NAMING CONVENTION: nmfs-[os]-packer-[purpose]-customizer
+  _IMAGE_NAME: "nmfs-windows-packer-oracle-client-customizer"
 
 steps:
-
+# ── Step 1: Build Docker Image ────────────────────────────────
 - id: 'docker-build'
   name: 'gcr.io/cloud-builders/docker'
   entrypoint: bash
@@ -31,6 +35,7 @@ steps:
         --file "win2022-oracle-client-dev/packer/scripts/Dockerfile" \
         "."
 
+# ── Step 2: Configure Artifact Registry Auth ─────────────────
 - id: 'configure-docker-auth'
   name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: bash
@@ -40,6 +45,7 @@ steps:
       set -euo pipefail
       gcloud auth configure-docker ${_REGION}-docker.pkg.dev --quiet
 
+# ── Step 3: Push Docker Image to Artifact Registry ────────────
 - id: 'docker-push'
   name: 'gcr.io/cloud-builders/docker'
   args:
@@ -47,11 +53,12 @@ steps:
   - '--all-tags'
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}'
 
+# ── Images stored in Artifact Registry ───────────────────────
 images:
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:$SHORT_SHA'
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest'
 
+# ── Service Account & Options ─────────────────────────────────
 serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
-
 options:
   logging: CLOUD_LOGGING_ONLY

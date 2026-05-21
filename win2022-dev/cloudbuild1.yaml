@@ -19,7 +19,7 @@ substitutions:
   # NAMING CONVENTION: nmfs-packer-images for repo
   _AR_REPO: "nmfs-packer-images"
   # NAMING CONVENTION: nmfs-[os]-packer-builder for image name
-  _IMAGE_NAME: "nmfs-windows-packer-builder"
+  _IMAGE_NAME: "windows/win22-packer-builder"
 
 steps:
 # ── Step 1: Trivy Security Scans ─────────────────────────────

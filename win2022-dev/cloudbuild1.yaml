@@ -18,7 +18,6 @@ substitutions:
   _REGION: "us-east4"
   # NAMING CONVENTION: nmfs-packer-images for repo
   _AR_REPO: "nmfs-packer-images"
-  # NAMING CONVENTION: nmfs-[os]-packer-builder for image name
   _IMAGE_NAME: "windows/win22-packer-builder"
 
 steps:

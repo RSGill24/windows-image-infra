@@ -29,7 +29,8 @@ variable "hardening_source_dir"    { type = string }
 variable "hardening_target_dir"    { type = string }
 variable "hardening_entry_script"  { type = string }
 
-source "googlecompute" "update_pam_ww" {
+# NAMING CONVENTION: nmfs-[os]-[version] for family, nmfs-[os/version]-[timestamp] for images
+source "googlecompute" "nmfs_windows_2022" {
   project_id              = var.project_id
   use_iap                 = true
   use_internal_ip         = true
@@ -57,7 +58,7 @@ source "googlecompute" "update_pam_ww" {
   tags       = ["winrm"]
 
   image_family = var.image_family
-  image_name   = "pww-disa-${var.source_image}-hardened-patched-{{timestamp}}"
+  image_name   = "nmfs-windows-2022-{{timestamp}}"
   machine_type = var.machine_type
 
   metadata = {
@@ -87,7 +88,7 @@ EOF
 }
 
 build {
-  sources = ["sources.googlecompute.update_pam_ww"]
+  sources = ["sources.googlecompute.nmfs_windows_2022"]
 
   # Step 1: Confirm connection, ensure packer_user is in Administrators,
   # and prep elevated-provisioner prerequisites (seclogon + SeBatchLogonRight).
@@ -208,7 +209,7 @@ build {
     source      = "${var.hardening_source_dir}/apply_remaining_fixes.ps1"
     destination = "${var.hardening_target_dir}/apply_remaining_fixes.ps1"
   }
-  
+
   provisioner "file" {
     source      = "${var.hardening_source_dir}/install_nessus.ps1"
     destination = "${var.hardening_target_dir}/install_nessus.ps1"
@@ -226,28 +227,8 @@ build {
     destination = "${var.hardening_target_dir}/install_trellix.ps1"
   }
 
-  # Step 3.x: Recursively upload DoD PKI folder
-  # provisioner "file" {
-  #  source      = "${var.hardening_source_dir}/DoD_Approved_External_PKIs_Trust_Chains_v11.5_20250303"
-  # destination = "C:/DoD_Certs"
- # }
- # provisioner "powershell" {
- # elevated_user     = "packer_user"
- # elevated_password = var.packer_user_password
- # inline = [
- #   "Write-Host 'Importing DoD certs into Untrusted store...'",
-
- #   "Get-ChildItem -Path 'C:\\DoD_Certs' -Recurse -Include *.cer, *.crt, *.der | ForEach-Object {",
- #   "  Import-Certificate -FilePath $_.FullName -CertStoreLocation 'Cert:\\LocalMachine\\Disallowed' | Out-Null",
- #   "  Write-Host \"Imported: $($_.Name)\"",
- #   "}"
- # ]
-# }
-
   # FIX: script is named audit.ps1 on disk -- upload as audit.ps1.
   # run_all.ps1 calls "$scriptDir\audit.ps1" so the filename must match exactly.
-  # The previous Packer HCL had this correct; the integrity check was wrong
-  # (it was checking for apply_audit_policy.ps1 which does not exist).
   provisioner "file" {
     source      = "${var.hardening_source_dir}/audit.ps1"
     destination = "${var.hardening_target_dir}/audit.ps1"
@@ -264,11 +245,7 @@ build {
   }
 
   # Step 3.5: Normalize script encoding to CRLF + UTF-8 BOM.
-  # Prevents PowerShell parse errors caused by encoding mismatches
-  # introduced during WinRM file transfer.
   provisioner "powershell" {
-    # elevated_user/password removed -- LocalAccountTokenFilterPolicy=1 set in Step 1
-    # gives WinRM admin sessions full tokens, so elevation wrapper is unnecessary.
     inline = [
       "Write-Host '--- Fixing File Encodings (CRLF + UTF-8 BOM) ---'",
       "$targetDir = '${var.hardening_target_dir}'",
@@ -284,11 +261,7 @@ build {
   }
 
   # Step 4: Verify uploaded scripts are intact before running hardening.
-  # FIX: integrity check now uses 'audit.ps1' (the actual filename) instead
-  # of 'apply_audit_policy.ps1' which caused the MISSING error in the last run.
   provisioner "powershell" {
-    # elevated_user/password removed -- LocalAccountTokenFilterPolicy=1 set in Step 1
-    # gives WinRM admin sessions full tokens, so elevation wrapper is unnecessary.
     inline = [
       "Write-Host '--- Pre-hardening script integrity check ---'",
       "$checks = @(",
@@ -326,8 +299,6 @@ build {
       "Set-Location '${var.hardening_target_dir}'",
       "& '${var.hardening_target_dir}/${var.hardening_entry_script}'"
     ]
-    # elevated_user/password removed -- LocalAccountTokenFilterPolicy=1 set in Step 1
-    # gives WinRM admin sessions full tokens, so elevation wrapper is unnecessary.
-    timeout           = "85m"
+    timeout = "85m"
   }
 }

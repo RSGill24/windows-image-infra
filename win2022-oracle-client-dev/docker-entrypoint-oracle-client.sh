@@ -6,23 +6,25 @@ packer version
 
 PROJECT_ID="big-mender-473219-r2"
 SOURCE_IMAGE_PROJECT_ID="big-mender-473219-r2"
-SOURCE_IMAGE_FAMILY="pww-windows-2022-hardened"
-IMAGE_FAMILY="pww-windows-2022-oracle-client-dev"
+
+# NAMING CONVENTION: picks up Phase 1 output — nmfs-[os]-[version]
+SOURCE_IMAGE_FAMILY="nmfs-windows-2022"
+
+# NAMING CONVENTION: nmfs-[os]-[version]-[purpose]
+IMAGE_FAMILY="nmfs-windows-2022-oracle-client"
+
 ZONE="us-east4-b"
 MACHINE_TYPE="e2-standard-8"
 SERVICE_ACCOUNT_EMAIL="packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
 WINRM_SECRET="packer-winrm-password"
-
 INSTALLATION_TARGET_DIR="C:/Users/packer_user/installation/"
 INSTALLATION_SOURCE_DIR="./ansible-playbook"
-
 PACKER_TEMPLATE="customize.pkr.hcl"
 
 PACKER_PW=$(gcloud secrets versions access latest \
   --project "${PROJECT_ID}" \
   --secret "${WINRM_SECRET}")
 export PACKER_PW
-
 export PACKER_LOG=1
 export PACKER_LOG_PATH="/tmp/packer-debug.log"
 
@@ -66,6 +68,7 @@ if ! packer build \
   exit 1
 fi
 
+# NAMING CONVENTION: filter uses updated nmfs-windows-2022-oracle-client family
 LATEST_IMAGE=$(gcloud compute images list \
   --project="${PROJECT_ID}" \
   --filter="family=${IMAGE_FAMILY}" \
@@ -78,7 +81,6 @@ if [ -n "${LATEST_IMAGE}" ]; then
     --project="${PROJECT_ID}" \
     --filter="family=${IMAGE_FAMILY} AND name!=${LATEST_IMAGE}" \
     --format="value(name)")
-
   while IFS= read -r IMAGE; do
     [ -z "$IMAGE" ] && continue
     gcloud compute images deprecate "${IMAGE}" \

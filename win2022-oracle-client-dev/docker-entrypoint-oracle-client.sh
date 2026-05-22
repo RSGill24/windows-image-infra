@@ -1,40 +1,59 @@
 #!/usr/bin/env bash
+# ============================================================
+# docker-entrypoint.sh
+# Phase 2: Oracle Client Image Builder
+# Runs inside the Cloud Run Job container.
+# ============================================================
+
 set -euo pipefail
 
-echo "Phase 2: Oracle Client Image Builder — $(date -u)"
-packer version
+echo "========================================================"
+echo " Phase 2: Oracle Client Image Builder"
+echo " $(date -u)"
+echo "========================================================"
 
-PROJECT_ID="big-mender-473219-r2"
-SOURCE_IMAGE_PROJECT_ID="big-mender-473219-r2"
+# ── Required environment variables ───────────────────────────
+# These are injected by the Cloud Run Job definition
+: "${PROJECT_ID:?PROJECT_ID env var is required}"
+: "${SOURCE_IMAGE_PROJECT_ID:?SOURCE_IMAGE_PROJECT_ID env var is required}"
+: "${SOURCE_IMAGE_FAMILY:?SOURCE_IMAGE_FAMILY env var is required}"
+: "${IMAGE_FAMILY:?IMAGE_FAMILY env var is required}"
+: "${ZONE:?ZONE env var is required}"
+: "${MACHINE_TYPE:?MACHINE_TYPE env var is required}"
+: "${SERVICE_ACCOUNT_EMAIL:?SERVICE_ACCOUNT_EMAIL env var is required}"
+: "${WINRM_SECRET:?WINRM_SECRET env var is required}"
+: "${INSTALLATION_SOURCE_DIR:?INSTALLATION_SOURCE_DIR env var is required}"
+: "${INSTALLATION_TARGET_DIR:?INSTALLATION_TARGET_DIR env var is required}"
+: "${PACKER_TEMPLATE:?PACKER_TEMPLATE env var is required}"
 
-# NAMING CONVENTION: picks up Phase 1 output — nmfs-[os]-[version]
-SOURCE_IMAGE_FAMILY="nmfs-windows-2022"
-
-# NAMING CONVENTION: nmfs-[os]-[version]-[purpose]
-IMAGE_FAMILY="nmfs-windows-2022"
-
-ZONE="us-east4-b"
-MACHINE_TYPE="e2-standard-8"
-SERVICE_ACCOUNT_EMAIL="packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com"
-WINRM_SECRET="packer-winrm-password"
-INSTALLATION_TARGET_DIR="C:/Users/packer_user/installation/"
-INSTALLATION_SOURCE_DIR="./ansible-playbook"
-PACKER_TEMPLATE="customize.pkr.hcl"
-
-PACKER_PW=$(gcloud secrets versions access latest \
-  --project "${PROJECT_ID}" \
-  --secret "${WINRM_SECRET}")
-export PACKER_PW
+# ── Packer logging ───────────────────────────────────────────
 export PACKER_LOG=1
 export PACKER_LOG_PATH="/tmp/packer-debug.log"
 
+# ── Validate template exists ─────────────────────────────────
 if [ ! -f "${PACKER_TEMPLATE}" ]; then
   echo "[ERROR] Packer template not found: ${PACKER_TEMPLATE}"
   exit 1
 fi
 
+# ── Fetch WinRM password from Secret Manager ─────────────────
+echo "Fetching WinRM password from Secret Manager..."
+PACKER_PW=$(gcloud secrets versions access latest \
+  --project "${PROJECT_ID}" \
+  --secret "${WINRM_SECRET}")
+export PACKER_PW
+
+# ── Check gcloud auth ────────────────────────────────────────
+if ! gcloud auth list 2>&1 | grep -q "ACTIVE"; then
+  echo "[ERROR] gcloud is not authenticated"
+  exit 1
+fi
+
+# ── Init & Validate Packer template ──────────────────────────
+echo "Initialising Packer plugins..."
 packer init "${PACKER_TEMPLATE}"
 
+echo "Validating Packer template..."
 packer validate \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
@@ -47,11 +66,8 @@ packer validate \
   -var "installation_target_dir=${INSTALLATION_TARGET_DIR}" \
   "${PACKER_TEMPLATE}"
 
-if ! gcloud auth list 2>&1 | grep -q "ACTIVE"; then
-  echo "[ERROR] gcloud is not authenticated"
-  exit 1
-fi
-
+# ── Run Packer build ─────────────────────────────────────────
+echo "Starting Packer build..."
 if ! packer build \
   -var "project_id=${PROJECT_ID}" \
   -var "source_image_project_id=${SOURCE_IMAGE_PROJECT_ID}" \
@@ -68,7 +84,11 @@ if ! packer build \
   exit 1
 fi
 
-# NAMING CONVENTION: filter uses updated nmfs-windows-2022-oracle-client family
+echo "Packer build completed successfully."
+
+# ── Deprecate older oracle-client images only ────────────────
+echo "Deprecating older images in family ${IMAGE_FAMILY}..."
+
 LATEST_IMAGE=$(gcloud compute images list \
   --project="${PROJECT_ID}" \
   --filter="family=${IMAGE_FAMILY}" \
@@ -77,9 +97,10 @@ LATEST_IMAGE=$(gcloud compute images list \
   --limit=1)
 
 if [ -n "${LATEST_IMAGE}" ]; then
+  # Only deprecates Phase 2 oracle-client images (nmfs-windows-2022-oracle-client-[timestamp])
+  # Never touches Phase 1 base images (nmfs-windows-2022-[timestamp])
   OLD_IMAGES=$(gcloud compute images list \
     --project="${PROJECT_ID}" \
-    # Only deprecates oracle-client images — never touches Phase 1 base images
     --filter="family=${IMAGE_FAMILY} AND name~'^nmfs-windows-2022-oracle-client' AND name!=${LATEST_IMAGE}" \
     --format="value(name)")
 
@@ -91,4 +112,5 @@ if [ -n "${LATEST_IMAGE}" ]; then
       --replacement="${LATEST_IMAGE}"
   done <<< "${OLD_IMAGES}"
 fi
+
 echo "Phase 2 build complete: ${LATEST_IMAGE}"

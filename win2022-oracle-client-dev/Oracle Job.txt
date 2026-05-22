@@ -43,7 +43,7 @@ resource "google_cloud_run_v2_job" "oracle_client" {
 
       containers {
         name  = "nmfs-windows-packer-oracle-client"
-        image = "${var.ar_region}-docker.pkg.dev/${var.project_id}/nmfs-packer-images/windows/nmfs-windows-2022-oracle-client:latest"
+        image = "${var.ar_region}-docker.pkg.dev/${var.project_id}/nmfs-packer-images/nmfs-windows-2022-oracle-client:latest"
 
         resources {
           limits = {

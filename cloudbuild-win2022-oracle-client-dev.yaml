@@ -15,7 +15,7 @@ substitutions:
   # NAMING CONVENTION: nmfs-packer-images for repo
   _AR_REPO: "nmfs-packer-images"
   # NAMING CONVENTION: nmfs-[os]-[version]-[purpose] (timestamp appended at build time)
-  _IMAGE_NAME: "nmfs-windows-2022-oracle-client"
+  _IMAGE_NAME: "windows/nmfs-windows-2022-oracle-client"
 steps:
 # ── Step 1: Build Docker Image ────────────────────────────────
 - id: 'docker-build'

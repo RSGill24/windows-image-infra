@@ -11,7 +11,7 @@ SOURCE_IMAGE_PROJECT_ID="big-mender-473219-r2"
 SOURCE_IMAGE_FAMILY="nmfs-windows-2022"
 
 # NAMING CONVENTION: nmfs-[os]-[version]-[purpose]
-IMAGE_FAMILY="nmfs-windows-2022-oracle-client"
+IMAGE_FAMILY="nmfs-windows-2022"
 
 ZONE="us-east4-b"
 MACHINE_TYPE="e2-standard-8"
@@ -79,8 +79,10 @@ LATEST_IMAGE=$(gcloud compute images list \
 if [ -n "${LATEST_IMAGE}" ]; then
   OLD_IMAGES=$(gcloud compute images list \
     --project="${PROJECT_ID}" \
-    --filter="family=${IMAGE_FAMILY} AND name!=${LATEST_IMAGE}" \
+    # Only deprecates oracle-client images — never touches Phase 1 base images
+    --filter="family=${IMAGE_FAMILY} AND name~'^nmfs-windows-2022-oracle-client' AND name!=${LATEST_IMAGE}" \
     --format="value(name)")
+
   while IFS= read -r IMAGE; do
     [ -z "$IMAGE" ] && continue
     gcloud compute images deprecate "${IMAGE}" \
@@ -89,5 +91,4 @@ if [ -n "${LATEST_IMAGE}" ]; then
       --replacement="${LATEST_IMAGE}"
   done <<< "${OLD_IMAGES}"
 fi
-
-echo "Build complete: ${LATEST_IMAGE}"
+echo "Phase 2 build complete: ${LATEST_IMAGE}"

@@ -88,30 +88,37 @@ echo "Packer build completed successfully."
 
 # ── Deprecate older oracle-client images only ────────────────
 
+# ── Deprecate older oracle-client images only ────────────────
 echo "Deprecating older images in family ${IMAGE_FAMILY}..."
 
 LATEST_IMAGE=$(gcloud compute images list \
   --project="${PROJECT_ID}" \
-  --filter="family=${IMAGE_FAMILY} AND name~'oracle-client'" \
+  --no-standard-images \
   --sort-by="~creationTimestamp" \
   --format="value(name)" \
+  --filter="family=${IMAGE_FAMILY}" \
   --limit=1)
 
+echo "Latest image: ${LATEST_IMAGE}"
+
 if [ -n "${LATEST_IMAGE}" ]; then
-  # Only deprecates Phase 2 oracle-client images
-  # Never touches Phase 1 base images (nmfs-windows-2022-[timestamp])
+  # Get all images in family, skip latest, skip Phase 1 base images in bash
   OLD_IMAGES=$(gcloud compute images list \
     --project="${PROJECT_ID}" \
-    --filter="family=${IMAGE_FAMILY} AND name~'oracle-client' AND NOT name=${LATEST_IMAGE}" \
-    --format="value(name)")
+    --no-standard-images \
+    --sort-by="~creationTimestamp" \
+    --format="value(name)" \
+    --filter="family=${IMAGE_FAMILY}" \
+    | grep "oracle-client" \
+    | grep -v "${LATEST_IMAGE}" || true)
 
   while IFS= read -r IMAGE; do
     [ -z "$IMAGE" ] && continue
+    echo "Deprecating: ${IMAGE}"
     gcloud compute images deprecate "${IMAGE}" \
       --project="${PROJECT_ID}" \
       --state=DEPRECATED \
       --replacement="${LATEST_IMAGE}"
-    echo "Deprecated: ${IMAGE}"
   done <<< "${OLD_IMAGES}"
 fi
 

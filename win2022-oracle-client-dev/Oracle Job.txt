@@ -1,22 +1,38 @@
+variable "project_id" {
+  description = "GCP Project ID"
+  type        = string
+  default     = "big-mender-473219-r2"
+}
+
+variable "region" {
+  description = "GCP Region for Cloud Run Job"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "ar_region" {
+  description = "GCP Region for Artifact Registry"
+  type        = string
+  default     = "us-east4"
+}
+
+variable "zone" {
+  description = "GCP Zone for Packer build"
+  type        = string
+  default     = "us-east4-b"
+}
+
 resource "google_cloud_run_v2_job" "oracle_client" {
-  name     = "oracle-client-image-build"
+  name     = "nmfs-windows-packer-oracle-client"
   location = var.region
   project  = var.project_id
- 
-  labels = {
-    env     = "dev"
-    os      = "windows"
-    db      = "oracle"
-    managed = "terraform"
-  }
- 
+
   template {
     template {
       service_account = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
- 
-      max_retries = 1
-      timeout     = "3600s"
- 
+      max_retries     = 1
+      timeout         = "6000s"
+
       vpc_access {
         network_interfaces {
           network    = "app-network"
@@ -24,18 +40,18 @@ resource "google_cloud_run_v2_job" "oracle_client" {
         }
         egress = "ALL_TRAFFIC"
       }
- 
+
       containers {
-        name  = "oracle-client-packer-builder"
-        image = "${var.region}-docker.pkg.dev/${var.project_id}/packer-images/windows-packer-oracle-client-customizer:latest"
- 
+        name  = "nmfs-windows-packer-oracle-client"
+        image = "${var.ar_region}-docker.pkg.dev/${var.project_id}/nmfs-packer-images/windows/nmfs-windows-2022-oracle-client:latest"
+
         resources {
           limits = {
             cpu    = "2"
-            memory = "4Gi"
+            memory = "2Gi"
           }
         }
- 
+
         env {
           name  = "PROJECT_ID"
           value = var.project_id
@@ -46,15 +62,15 @@ resource "google_cloud_run_v2_job" "oracle_client" {
         }
         env {
           name  = "SOURCE_IMAGE_FAMILY"
-          value = "pww-windows-2022-hardened"
+          value = "nmfs-windows-2022"
         }
         env {
           name  = "IMAGE_FAMILY"
-          value = "pww-windows-2022-oracle-client-dev"
+          value = "nmfs-windows-2022"
         }
         env {
           name  = "ZONE"
-          value = "${var.region}-b"
+          value = var.zone
         }
         env {
           name  = "MACHINE_TYPE"
@@ -76,7 +92,6 @@ resource "google_cloud_run_v2_job" "oracle_client" {
           name  = "PACKER_TEMPLATE"
           value = "customize.pkr.hcl"
         }
- 
         env {
           name = "WINRM_SECRET"
           value_source {

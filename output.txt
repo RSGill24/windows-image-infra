@@ -1,1 +1,13 @@
-mv "/home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win2022-main/packer/ harden_ww.pkr.hcl" "/home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win2022-main/packer/harden_ww.pkr.hcl"
+Already have image (with digest): gcr.io/cloud-builders/docker
+The push refers to repository [us-east4-docker.pkg.dev/ggn-nmfs-winde-dev-1/image-builders/windows/win22-packer-builder]
+956238774e8b: Preparing
+72bdd6666ce9: Preparing
+d94d7c340d70: Preparing
+aa9cccff90f3: Preparing
+1f1c70fa3a38: Preparing
+19bc403a0fd1: Preparing
+e1e2f324d4a2: Preparing
+7fcbc0ba2b6f: Preparing
+5cf0b1897d48: Preparing
+b2008ac19409: Preparing
+name unknown: Repository "image-builders" not found

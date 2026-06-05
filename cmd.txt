@@ -1,1 +1,1 @@
-grep -i "dockerfile" /home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win22-main/cloudbuild1-submit.yaml
+grep -i "dockerfile" /home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win2022-main/cloudbuild1-submit.yaml

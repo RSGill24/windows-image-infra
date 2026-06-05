@@ -2,3 +2,8 @@ cd /home/rajinder_gill/win2022-dev1/nmfs-gcp-winde
 gcloud builds submit . \
   --config=win2022-main/cloudbuild1-submit.yaml \
   --region=us-central1
+
+
+Already have image (with digest): gcr.io/cloud-builders/docker
+Building Docker image: us-east4-docker.pkg.dev/ggn-nmfs-winde-dev-1/image-builders/windows/win22-packer-builder
+unable to prepare context: unable to evaluate symlinks in Dockerfile path: lstat /workspace/win2022-main/Dockerfile: no such file or directory

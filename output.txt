@@ -1,13 +1,8 @@
-rajinder_gill@cloudshell:~/win2022-dev1/nmfs-gcp-winde (ggn-nmfs-winde-dev-1)$ gcloud run jobs create windows-image-build \
+gcloud run jobs create windows-image-build \
   --image=us-east4-docker.pkg.dev/ggn-nmfs-winde-dev-1/image-builders/windows/win22-packer-builder:latest \
   --region=us-east4 \
-  --service-account=images-build-sa1@${_PROJECT_ID}.iam.gserviceaccount.com \
+  --service-account=images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com \
   --memory=4Gi \
   --cpu=2 \
   --task-timeout=36000 \
-  --set-env-vars=PROJECT_ID=ggn-nmfs-winde-dev-1,ZONE=us-east4-b,IMAGE_FAMILY=nmfs-windows-2022,SOURCE_IMAGE_FAMILY=windows-2022,SOURCE_IMAGE_PROJECT_ID=windows-cloud,MACHINE_TYPE=e2-standard-8,AR_REPO=image-builders, REGION=us-east4
-ERROR: (gcloud.run.jobs.create) unrecognized arguments: REGION=us-east4 (did you mean '--region'?) 
-
-To search the help text of gcloud commands, run:
-  gcloud help -- SEARCH_TERMS
-rajinder_gill@cloudshell:~/win202
+  --set-env-vars=PROJECT_ID=ggn-nmfs-winde-dev-1,ZONE=us-east4-b,IMAGE_FAMILY=nmfs-windows-2022,SOURCE_IMAGE_FAMILY=windows-2022,SOURCE_IMAGE_PROJECT_ID=windows-cloud,MACHINE_TYPE=e2-standard-8,AR_REPO=image-builders,REGION=us-east4

@@ -1,1 +1,1 @@
-find /home/rajinder_gill/win2022-dev1/nmfs-gcp-winde -name "Dockerfile"
+ls /home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win2022-main/

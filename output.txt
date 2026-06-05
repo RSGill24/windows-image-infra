@@ -1,2 +1,1 @@
-2022-dev1/nmfs-gcp-winde (ggn-nmfs-winde-dev-1)$ ls /home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win2022-main/packer/
-' harden_ww.pkr.hcl'   scripts
+mv "/home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win2022-main/packer/ harden_ww.pkr.hcl" "/home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win2022-main/packer/harden_ww.pkr.hcl"

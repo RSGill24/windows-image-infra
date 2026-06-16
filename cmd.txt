@@ -1,1 +1,9 @@
-grep -i "dockerfile" /home/rajinder_gill/win2022-dev1/nmfs-gcp-winde/win2022-main/cloudbuild1-submit.yaml
+gcloud compute instances describe packer-6a303f28-695f-7378-6101-b1479c8d4580 \
+  --zone=us-east4 \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="yaml(name, status, networkInterfaces, tags)"
+
+gcloud compute networks subnets describe SUBNET_NAME \
+  --region=us-east4 \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="get(name, privateIpGoogleAccess, region)"

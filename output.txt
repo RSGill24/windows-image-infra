@@ -43,3 +43,45 @@ rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud projects add-iam-polic
 ERROR: (gcloud.projects.add-iam-policy-binding) [rajinder.gill@noaa.gov] does not have permission to access projects instance [ggn-nmfs-winde-dev-1:setIamPolicy] (or it may not exist): Policy update access denied. This command is authenticated as rajinder.gill@noaa.gov which is the active account specified by the [core/account] property.
 rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1   --member="user:rajinder.gill@noaa.gov"   --role="roles/iap.tunnelResourceAccessor"
 
+ROLE: roles/artifactregistry.admin
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/cloudbuild.admin
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/cloudscheduler.admin
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/cloudsupport.techSupportEditor
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/compute.admin
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/containeranalysis.occurrences.viewer
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/iam.serviceAccountAdmin
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/logging.viewer
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/monitoring.viewer
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/run.admin
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/secretmanager.admin
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/securitycenter.adminViewer
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/serviceusage.serviceUsageConsumer
+MEMBERS: user:rajinder.gill@noaa.gov
+
+ROLE: roles/storage.admin
+MEMBERS: user:rajinder.gill@noaa.gov
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ 

@@ -2,3 +2,8 @@ gcloud compute instances list \
   --filter="name~'packer'" \
   --project=ggn-nmfs-winde-dev-1 \
   --format="value(name)"
+
+
+gcloud compute instances get-serial-port-output <VM-NAME> \
+  --zone=us-east4-b \
+  --project=ggn-nmfs-winde-dev-1 2>&1 | tail -80

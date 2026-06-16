@@ -21,3 +21,25 @@ ERROR: (gcloud.compute.networks.subnets.describe) Could not fetch resource:
 
 rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute networks subnets describe local-subnet   --region=us-east4   --project=ggn-nmfs-winde-dev-1   --format="get(privateIpGoogleAccess)"
 True
+
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ ^C
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute start-iap-tunnel packer-6a303f28-695f-7378-6101-b1479c8d4580 5986 \
+  --local-host-port=localhost:15986 \
+  --zone=us-east4-b \
+  --project=ggn-nmfs-winde-dev-1
+WARNING: 
+
+To increase the performance of the tunnel, consider installing NumPy. For instructions,
+please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth
+
+Testing if tunnel connection works.
+ERROR: (gcloud.compute.start-iap-tunnel) While checking if a connection can be made: Error while connecting [4033: 'not authorized'].
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1 \
+  --member="user:rajinder_gill@noaa.gov" \
+  --role="roles/iap.tunnelResourceAccessor"
+ERROR: Policy modification failed. For a binding with condition, run "gcloud alpha iam policies lint-condition" to identify issues in condition.
+ERROR: (gcloud.projects.add-iam-policy-binding) INVALID_ARGUMENT: User rajinder_gill@noaa.gov does not exist.
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1   --member="user:rajinder.gill@noaa.gov"   --role="roles/iap.tunnelResourceAccessor"
+ERROR: (gcloud.projects.add-iam-policy-binding) [rajinder.gill@noaa.gov] does not have permission to access projects instance [ggn-nmfs-winde-dev-1:setIamPolicy] (or it may not exist): Policy update access denied. This command is authenticated as rajinder.gill@noaa.gov which is the active account specified by the [core/account] property.
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1   --member="user:rajinder.gill@noaa.gov"   --role="roles/iap.tunnelResourceAccessor"
+

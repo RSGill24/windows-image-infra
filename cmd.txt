@@ -1,86 +1,226 @@
-gcloud compute start-iap-tunnel packer-6a303f28-695f-7378-6101-b1479c8d4580 5986 \
-  --local-host-port=localhost:5986 \
-  --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 \
-  --impersonate-service-account=images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+packer {
+  required_version = ">= 1.8.0"
 
+  required_plugins {
+    googlecompute = {
+      version = ">= 1.1.6"
+      source  = "github.com/hashicorp/googlecompute"
+    }
+    ansible = {
+      version = ">= 1.0.0"
+      source  = "github.com/hashicorp/ansible"
+    }
+  }
+}
 
-curl -sk -o /dev/null -w "%{http_code}\n" https://localhost:5986/wsman
+variable "packer_user_password" {
+  type      = string
+  default   = env("PACKER_PW")
+  sensitive = true
+}
 
-pip3 install pywinrm --quiet
+variable "project_id" {
+  type = string
+}
 
+variable "source_image_project_id" {
+  type = string
+}
 
-python3 -c "
-import winrm
-p = winrm.Protocol(
-    endpoint='https://localhost:5986/wsman',
-    transport='ntlm',
-    username='packer_user',
-    password='$(gcloud secrets versions access latest --secret=packer-winrm-password --project=ggn-nmfs-winde-dev-1)',
-    server_cert_validation='ignore'
-)
-p.open_shell()
-print('WinRM connected successfully!')
-"
+variable "source_image_family" {
+  type = string
+}
 
+variable "service_account_email" {
+  type = string
+}
 
-PW="$(gcloud secrets versions access latest \
-  --secret=packer-winrm-password \
-  --project=ggn-nmfs-winde-dev-1 | tr -d '\r\n')"
+variable "image_family" {
+  type = string
+}
 
-echo "Password length: ${#PW}"
+variable "machine_type" {
+  type = string
+}
 
+variable "zone" {
+  type = string
+}
 
+variable "installation_source_dir" {
+  type = string
+}
 
-PW="$(gcloud secrets versions access latest \
-  --secret=packer-winrm-password \
-  --project=ggn-nmfs-winde-dev-1 | tr -d '\r\n')"
+variable "installation_target_dir" {
+  type = string
+}
 
-PW="$PW" python3 - <<'PY'
-import os, winrm
+# NAMING CONVENTION: nmfs-[os]-[version] for family, nmfs-[os/version]-[timestamp] for images
+# Phase 2 picks up from Phase 1's nmfs-windows-2022 family
+source "googlecompute" "nmfs_windows_2022_oracle" {
+  project_id              = var.project_id
+  use_iap                 = true
+  use_internal_ip         = true
+  omit_external_ip        = true
+  source_image_project_id = [var.source_image_project_id]
+  source_image_family     = var.source_image_family
 
-s = winrm.Session(
-    'https://localhost:5986/wsman',
-    auth=('packer_user', os.environ["PW"]),
-    transport='basic',
-    server_cert_validation='ignore'
-)
+  communicator   = "winrm"
+  winrm_username = "packer_user"
+  winrm_password = var.packer_user_password
+  winrm_use_ssl  = true
+  winrm_insecure = true
+  winrm_use_ntlm = true
+  winrm_port     = 5986
+  winrm_timeout  = "90m"
 
-r = s.run_cmd('hostname')
-print("status:", r.status_code)
-print("stdout:", r.std_out.decode())
-print("stderr:", r.std_err.decode())
-PY
+  service_account_email       = var.service_account_email
+  zone                        = var.zone
+  enable_secure_boot          = true
+  enable_integrity_monitoring = true
+  enable_vtpm                 = true
 
+  network    = "app-network"
+  subnetwork = "app-subnet1"
 
-gcloud secrets versions list packer-winrm-password \
-  --project=ggn-nmfs-winde-dev-1 \
-  --format="table(name,state,createTime)"
+  disk_size = 250
+  tags      = ["winrm"]
 
-gcloud compute instances describe packer-6a303f28-695f-7378-6101-b1479c8d4580 \
-  --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 \
-  --format="yaml(metadata.items)"
+  image_family = var.image_family
+  image_name   = "nmfs-windows-2022-oracle-client-{{timestamp}}"
+  machine_type = var.machine_type
 
-gcloud compute instances get-serial-port-output packer-6a303f28-695f-7378-6101-b1479c8d4580 \
-  --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 \
-  --port=1 | grep -iE "packer_user|winrm|password|created|failed|error|startup|net user|administrator"
+  metadata = {
+    enable-oslogin = "TRUE"
+    windows-startup-script-ps1 = <<EOF
+$User = "packer_user"
+$Password = "${var.packer_user_password}"
 
+# If packer_user already exists in the source image, reset the password.
+# If it does not exist, create it.
+if (Get-LocalUser -Name $User -ErrorAction SilentlyContinue) {
+    net user $User $Password
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to reset password for existing user $User"
+    }
+} else {
+    net user $User $Password /add /y
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create user $User"
+    }
+}
 
+net user $User /active:yes
 
-python3 - <<'PY'
-import winrm
+# Add packer_user to Administrators only if not already present.
+try {
+    Add-LocalGroupMember -Group "Administrators" -Member $User -ErrorAction Stop
+} catch {
+    Write-Host "$User may already be a member of Administrators. Continuing."
+}
 
-s = winrm.Session(
-    'https://localhost:5986/wsman',
-    auth=('packer_user', 'testing_12345'),
-    transport='basic',
-    server_cert_validation='ignore'
-)
+# reg.exe is more reliable than PowerShell on DISA-hardened images
+# where the registry provider may be restricted by GPO
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f
 
-r = s.run_cmd('hostname')
-print("status:", r.status_code)
-print("stdout:", r.std_out.decode())
-print("stderr:", r.std_err.decode())
-PY
+winrm quickconfig -q
+Enable-PSRemoting -Force -SkipNetworkProfileCheck
+
+$cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
+$thumb = $cert.Thumbprint
+
+Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
+New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
+
+Set-Item -Path WSMan:\localhost\Service\Auth\Basic       -Value $true
+Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate   -Value $true
+Set-Item -Path WSMan:\localhost\Service\Auth\CredSSP     -Value $false
+Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
+
+# Generous timeouts and shell limits prevent RemoteDisconnected during Ansible Gathering Facts
+Set-Item -Path WSMan:\localhost\MaxTimeoutms             -Value 1800000
+Set-Item -Path WSMan:\localhost\MaxEnvelopeSizekb        -Value 8192
+winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="2048"}'
+winrm set winrm/config/winrs '@{MaxShellsPerUser="10"}'
+
+netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
+
+# seclogon required for NTLM secondary logon
+Set-Service -Name seclogon -StartupType Manual
+Start-Service -Name seclogon
+
+# Let DISA GPO fully apply before Packer connects
+Start-Sleep -Seconds 30
+
+Write-Host "WinRM NTLM setup complete"
+EOF
+  }
+}
+
+build {
+  sources = ["sources.googlecompute.nmfs_windows_2022_oracle"]
+
+  provisioner "powershell" {
+    inline = [
+      "Write-Host 'Connected as:' $env:USERNAME",
+      "Write-Host 'Computer    :' $env:COMPUTERNAME",
+      "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop } catch {}",
+      "Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue",
+      "Start-Service -Name seclogon -ErrorAction SilentlyContinue",
+      "New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'LocalAccountTokenFilterPolicy' -Value 1 -PropertyType DWord -Force | Out-Null",
+      "Set-Item -Path WSMan:\\localhost\\MaxTimeoutms -Value 1800000 -ErrorAction SilentlyContinue",
+      "Set-Item -Path WSMan:\\localhost\\MaxEnvelopeSizekb -Value 8192 -ErrorAction SilentlyContinue"
+    ]
+  }
+
+  provisioner "shell-local" {
+    environment_vars = [
+      "PACKER_PW=${var.packer_user_password}",
+      "ZONE=${var.zone}",
+      "PROJECT_ID=${var.project_id}",
+      "PLAYBOOK_PATH=/workspace/ansible-playbook/main.yml"
+    ]
+    inline = [
+      "set -eu",
+
+      "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found'; exit 1; }",
+      "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed'; exit 1; }",
+      "command -v curl >/dev/null 2>&1 || { echo 'ERROR: curl not found'; exit 1; }",
+      "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
+
+      # Reuse Packer's existing IAP tunnel by reading its port from /proc cmdline
+      "TUNNEL_PORT=$(cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -o 'local-host-port=[^ ]*' | grep -o '[0-9]*$' | head -1 || true)",
+      "if [ -z \"$TUNNEL_PORT\" ]; then echo 'ERROR: Could not find IAP tunnel port in /proc'; exit 1; fi",
+      "echo \"Found IAP tunnel on port: $TUNNEL_PORT\"",
+
+      "READY=0",
+      "ELAPSED=0",
+      "for i in $(seq 1 360); do",
+      "  HTTP_CODE=$(curl -sk -X POST -o /dev/null -w '%%{http_code}' --max-time 8 \"https://localhost:$TUNNEL_PORT/wsman\" 2>/dev/null || true)",
+      "  if [ \"$HTTP_CODE\" = '401' ] || [ \"$HTTP_CODE\" = '411' ] || [ \"$HTTP_CODE\" = '405' ]; then",
+      "    READY=1",
+      "    echo \"  [attempt $i | elapsed $${ELAPSED}s] WinRM ready (HTTP $HTTP_CODE)\"",
+      "    break",
+      "  fi",
+      "  echo \"  [attempt $i | elapsed $${ELAPSED}s] HTTP '$HTTP_CODE' — retrying in 10s\"",
+      "  sleep 10",
+      "  ELAPSED=$((ELAPSED + 10))",
+      "done",
+
+      "if [ \"$READY\" -eq 0 ]; then echo \"ERROR: WinRM did not respond after 60 minutes\"; exit 1; fi",
+
+      # Settle delay prevents RemoteDisconnected on Gathering Facts
+      "sleep 30",
+
+      "INVENTORY=/tmp/packer_ansible_hosts.ini",
+      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=ntlm\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=60\\nansible_winrm_operation_timeout_sec=120\\nansible_winrm_read_timeout_sec=150\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
+
+      "set +e",
+      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i \"$INVENTORY\" -e \"ansible_password=$PACKER_PW\" \"$PLAYBOOK_PATH\"",
+      "PLAYBOOK_EXIT=$?",
+      "set -e",
+      "exit $PLAYBOOK_EXIT"
+    ]
+  }
+}

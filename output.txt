@@ -1,128 +1,198 @@
-rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud secrets versions list packer-winrm-password \
-  --project=ggn-nmfs-winde-dev-1 \
-  --format="table(name,state,createTime)"
-NAME: 1
-STATE: enabled
-CREATED: 2026-05-28T14:42:27
-rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute instances describe packer-6a303f28-695f-7378-6101-b1479c8d4580 \
-  --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 \
-  --format="yaml(metadata.items)"
-metadata:
-  items:
-  - key: ssh-keys
-    value: ':ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCx9QIpKExyDtqK3RMA9OgYBVk2oNLPGcyX0i1zK/roRe/PiTSJKniATJqmSwnQHlxUlrA5Vy0KS6SPPH2ZIbkcWcfC+n1bbiL1l/ROCm9faxcnshoExdOxfzoj4vjBpAfUoH68VQvLue6cROSy6WA27BxwJFs/oMcDlrQ8Qf36FOP0zxQDwjDbjVUum9jqV5wA47uxkh/40cZjadw7HKUKjdJB4LbKixf9cSiZcpFg47FSb2p774CUSb21DL+JY9ROqbPg6CEy4Un1HI75C1dkuQphQ0T7Zxotj8bakLO6J8GDwrKBs07s1w4Ql6gy77kOAWZJiAI79nmMLN13dZjnhYY49AujpZ7ITbEOxdY5/2o1XA03VK7GWGXKWHpwcZNpkT0vsac9baqdCRTtdEZjAGMlYQWi9RY9I+HlD7RSSD1OFHxMIeQL+gyeUYeICa0cFuYNewkGxXihVCAHPYNaH1OLYPG0W2H3MlTgDsVZs1zPysRNvJE3KVCxquFuAP5xt3lFDt7lAe6vopHcbXANjiVMcV0B6VQxNm1XMLt9/5YSApG83jgQQyIK9CUNpmW/537HYtgPjiCByf7C4SUq21Pu12VgGHVi6E2mnXantdO1zHdBLob2ZwCdKklTGA2oq3O1xtMYfMIJGEuWrNtVQ1doyi1xJyTGz/8TqddNZQ== '
-  - key: windows-startup-script-ps1
-    value: |
-      net user packer_user "testing_12345" /add /y
-      net localgroup Administrators packer_user /add
-      # reg.exe is more reliable than PowerShell on DISA-hardened images
-      # where the registry provider may be restricted by GPO
-      reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f
-      reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f
+packer {
+  required_version = ">= 1.8.0"
 
-      winrm quickconfig -q
-      Enable-PSRemoting -Force -SkipNetworkProfileCheck
+  required_plugins {
+    googlecompute = {
+      version = ">= 1.1.6"
+      source  = "github.com/hashicorp/googlecompute"
+    }
+    ansible = {
+      version = ">= 1.0.0"
+      source  = "github.com/hashicorp/ansible"
+    }
+  }
+}
 
-      $cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
-      $thumb = $cert.Thumbprint
+variable "packer_user_password" {
+  type      = string
+  default   = env("PACKER_PW")
+  sensitive = true
+}
 
-      Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
-      New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
+variable "project_id" {
+  type = string
+}
 
-      Set-Item -Path WSMan:\localhost\Service\Auth\Basic       -Value $true
-      Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate   -Value $true
-      Set-Item -Path WSMan:\localhost\Service\Auth\CredSSP     -Value $false
-      Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
-      # Generous timeouts and shell limits prevent RemoteDisconnected during Ansible Gathering Facts
-      Set-Item -Path WSMan:\localhost\MaxTimeoutms             -Value 1800000
-      Set-Item -Path WSMan:\localhost\MaxEnvelopeSizekb        -Value 8192
-      winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="2048"}'
-      winrm set winrm/config/winrs '@{MaxShellsPerUser="10"}'
+variable "source_image_project_id" {
+  type = string
+}
 
-      netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
-      # seclogon required for NTLM secondary logon
-      Set-Service -Name seclogon -StartupType Manual
-      Start-Service -Name seclogon
-      # Let DISA GPO fully apply before Packer connects
-      Start-Sleep -Seconds 30
+variable "source_image_family" {
+  type = string
+}
 
-      Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM NTLM setup complete" -EntryType Information
-  - key: enable-oslogin
-    value: 'FALSE'
-  - key: startup-script
-    value: ''
-  - key: startup-script-status
-    value: done
-  - key: windows-keys
-    value: '{"expireOn":"2026-06-16T16:36:05.908018Z","userName":"rajinder_gill","email":"rajinder.gill@noaa.gov","modulus":"rOXeGebgIrIDsBwdwrmf9IoJS4OQ4+B0mbSMrBcQW9dcIuzrp4OeeAblm405c/vIN8aWPffkSIo7b6JwsVPt6IEayRMoSixRkU1PS4M29fdJrCccQhntLuXrDyO4pi5i4pcK5ktQnjosylS8xm7bicNmuxmhyKca9f7JMx7CmPmL9gND1i611Bg2JyyPMMMmobqmw+K20qAf9iclbhaBZqYojCz1ljwn7w/kttBWrSi4lNqN/8Us+hFCwsmG3LvhyQiHy5PXd7EnnxLKxvyaqAymAlRiLTVBDmvZhg81h403zwMw34iIdURa2dHsf6Yy3rl/PdJ9vS4StO1c0i3jSw==","exponent":"AQAB"}'
-rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute instances get-serial-port-output packer-6a303f28-695f-7378-6101-b1479c8d4580 \
-  --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 \
-  --port=1 | grep -iE "packer_user|winrm|password|created|failed|error|startup|net user|administrator"
+variable "service_account_email" {
+  type = string
+}
 
-Specify --start=20721 in the next get-serial-port-output invocation to get only the new output starting from here.
-2026-06-15T18:07:38.5782Z  GCEGuestCompatManager: [INFO]: Compat manager created with core plugin already enabled: true
-2026-06-15T18:07:47.6438Z  CorePlugin: [WARNING]: Failed to find previous certificate with error: unable to find certificate: Cannot find object or property.
-2026-06-15T18:07:47.6902Z  CorePlugin: [WARNING]: Failed to find previous certificate with error: unable to find certificate: Cannot find object or property.
-2026-06-15T18:07:51.2685Z [INFO]: Enable core plugin set to: [true], launching script runner for event "startup" from "C:\\Program Files\\Google\\Compute Engine\\agent\\GCEMetadataScriptRunner.exe"
-2026-06-15T18:07:52.2577Z  GCEGuestAgentManager: [WARNING]: Cloud Logging Client Error: rpc error: code = PermissionDenied desc = Request had insufficient authentication scopes.
-error details: name = ErrorInfo reason = ACCESS_TOKEN_SCOPE_INSUFFICIENT domain = googleapis.com metadata = map[method:google.logging.v2.LoggingServiceV2.WriteLogEntries service:logging.googleapis.com]
-2026-06-15T18:07:54.0918Z  CorePlugin: [WARNING]: Cloud Logging Client Error: rpc error: code = PermissionDenied desc = Request had insufficient authentication scopes.
-error details: name = ErrorInfo reason = ACCESS_TOKEN_SCOPE_INSUFFICIENT domain = googleapis.com metadata = map[method:google.logging.v2.LoggingServiceV2.WriteLogEntries service:logging.googleapis.com]
-2026-06-15T18:07:54.7273Z [INFO]: Running metadata script runner (version 20260511.00) for "startup" event
-2026-06-15T18:07:54.7273Z [INFO]: Found windows-startup-script-ps1 in metadata
-2026-06-15T18:07:59.8636Z [WARNING]: Cloud Logging Client Error: rpc error: code = PermissionDenied desc = Request had insufficient authentication scopes.
-error details: name = ErrorInfo reason = ACCESS_TOKEN_SCOPE_INSUFFICIENT domain = googleapis.com metadata = map[method:google.logging.v2.LoggingServiceV2.WriteLogEntries service:logging.googleapis.com]
-2026-06-15T18:08:02.0435Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): The account already exists.
-2026-06-15T18:08:02.0435Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:02.0729Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): More help is available by typing NET HELPMSG 2224.
-2026-06-15T18:08:02.1043Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:02.1517Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): System error 1378 has occurred.
-2026-06-15T18:08:02.1833Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:02.2149Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): The specified account name is already a member of the group.
-2026-06-15T18:08:02.2458Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:02.8510Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): The operation completed successfully.
-2026-06-15T18:08:02.8756Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): The operation completed successfully.
-2026-06-15T18:08:06.2346Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): WinRM service is already running on this machine.
-2026-06-15T18:08:07.8712Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): WinRM is already set up for remote management on this computer.
-2026-06-15T18:08:45.4880Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:45.4880Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:45.5012Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):    WSManConfig: Microsoft.WSMan.Management\WSMan::localhost\Listener
-2026-06-15T18:08:45.5363Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:45.5690Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Type            Keys                                Name                                                               
-2026-06-15T18:08:45.5849Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): ----            ----                                ----                                                               
-2026-06-15T18:08:45.6164Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Container       {Transport=HTTPS, Address=*}        Listener_1305953032                                                
-2026-06-15T18:08:46.2613Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Winrs
-2026-06-15T18:08:46.2613Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     AllowRemoteShellAccess = true
-2026-06-15T18:08:46.2897Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     IdleTimeout = 7200000
-2026-06-15T18:08:46.3220Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxConcurrentUsers = 2147483647
-2026-06-15T18:08:46.3373Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxShellRunTime = 2147483647
-2026-06-15T18:08:46.3697Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxProcessesPerShell = 2147483647
-2026-06-15T18:08:46.4014Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxMemoryPerShellMB = 2048
-2026-06-15T18:08:46.4331Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxShellsPerUser = 2147483647
-2026-06-15T18:08:46.4648Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:46.5281Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Winrs
-2026-06-15T18:08:46.5337Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     AllowRemoteShellAccess = true
-2026-06-15T18:08:46.5757Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     IdleTimeout = 7200000
-2026-06-15T18:08:46.6073Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxConcurrentUsers = 2147483647
-2026-06-15T18:08:46.6390Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxShellRunTime = 2147483647
-2026-06-15T18:08:46.6561Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxProcessesPerShell = 2147483647
-2026-06-15T18:08:46.6879Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxMemoryPerShellMB = 2048
-2026-06-15T18:08:46.7184Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxShellsPerUser = 10
-2026-06-15T18:08:46.7493Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:49.2239Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Ok.
-2026-06-15T18:08:49.2239Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:09:20.6183Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Write-EventLog : The source name "GCEMetadataScripts" does not exist on computer "localhost".
-2026-06-15T18:09:20.6183Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): At C:\Windows\SystemTemp\metadata-scripts3971754944\windows-startup-script-ps1.ps1:34 char:1
-2026-06-15T18:09:20.6185Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:09:20.6982Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:09:20.6657Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): + Write-EventLog -LogName Application -Source "GCEMetadataScripts" -Eve ...
-2026-06-15T18:09:20.7609Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-2026-06-15T18:09:20.8082Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     + CategoryInfo          : InvalidOperation: (:) [Write-EventLog], InvalidOperationException
-2026-06-15T18:09:20.8555Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteEventLogCommand
-2026-06-15T18:09:20.9038Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):  
-2026-06-15T18:09:22.1814Z [INFO]: Finished running startup scripts
-2026-06-16T16:31:06.8846Z  CorePlugin: [INFO]: Successfully created user rajinder_gill
-2026-06-16T16:31:11.9050Z  CorePlugin: [WARNING]: Cloud Logging Client Error: rpc error: code = PermissionDenied desc = Request had insufficient authentication scopes.
-error details: name = ErrorInfo reason = ACCESS_TOKEN_SCOPE_INSUFFICIENT domain = googleapis.com metadata = map[method:google.logging.v2.LoggingServiceV2.WriteLogEntries service:logging.googleapis.com]
+variable "image_family" {
+  type = string
+}
+
+variable "machine_type" {
+  type = string
+}
+
+variable "zone" {
+  type = string
+}
+
+variable "installation_source_dir" {
+  type = string
+}
+
+variable "installation_target_dir" {
+  type = string
+}
+# NAMING CONVENTION: nmfs-[os]-[version] for family, nmfs-[os/version]-[timestamp] for images
+# Phase 2 picks up from Phase 1's nmfs-windows-2022 family
+source "googlecompute" "nmfs_windows_2022_oracle" {
+  project_id              = var.project_id
+  use_iap                 = true
+  use_internal_ip         = true
+  omit_external_ip        = true
+  enable-oslogin          = true
+  block-project-ssh-keys  = true
+  source_image_project_id = [var.source_image_project_id]
+  source_image_family     = var.source_image_family
+
+  communicator   = "winrm"
+  winrm_username = "packer_user"
+  winrm_password = var.packer_user_password
+  winrm_use_ssl  = true
+  winrm_insecure = true
+  winrm_use_ntlm = true
+  winrm_port     = 5986
+  winrm_timeout  = "90m"
+
+  service_account_email       = var.service_account_email
+  zone                        = var.zone
+  enable_secure_boot          = true
+  enable_integrity_monitoring = true
+  enable_vtpm                 = true
+
+  network    = "local-network"
+  subnetwork = "local-subnet"
+
+  disk_size = 250
+  tags      = ["winrm"]
+
+  image_family = var.image_family
+  image_name   = "nmfs-windows-2022-oracle-client-{{timestamp}}"
+  machine_type = var.machine_type
+
+  metadata = {
+    enable-oslogin = "TRUE"
+    windows-startup-script-ps1 = <<EOF
+net user packer_user "${var.packer_user_password}" /add /y
+net localgroup Administrators packer_user /add
+# reg.exe is more reliable than PowerShell on DISA-hardened images
+# where the registry provider may be restricted by GPO
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f
+
+winrm quickconfig -q
+Enable-PSRemoting -Force -SkipNetworkProfileCheck
+
+$cert = New-SelfSignedCertificate -DnsName "packer" -CertStoreLocation Cert:\LocalMachine\My
+$thumb = $cert.Thumbprint
+
+Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" } | Remove-Item -Recurse -Force
+New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $thumb -Force
+
+Set-Item -Path WSMan:\localhost\Service\Auth\Basic       -Value $true
+Set-Item -Path WSMan:\localhost\Service\Auth\Negotiate   -Value $true
+Set-Item -Path WSMan:\localhost\Service\Auth\CredSSP     -Value $false
+Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
+# Generous timeouts and shell limits prevent RemoteDisconnected during Ansible Gathering Facts
+Set-Item -Path WSMan:\localhost\MaxTimeoutms             -Value 1800000
+Set-Item -Path WSMan:\localhost\MaxEnvelopeSizekb        -Value 8192
+winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="2048"}'
+winrm set winrm/config/winrs '@{MaxShellsPerUser="10"}'
+
+netsh advfirewall firewall add rule name="WinRM-HTTPS" dir=in action=allow protocol=TCP localport=5986
+# seclogon required for NTLM secondary logon
+Set-Service -Name seclogon -StartupType Manual
+Start-Service -Name seclogon
+# Let DISA GPO fully apply before Packer connects
+Start-Sleep -Seconds 30
+
+Write-EventLog -LogName Application -Source "GCEMetadataScripts" -EventId 1 -Message "WinRM NTLM setup complete" -EntryType Information
+EOF
+  }
+}
+
+build {
+  sources = ["sources.googlecompute.nmfs_windows_2022_oracle"]
+
+  provisioner "powershell" {
+    inline = [
+      "Write-Host 'Connected as:' $env:USERNAME",
+      "Write-Host 'Computer    :' $env:COMPUTERNAME",
+      "try { Add-LocalGroupMember -Group 'Administrators' -Member 'packer_user' -ErrorAction Stop } catch {}",
+      "Set-Service -Name seclogon -StartupType Manual -ErrorAction SilentlyContinue",
+      "Start-Service -Name seclogon -ErrorAction SilentlyContinue",
+      "New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'LocalAccountTokenFilterPolicy' -Value 1 -PropertyType DWord -Force | Out-Null",
+      "Set-Item -Path WSMan:\\localhost\\MaxTimeoutms -Value 1800000 -ErrorAction SilentlyContinue",
+      "Set-Item -Path WSMan:\\localhost\\MaxEnvelopeSizekb -Value 8192 -ErrorAction SilentlyContinue"
+    ]
+  }
+
+  provisioner "shell-local" {
+    environment_vars = [
+      "PACKER_PW=${var.packer_user_password}",
+      "ZONE=${var.zone}",
+      "PROJECT_ID=${var.project_id}",
+      "PLAYBOOK_PATH=/workspace/ansible-playbook/main.yml"
+    ]
+    inline = [
+      "set -eu",
+
+      "command -v ansible-playbook >/dev/null 2>&1 || { echo 'ERROR: ansible-playbook not found'; exit 1; }",
+      "python3 -c 'import winrm' 2>/dev/null || { echo 'ERROR: pywinrm not installed'; exit 1; }",
+      "command -v curl >/dev/null 2>&1 || { echo 'ERROR: curl not found'; exit 1; }",
+      "if [ ! -f \"$PLAYBOOK_PATH\" ]; then echo \"ERROR: Playbook not found at $PLAYBOOK_PATH\"; exit 1; fi",
+      # Reuse Packer's existing IAP tunnel by reading its port from /proc cmdline
+      "TUNNEL_PORT=$(cat /proc/*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -o 'local-host-port=[^ ]*' | grep -o '[0-9]*$' | head -1 || true)",
+      "if [ -z \"$TUNNEL_PORT\" ]; then echo 'ERROR: Could not find IAP tunnel port in /proc'; exit 1; fi",
+      "echo \"Found IAP tunnel on port: $TUNNEL_PORT\"",
+
+      "READY=0",
+      "ELAPSED=0",
+      "for i in $(seq 1 360); do",
+      "  HTTP_CODE=$(curl -sk -X POST -o /dev/null -w '%%{http_code}' --max-time 8 \"https://localhost:$TUNNEL_PORT/wsman\" 2>/dev/null || true)",
+      "  if [ \"$HTTP_CODE\" = '401' ] || [ \"$HTTP_CODE\" = '411' ] || [ \"$HTTP_CODE\" = '405' ]; then",
+      "    READY=1",
+      "    echo \"  [attempt $i | elapsed $${ELAPSED}s] WinRM ready (HTTP $HTTP_CODE)\"",
+      "    break",
+      "  fi",
+      "  echo \"  [attempt $i | elapsed $${ELAPSED}s] HTTP '$HTTP_CODE' — retrying in 10s\"",
+      "  sleep 10",
+      "  ELAPSED=$((ELAPSED + 10))",
+      "done",
+
+      "if [ \"$READY\" -eq 0 ]; then echo \"ERROR: WinRM did not respond after 60 minutes\"; exit 1; fi",
+      # Settle delay prevents RemoteDisconnected on Gathering Facts
+      "sleep 30",
+
+      "INVENTORY=/tmp/packer_ansible_hosts.ini",
+      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=ntlm\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=60\\nansible_winrm_operation_timeout_sec=120\\nansible_winrm_read_timeout_sec=150\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
+
+      "set +e",
+      "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i \"$INVENTORY\" -e \"ansible_password=$PACKER_PW\" \"$PLAYBOOK_PATH\"",
+      "PLAYBOOK_EXIT=$?",
+      "set -e",
+      "exit $PLAYBOOK_EXIT"
+    ]
+  }
+}

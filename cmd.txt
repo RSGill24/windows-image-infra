@@ -2,3 +2,10 @@ gcloud projects get-iam-policy ggn-nmfs-winde-dev-1 \
   --flatten="bindings[].members" \
   --filter="bindings.members:rajinder.gill@noaa.gov" \
   --format="table(bindings.role, bindings.members)"
+
+
+
+gcloud run jobs describe JOB_NAME \
+  --region=us-east4 \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="yaml(spec.template.spec.template.spec.containers[0].env)"

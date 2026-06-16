@@ -1,1 +1,23 @@
+name: packer-6a303f28-695f-7378-6101-b1479c8d4580
+networkInterfaces:
+- fingerprint: C2XxXD_B1JI=
+  kind: compute#networkInterface
+  name: nic0
+  network: https://www.googleapis.com/compute/v1/projects/ggn-nmfs-winde-dev-1/global/networks/local-network
+  networkIP: 10.150.0.16
+  stackType: IPV4_ONLY
+  subnetwork: https://www.googleapis.com/compute/v1/projects/ggn-nmfs-winde-dev-1/regions/us-east4/subnetworks/local-subnet
+status: RUNNING
+tags:
+  fingerprint: 0qMjbaa1mZc=
+  items:
+  - winrm
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute networks subnets describe local-subnet \
+  --region=us-east4-b \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="get(privateIpGoogleAccess)"
+ERROR: (gcloud.compute.networks.subnets.describe) Could not fetch resource:
+ - Invalid value for field 'region': 'us-east4-b'. Unknown region.
 
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute networks subnets describe local-subnet   --region=us-east4   --project=ggn-nmfs-winde-dev-1   --format="get(privateIpGoogleAccess)"
+True

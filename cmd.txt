@@ -22,3 +22,12 @@ p = winrm.Protocol(
 p.open_shell()
 print('WinRM connected successfully!')
 "
+
+
+PW="$(gcloud secrets versions access latest \
+  --secret=packer-winrm-password \
+  --project=ggn-nmfs-winde-dev-1 | tr -d '\r\n')"
+
+echo "Password length: ${#PW}"
+
+

@@ -31,3 +31,23 @@ PW="$(gcloud secrets versions access latest \
 echo "Password length: ${#PW}"
 
 
+
+PW="$(gcloud secrets versions access latest \
+  --secret=packer-winrm-password \
+  --project=ggn-nmfs-winde-dev-1 | tr -d '\r\n')"
+
+PW="$PW" python3 - <<'PY'
+import os, winrm
+
+s = winrm.Session(
+    'https://localhost:5986/wsman',
+    auth=('packer_user', os.environ["PW"]),
+    transport='basic',
+    server_cert_validation='ignore'
+)
+
+r = s.run_cmd('hostname')
+print("status:", r.status_code)
+print("stdout:", r.std_out.decode())
+print("stderr:", r.std_err.decode())
+PY

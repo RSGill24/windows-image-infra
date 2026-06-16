@@ -1,13 +1,4 @@
-
-gcloud compute ssh packer-6a303f28-695f-7378-6101-b1479c8d4580 \
+gcloud compute start-iap-tunnel packer-6a303f28-695f-7378-6101-b1479c8d4580 5986 \
+  --local-host-port=localhost:5986 \
   --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 \
-  --tunnel-through-iap \
-  -- "powershell -Command \"netstat -an | findstr 5986\""
-
-
-gcloud compute ssh packer-6a303f28-695f-7378-6101-b1479c8d4580 \
-  --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 \
-  --tunnel-through-iap \
-  -- "powershell -Command \"Get-Service WinRM | Select Status; Get-ChildItem WSMan:\localhost\Listener\""
+  --project=ggn-nmfs-winde-dev-1

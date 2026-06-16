@@ -1,4 +1,5 @@
-gcloud compute instances get-serial-port-output packer-6a303f28-695f-7378-6101-b1479c8d4580 \
-  --zone=us-east4-b \
+gcloud logging read \
+  'resource.type="cloud_run_job" AND resource.labels.job_name="oracle-client-image-build"' \
   --project=ggn-nmfs-winde-dev-1 \
-  --start=19937 2>&1 | tail -50
+  --limit=100 \
+  --format="value(textPayload)" | grep -i -E "winrm|iap|tunnel|error|attempt" | head -40

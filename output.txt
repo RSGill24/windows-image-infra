@@ -85,3 +85,37 @@ MEMBERS: user:rajinder.gill@noaa.gov
 ROLE: roles/storage.admin
 MEMBERS: user:rajinder.gill@noaa.gov
 rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ 
+
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ ^C
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud run jobs describe oracle-client-image-build \
+  --region=us-east4 \                                                                                               --project=ggn-nmfs-winde-dev-1 \
+  --format="yaml(spec.template.spec.template.spec.containers[0].env)"
+spec:
+  template:
+    spec:
+      template:
+        spec:
+          containers:
+          - env:
+            - name: PROJECT_ID
+              value: ggn-nmfs-winde-dev-1
+            - name: SOURCE_IMAGE_PROJECT_ID
+              value: nmfs-trusted-images-dev
+            - name: SOURCE_IMAGE_FAMILY
+              value: nmfs-windows-2022
+            - name: IMAGE_FAMILY
+              value: nmfs-windows-2022-oracle-client
+            - name: ZONE
+              value: us-east4-b
+            - name: MACHINE_TYPE
+              value: e2-standard-8
+            - name: SERVICE_ACCOUNT_EMAIL
+              value: images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+            - name: WINRM_SECRET
+              value: packer-winrm-password
+            - name: INSTALLATION_SOURCE_DIR
+              value: ./ansible-playbook
+            - name: INSTALLATION_TARGET_DIR
+              value: C:/Users/packer_user/installation/
+            - name: PACKER_TEMPLATE
+              value: ./customize.pkr.hcl

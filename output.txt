@@ -1,84 +1,16 @@
-rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute instances get-serial-port-output packer-6a303f28-695f-7378-6101-b1479c8d4580 \
-  --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 2>&1 | tail -80
-2026-06-15T18:07:47.6902Z  CorePlugin: [WARNING]: Failed to find previous certificate with error: unable to find certificate: Cannot find object or property.
-2026-06-15T18:07:47.6959Z  CorePlugin: [INFO]: Bootstrapping MDS mTLS credentials
-2026-06-15T18:07:47.6959Z  CorePlugin: [INFO]: Installing Root CA cert...
-2026-06-15T18:07:47.6959Z  CorePlugin: [INFO]: Successfully installed Root CA cert
-2026-06-15T18:07:47.6959Z  CorePlugin: [INFO]: Installing client credentials...
-2026-06-15T18:07:47.9619Z  CorePlugin: [WARNING]: Could not get previous serial number, will skip cleanup: unable to read previous client credential file "C:\\ProgramData\\Google\\Compute Engine\\mds-mtls-client.key": open C:\ProgramData\Google\Compute Engine\mds-mtls-client.key: The system cannot find the file specified.
-2026-06-15T18:07:48.0051Z  CorePlugin: [INFO]: Skipping client credentials write to system store update as it is disabled in the configuration
-2026-06-15T18:07:48.7318Z  CorePlugin: [INFO]: Successfully installed client credentials
-2026-06-15T18:07:48.7796Z  CorePlugin: [INFO]: Successfully bootstrapped MDS mTLS credentials
-2026-06-15T18:07:48.8115Z  CorePlugin: [INFO]: Creating metric registry for "events_manager" with flush interval: 1m0s, max records: 10
-2026-06-15T18:07:48.9023Z  CorePlugin: [INFO]: Cloud logging initialized (CorePlugin.exe)
-2026-06-15T18:07:49.0593Z OSConfigAgent Info: OSConfig Agent (version 20260427.03.0+win@1) started.
-2026-06-15T18:07:49.1872Z  GCEGuestAgentManager: [INFO]: Google Guest Agent (version: "20260511.00") Initialized...
-2026-06-15T18:07:49.1872Z  GCEGuestAgentManager: [INFO]: Transitioning windows service manager to running
-2026-06-15T18:07:50.9017Z [INFO]: Initialized Metadata Script Runner Compat (version 20260511.00)
-2026-06-15T18:07:51.2685Z [INFO]: Enable core plugin set to: [true], launching script runner for event "startup" from "C:\\Program Files\\Google\\Compute Engine\\agent\\GCEMetadataScriptRunner.exe"
-2026-06-15T18:07:52.2577Z  GCEGuestAgentManager: [WARNING]: Cloud Logging Client Error: rpc error: code = PermissionDenied desc = Request had insufficient authentication scopes.
-error details: name = ErrorInfo reason = ACCESS_TOKEN_SCOPE_INSUFFICIENT domain = googleapis.com metadata = map[method:google.logging.v2.LoggingServiceV2.WriteLogEntries service:logging.googleapis.com]
-2026-06-15T18:07:52.4210Z  GCEGuestAgentManager: [INFO]: Successfully started plugin "GuestTelemetryExtension_1.0"
-2026-06-15T18:07:52.4220Z  GCEGuestAgentManager: [INFO]: Successfully installed plugin "GuestTelemetryExtension_1.0"
-2026-06-15T18:07:52.4220Z  GCEGuestAgentManager: [INFO]: Starting plugin monitor job for plugin "GuestTelemetryExtension_1.0"
-2026-06-15T18:07:52.4858Z  GCEGuestAgentManager: [INFO]: Starting plugin metrics monitor job for plugin "GuestTelemetryExtension_1.0"
-2026-06-15T18:07:54.0918Z  CorePlugin: [WARNING]: Cloud Logging Client Error: rpc error: code = PermissionDenied desc = Request had insufficient authentication scopes.
-error details: name = ErrorInfo reason = ACCESS_TOKEN_SCOPE_INSUFFICIENT domain = googleapis.com metadata = map[method:google.logging.v2.LoggingServiceV2.WriteLogEntries service:logging.googleapis.com]
-2026-06-15T18:07:54.7273Z [INFO]: Running metadata script runner (version 20260511.00) for "startup" event
-2026-06-15T18:07:54.7273Z [INFO]: Found windows-startup-script-ps1 in metadata
-2026-06-15T18:07:59.8636Z [WARNING]: Cloud Logging Client Error: rpc error: code = PermissionDenied desc = Request had insufficient authentication scopes.
-error details: name = ErrorInfo reason = ACCESS_TOKEN_SCOPE_INSUFFICIENT domain = googleapis.com metadata = map[method:google.logging.v2.LoggingServiceV2.WriteLogEntries service:logging.googleapis.com]
-2026-06-15T18:08:02.0435Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): The account already exists.
-2026-06-15T18:08:02.0435Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:02.0729Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): More help is available by typing NET HELPMSG 2224.
-2026-06-15T18:08:02.1043Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:02.1517Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): System error 1378 has occurred.
-2026-06-15T18:08:02.1833Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:02.2149Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): The specified account name is already a member of the group.
-2026-06-15T18:08:02.2458Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:02.8510Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): The operation completed successfully.
-2026-06-15T18:08:02.8756Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): The operation completed successfully.
-2026-06-15T18:08:06.2346Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): WinRM service is already running on this machine.
-2026-06-15T18:08:07.8712Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): WinRM is already set up for remote management on this computer.
-2026-06-15T18:08:45.4880Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:45.4880Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:45.5012Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):    WSManConfig: Microsoft.WSMan.Management\WSMan::localhost\Listener
-2026-06-15T18:08:45.5363Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:45.5690Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Type            Keys                                Name                                                               
-2026-06-15T18:08:45.5849Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): ----            ----                                ----                                                               
-2026-06-15T18:08:45.6164Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Container       {Transport=HTTPS, Address=*}        Listener_1305953032                                                
-2026-06-15T18:08:46.2613Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Winrs
-2026-06-15T18:08:46.2613Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     AllowRemoteShellAccess = true
-2026-06-15T18:08:46.2897Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     IdleTimeout = 7200000
-2026-06-15T18:08:46.3220Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxConcurrentUsers = 2147483647
-2026-06-15T18:08:46.3373Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxShellRunTime = 2147483647
-2026-06-15T18:08:46.3697Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxProcessesPerShell = 2147483647
-2026-06-15T18:08:46.4014Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxMemoryPerShellMB = 2048
-2026-06-15T18:08:46.4331Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxShellsPerUser = 2147483647
-2026-06-15T18:08:46.4648Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:46.5281Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Winrs
-2026-06-15T18:08:46.5337Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     AllowRemoteShellAccess = true
-2026-06-15T18:08:46.5757Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     IdleTimeout = 7200000
-2026-06-15T18:08:46.6073Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxConcurrentUsers = 2147483647
-2026-06-15T18:08:46.6390Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxShellRunTime = 2147483647
-2026-06-15T18:08:46.6561Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxProcessesPerShell = 2147483647
-2026-06-15T18:08:46.6879Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxMemoryPerShellMB = 2048
-2026-06-15T18:08:46.7184Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     MaxShellsPerUser = 10
-2026-06-15T18:08:46.7493Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:08:49.2239Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Ok.
-2026-06-15T18:08:49.2239Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:09:20.6183Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): Write-EventLog : The source name "GCEMetadataScripts" does not exist on computer "localhost".
-2026-06-15T18:09:20.6183Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): At C:\Windows\SystemTemp\metadata-scripts3971754944\windows-startup-script-ps1.ps1:34 char:1
-2026-06-15T18:09:20.6185Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:09:20.6982Z [INFO]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): 
-2026-06-15T18:09:20.6657Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): + Write-EventLog -LogName Application -Source "GCEMetadataScripts" -Eve ...
-2026-06-15T18:09:20.7609Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"): + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-2026-06-15T18:09:20.8082Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     + CategoryInfo          : InvalidOperation: (:) [Write-EventLog], InvalidOperationException
-2026-06-15T18:09:20.8555Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):     + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteEventLogCommand
-2026-06-15T18:09:20.9038Z [ERROR]: Metadata key("windows-startup-script-ps1"), command("powershell.exe"):  
-2026-06-15T18:09:22.1814Z [INFO]: Finished running startup scripts
-
-
-Specify --start=19937 in the next get-serial-port-output invocation to get only the new output starting from here.
-rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ 
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud logging read \
+  'resource.type="cloud_run_job" AND resource.labels.job_name="oracle-client-image-build"' \
+  --project=ggn-nmfs-winde-dev-1 \
+  --limit=100 \
+  --format="value(textPayload)" | grep -i -E "winrm|iap|tunnel|error|attempt" | head -40
+==> googlecompute.nmfs_windows_2022_oracle: Waiting for WinRM to become available...
+==> googlecompute.nmfs_windows_2022_oracle: Using WinRM communicator to connect: localhost
+==> googlecompute.nmfs_windows_2022_oracle: Step Launch IAP Tunnel...
+I0616 15:13:31.891766       1 server.go:177] Got error when getting machine owner: failed to get proto for GMI path: open /etc/googlemachineidentity/live/machine_identity.pb: no such file or directory
+Fetching WinRM password from Secret Manager...
+F0615 20:30:56.573630       1 watcher.go:273] Fatal error: caught signal: terminated
+W0615 20:30:56.156251      39 ktdclient.go:337] ktdclient connection closed unexpectedly: ktdclient receive response failed: rpc error: code = Canceled desc = context canceled
+E0615 20:30:56.155555      32 saferun.go:45] goroutine signal.exit exited with error: caught signal: terminated.
+==> googlecompute.nmfs_windows_2022_oracle: Waiting for WinRM to become available...
+==> googlecompute.nmfs_windows_2022_oracle: Using WinRM communicator to connect: localhost
+==> googlecompute.nmfs_windows_2022_oracle: Step Launch IAP Tunnel...

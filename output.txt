@@ -1,3 +1,5 @@
+Specify --start=19937 in the next get-serial-port-output invocation to get only the new output starting from here.
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ ^C
 rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud logging read \
   'resource.type="cloud_run_job" AND resource.labels.job_name="oracle-client-image-build"' \
   --project=ggn-nmfs-winde-dev-1 \
@@ -14,3 +16,84 @@ E0615 20:30:56.155555      32 saferun.go:45] goroutine signal.exit exited with e
 ==> googlecompute.nmfs_windows_2022_oracle: Waiting for WinRM to become available...
 ==> googlecompute.nmfs_windows_2022_oracle: Using WinRM communicator to connect: localhost
 ==> googlecompute.nmfs_windows_2022_oracle: Step Launch IAP Tunnel...
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ ^C
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ pip3 install pywinrm --quiet
+  WARNING: The script pyspnego-parse is installed in '/home/rajinder_gill/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ python3 -c "
+import winrm
+p = winrm.Protocol(
+    endpoint='https://localhost:5986/wsman',
+    transport='ntlm',
+    username='packer_user',
+    password='$(gcloud secrets versions access latest --secret=packer-winrm-password --project=ggn-nmfs-winde-dev-1)',
+    server_cert_validation='ignore'
+)
+p.open_shell()
+print('WinRM connected successfully!')
+"
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/connection.py", line 204, in _new_conn
+    sock = connection.create_connection(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/connectionpool.py", line 1106, in _validate_conn
+    conn.connect()
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/connection.py", line 759, in connect
+    self.sock = sock = self._new_conn()
+                       ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/connection.py", line 219, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: HTTPSConnection(host='localhost', port=5986): Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/dist-packages/requests/adapters.py", line 645, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/urllib3/util/retry.py", line 543, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='localhost', port=5986): Max retries exceeded with url: /wsman (Caused by NewConnectionError("HTTPSConnection(host='localhost', port=5986): Failed to establish a new connection: [Errno 111] Connection refused"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 10, in <module>
+  File "/home/rajinder_gill/.local/lib/python3.12/site-packages/winrm/protocol.py", line 193, in open_shell
+    res = self.send_message(xmltodict.unparse(req))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rajinder_gill/.local/lib/python3.12/site-packages/winrm/protocol.py", line 263, in send_message
+    resp = self.transport.send_message(message)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rajinder_gill/.local/lib/python3.12/site-packages/winrm/transport.py", line 336, in send_message
+    response = self._send_message_request(session, prepared_request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rajinder_gill/.local/lib/python3.12/site-packages/winrm/transport.py", line 341, in _send_message_request
+    response = session.send(prepared_request, timeout=self.read_timeout_sec)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/requests/sessions.py", line 706, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/requests/adapters.py", line 678, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPSConnectionPool(host='localhost', port=5986): Max retries exceeded with url: /wsman (Caused by NewConnectionError("HTTPSConnection(host='localhost', port=5986): Failed to establish a new connection: [Errno 111] Connection refused"))

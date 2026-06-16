@@ -5,7 +5,7 @@ gcloud compute start-iap-tunnel packer-6a303f28-695f-7378-6101-b1479c8d4580 5986
   --impersonate-service-account=images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
 
 
-
+curl -sk -o /dev/null -w "%{http_code}\n" https://localhost:5986/wsman
 
 pip3 install pywinrm --quiet
 

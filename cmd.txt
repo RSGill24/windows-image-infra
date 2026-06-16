@@ -1,9 +1,9 @@
-gcloud compute instances list \
-  --filter="name~'packer'" \
+gcloud projects get-iam-policy ggn-nmfs-winde-dev-1 \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
+  --format="table(bindings.role)"
+
+
+gcloud services list --enabled \
   --project=ggn-nmfs-winde-dev-1 \
-  --format="value(name)"
-
-
-gcloud compute instances get-serial-port-output <VM-NAME> \
-  --zone=us-east4-b \
-  --project=ggn-nmfs-winde-dev-1 2>&1 | tail -80
+  --filter="name:iap.googleapis.com"

@@ -1,3 +1,12 @@
+gcloud compute start-iap-tunnel packer-6a303f28-695f-7378-6101-b1479c8d4580 5986 \
+  --local-host-port=localhost:5986 \
+  --zone=us-east4-b \
+  --project=ggn-nmfs-winde-dev-1 \
+  --impersonate-service-account=images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+
+
+
+
 pip3 install pywinrm --quiet
 
 

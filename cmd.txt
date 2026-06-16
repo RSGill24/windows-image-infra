@@ -51,3 +51,21 @@ print("status:", r.status_code)
 print("stdout:", r.std_out.decode())
 print("stderr:", r.std_err.decode())
 PY
+
+
+gcloud secrets versions list packer-winrm-password \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="table(name,state,createTime)"
+
+gcloud compute instances describe packer-6a303f28-695f-7378-6101-b1479c8d4580 \
+  --zone=us-east4-b \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="yaml(metadata.items)"
+
+gcloud compute instances get-serial-port-output packer-6a303f28-695f-7378-6101-b1479c8d4580 \
+  --zone=us-east4-b \
+  --project=ggn-nmfs-winde-dev-1 \
+  --port=1 | grep -iE "packer_user|winrm|password|created|failed|error|startup|net user|administrator"
+
+
+

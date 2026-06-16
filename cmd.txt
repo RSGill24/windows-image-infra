@@ -1,5 +1,15 @@
-gcloud logging read \
-  'resource.type="cloud_run_job" AND resource.labels.job_name="oracle-client-image-build"' \
-  --project=ggn-nmfs-winde-dev-1 \
-  --limit=100 \
-  --format="value(textPayload)" | grep -i -E "winrm|iap|tunnel|error|attempt" | head -40
+pip3 install pywinrm --quiet
+
+
+python3 -c "
+import winrm
+p = winrm.Protocol(
+    endpoint='https://localhost:5986/wsman',
+    transport='ntlm',
+    username='packer_user',
+    password='$(gcloud secrets versions access latest --secret=packer-winrm-password --project=ggn-nmfs-winde-dev-1)',
+    server_cert_validation='ignore'
+)
+p.open_shell()
+print('WinRM connected successfully!')
+"

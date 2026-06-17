@@ -17,12 +17,9 @@ gcloud compute firewall-rules create allow-iap-rdp \
   --target-tags=iap-rdp
 
 
-gcloud iam service-accounts add-iam-policy-binding \
-
-  images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com \
-
+gcloud compute firewall-rules create allow-iap-rdp \
   --project=ggn-nmfs-winde-dev-1 \
-
-  --member="user:rajinder.gill@noaa.gov" \
-
-  --role="roles/iam.serviceAccountUser"
+  --network=app-network \
+  --allow=tcp:3389 \
+  --source-ranges=35.235.240.0/20 \
+  --target-tags=iap-rdp

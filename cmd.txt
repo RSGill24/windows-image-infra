@@ -1,10 +1,11 @@
-gcloud compute instances create test-windows-from-image \
+gcloud compute instances create test-oracle-client-image \
   --project=ggn-nmfs-winde-dev-1 \
   --zone=us-east4-b \
   --machine-type=e2-standard-4 \
-  --image=pww-windows-2022-hardened-IMAGE_NAME \
+  --image-family=Nmfs-windows-2022-oracle-client \
   --image-project=ggn-nmfs-winde-dev-1 \
   --network=app-network \
   --subnet=app-subnet1 \
   --boot-disk-size=260GB \
   --boot-disk-type=pd-balanced
+

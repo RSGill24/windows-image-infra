@@ -9,3 +9,9 @@ gcloud compute instances create test-oracle-client-image \
   --boot-disk-size=260GB \
   --boot-disk-type=pd-balanced
 
+gcloud compute firewall-rules create allow-iap-rdp \
+  --project=ggn-nmfs-winde-dev-1 \
+  --network=local-network \
+  --allow=tcp:3389 \
+  --source-ranges=35.235.240.0/20 \
+  --target-tags=iap-rdp

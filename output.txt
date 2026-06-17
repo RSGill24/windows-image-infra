@@ -21,3 +21,8 @@ rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute instances crea
   --boot-disk-type=pd-balanced
 ERROR: (gcloud.compute.instances.create) Could not fetch resource:
  - Constraint constraints/compute.vmExternalIpAccess violated for project 194243189684. Add instance projects/ggn-nmfs-winde-dev-1/zones/us-east4-b/instances/test-oracle-client-image to the constraint to use external IP with it.
+WARNING: Some requests generated warnings:
+ - You are creating a global DNS VM. VM instances using global DNS are vulnerable to cross-regional outages. To reduce the risk of widespread service disruption, use zonal DNS instead. Learn more at https://cloud.google.com/compute/docs/networking/zonal-dns?utm_id=vm-insert
+
+ERROR: (gcloud.compute.instances.create) Could not fetch resource:
+ - The user does not have access to service account '194243189684-compute@developer.gserviceaccount.com'.  User: 'rajinder.gill@noaa.gov'. Ask a project owner to grant you the iam.serviceAccountUser role on the service account.

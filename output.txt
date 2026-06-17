@@ -8,3 +8,16 @@ gcloud compute instances create test-oracle-client-image \
   --subnet=local-subnet \
   --boot-disk-size=20GB \
   --boot-disk-type=pd-balanced
+
+rajinder_gill@cloudshell:~ (ggn-nmfs-winde-dev-1)$ gcloud compute instances create test-oracle-client-image \
+  --project=ggn-nmfs-winde-dev-1 \
+  --zone=us-east4-b \
+  --machine-type=e2-standard-4 \
+  --image-family=nmfs-windows-2022-oracle-client \
+  --image-project=ggn-nmfs-winde-dev-1 \
+  --network=local-network \
+  --subnet=local-subnet \
+  --boot-disk-size=20GB \
+  --boot-disk-type=pd-balanced
+ERROR: (gcloud.compute.instances.create) Could not fetch resource:
+ - Constraint constraints/compute.vmExternalIpAccess violated for project 194243189684. Add instance projects/ggn-nmfs-winde-dev-1/zones/us-east4-b/instances/test-oracle-client-image to the constraint to use external IP with it.

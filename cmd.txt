@@ -23,3 +23,8 @@ gcloud compute firewall-rules create allow-iap-rdp \
   --allow=tcp:3389 \
   --source-ranges=35.235.240.0/20 \
   --target-tags=iap-rdp
+
+gcloud compute start-iap-tunnel test-oracle-client-image 3389 \
+  --local-host-port=localhost:3389 \
+  --project=ggn-nmfs-winde-dev-1 \
+  --zone=us-east4-b

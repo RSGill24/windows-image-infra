@@ -92,14 +92,8 @@
   failed_when: conda_forge.rc != 0
   changed_when: false
 
-- name: Update conda itself to latest
-  win_shell: |
-    $conda = "C:\tools\miniconda3\Scripts\conda.exe"
-    & $conda update -n base -c conda-forge conda --yes --quiet
-    if ($LASTEXITCODE -ne 0) { throw "conda update failed" }
-  register: conda_update
-  failed_when: conda_update.rc != 0
-
+  # Skipped: conda update is memory-heavy during image build and failed with CondaMemoryError.
+  # Miniconda installed by Chocolatey is sufficient.
 - name: Verify conda version
   win_shell: |
     $conda = "C:\tools\miniconda3\Scripts\conda.exe"

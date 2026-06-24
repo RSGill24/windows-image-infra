@@ -56,7 +56,7 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
         }
         env {
           name  = "SOURCE_IMAGE_FAMILY"
-          value = "pww-windows-2022-hardened"
+          value = "nmfs-windows-2022"
         }
         env {
           name  = "IMAGE_FAMILY"

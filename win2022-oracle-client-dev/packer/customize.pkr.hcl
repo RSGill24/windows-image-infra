@@ -82,7 +82,7 @@ source "googlecompute" "customize_windows" {
   tags      = ["winrm"]
 
   image_family = var.image_family
-  image_name   = "pww-disa-hardened-customized-{{timestamp}}"
+  image_name   = "nmfs-windows-2022-software-{{timestamp}}"
   machine_type = var.machine_type
 
   metadata = {

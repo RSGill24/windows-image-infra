@@ -12,7 +12,7 @@ substitutions:
   _MACHINE_TYPE:             "e2-standard-8"
   _REGION:                   "us-east4"
   _AR_REPO:                  "packer-images"
-  _IMAGE_NAME:               "windows-packer-customizer"
+  _IMAGE_NAME:               "windows-packer-software"
   # ── Component-selection flags ─────────────────────────────────────────────
   # Override at trigger time:  gcloud builds submit --substitutions=_INSTALL_ORACLE=true,...
   _INSTALL_ORACLE:           "false"

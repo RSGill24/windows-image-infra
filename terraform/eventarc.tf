@@ -148,11 +148,11 @@ resource "google_cloudfunctions2_function" "process_request" {
     service_account_email = google_service_account.process_request_sa.email
 
     environment_variables = {
-      PROJECT_ID    = var.project_id
-      REGION        = var.region
-      BUCKET_NAME   = google_storage_bucket.image_builder_requests.name
-      CLOUD_RUN_JOB = google_cloud_run_v2_job.windows_image_builder.name
-      PUBSUB_TOPIC  = google_pubsub_topic.image_builder_notifications.name
+      PROJECT_ID           = var.project_id
+      REGION               = var.region
+      BUCKET_NAME          = google_storage_bucket.image_builder_requests.name
+      TARGET_CLOUD_RUN_JOB = google_cloud_run_v2_job.windows_image_builder.name
+      PUBSUB_TOPIC         = google_pubsub_topic.image_builder_notifications.name
     }
   }
 
@@ -200,7 +200,10 @@ resource "google_eventarc_trigger" "image_builder_trigger" {
   }
 
   destination {
-    cloud_function = google_cloudfunctions2_function.process_request.name
+    cloud_run_service {
+      service = google_cloudfunctions2_function.process_request.name
+      region  = var.region
+    }
   }
 
   service_account = google_service_account.eventarc_trigger_sa.email

@@ -4,23 +4,26 @@ Cloud Function: process-request
 Pre-processor that sits between GCS upload and Cloud Run.
 Triggered by Eventarc when a JSON file lands in /requests/.
 
+User only provides software selection in JSON. The function automatically
+detects WHO uploaded the file via GCS Cloud Audit Logs.
+
 Responsibilities:
-  1. Read the uploaded JSON request
-  2. Log audit metadata to /audit/ in the same bucket
-  3. Compute a software fingerprint (hash of enabled software)
-  4. Check if an image with that fingerprint already exists
-  5. If duplicate → write status, notify user, skip Cloud Run
-  6. If new → trigger Cloud Run job with REQUEST_JSON_GCS
+  1. Auto-detect uploader (name/email) from Cloud Audit Logs
+  2. Read the uploaded JSON request (software only)
+  3. Log audit metadata to /audit/ in the same bucket
+  4. Compute a software fingerprint (hash of enabled software)
+  5. Check if an image with that fingerprint already exists
+  6. If duplicate → write status, notify user, skip Cloud Run
+  7. If new → enrich JSON with requester info, trigger Cloud Run job
 """
 
-import base64
 import hashlib
 import json
 import os
 from datetime import datetime, timezone
 
 import functions_framework
-from google.cloud import compute_v1, pubsub_v1, run_v2, storage
+from google.cloud import compute_v1, logging as cloud_logging, pubsub_v1, run_v2, storage
 
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
@@ -30,12 +33,91 @@ CLOUD_RUN_JOB = os.environ.get("CLOUD_RUN_JOB", "windows-image-builder")
 PUBSUB_TOPIC = os.environ.get("PUBSUB_TOPIC", "image-builder-notifications")
 
 
+def detect_uploader(bucket_name: str, object_name: str) -> dict:
+    """
+    Auto-detect who uploaded the file by querying GCS Cloud Audit Logs.
+    Returns: { "name": "...", "email": "...", "team": "auto-detected" }
+    """
+    try:
+        logging_client = cloud_logging.Client(project=PROJECT_ID)
+
+        # Query audit logs for this specific GCS object creation
+        filter_str = (
+            f'resource.type="gcs_bucket" '
+            f'resource.labels.bucket_name="{bucket_name}" '
+            f'protoPayload.methodName="storage.objects.create" '
+            f'protoPayload.resourceName="projects/_/buckets/{bucket_name}/objects/{object_name}" '
+            f'severity="NOTICE" '
+            f'timestamp>="{(datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")}"'
+        )
+
+        # Look at recent entries (last 5 minutes)
+        entries = list(logging_client.list_entries(
+            filter_=filter_str,
+            order_by=cloud_logging.DESCENDING,
+            max_results=5,
+        ))
+
+        if entries:
+            for entry in entries:
+                payload = entry.payload if hasattr(entry, 'payload') else {}
+                proto = entry.proto_payload if hasattr(entry, 'proto_payload') else None
+
+                # Try to get the caller identity
+                if proto and hasattr(proto, 'authentication_info'):
+                    email = proto.authentication_info.principal_email
+                    if email:
+                        # Extract name from email (part before @)
+                        name = email.split("@")[0].replace(".", " ").title()
+                        print(f"[DETECT] Uploader detected from audit log: {name} <{email}>")
+                        return {"name": name, "email": email, "team": "auto-detected"}
+
+        print("[DETECT] Could not find uploader in audit logs — trying object metadata")
+
+    except Exception as e:
+        print(f"[DETECT] Audit log query failed: {e}")
+
+    # Fallback: check GCS object metadata (custom metadata set by uploader)
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(object_name)
+        blob.reload()
+
+        if blob.metadata:
+            email = blob.metadata.get("uploaded-by", blob.metadata.get("email", ""))
+            name = blob.metadata.get("uploader-name", blob.metadata.get("name", ""))
+            if email:
+                if not name:
+                    name = email.split("@")[0].replace(".", " ").title()
+                print(f"[DETECT] Uploader detected from object metadata: {name} <{email}>")
+                return {"name": name, "email": email, "team": "auto-detected"}
+
+        # Last fallback: use the object owner
+        if blob.owner and "entity" in blob.owner:
+            entity = blob.owner["entity"]
+            if "user-" in entity:
+                email = entity.replace("user-", "")
+                name = email.split("@")[0].replace(".", " ").title()
+                print(f"[DETECT] Uploader detected from object owner: {name} <{email}>")
+                return {"name": name, "email": email, "team": "auto-detected"}
+
+    except Exception as e:
+        print(f"[DETECT] Object metadata check failed: {e}")
+
+    print("[DETECT] Could not auto-detect uploader")
+    return {"name": "unknown", "email": "unknown", "team": "unknown"}
+
+
 def compute_software_fingerprint(software: dict) -> str:
     """
     Create a deterministic hash of the enabled software combination.
     Only includes keys with truthy values, sorted alphabetically.
     """
-    enabled = sorted(k for k, v in software.items() if v is True or str(v).lower() in ("true", "1", "yes"))
+    enabled = sorted(
+        k for k, v in software.items()
+        if v is True or str(v).lower() in ("true", "1", "yes")
+    )
     fingerprint_str = ",".join(enabled)
     return hashlib.sha256(fingerprint_str.encode()).hexdigest()[:16]
 
@@ -53,7 +135,6 @@ def find_existing_image(fingerprint: str) -> dict | None:
     )
 
     for image in client.list(request=request):
-        # Return the most recent non-deprecated active image
         if not image.deprecated or image.deprecated.state == "":
             return {
                 "name": image.name,
@@ -61,7 +142,6 @@ def find_existing_image(fingerprint: str) -> dict | None:
                 "creation_timestamp": image.creation_timestamp,
                 "self_link": image.self_link,
             }
-        # Also return deprecated images (they still exist)
         if image.deprecated.state == "DEPRECATED":
             return {
                 "name": image.name,
@@ -76,17 +156,20 @@ def find_existing_image(fingerprint: str) -> dict | None:
 def write_audit_log(bucket_name: str, request_data: dict, fingerprint: str, action: str):
     """
     Write an audit entry to /audit/ in the GCS bucket.
-    Each request gets a permanent audit record regardless of outcome.
+    Every request gets a permanent record regardless of outcome.
     """
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
 
-    request_id = request_data.get("request_id", f"unknown-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}")
+    request_id = request_data.get("request_id", "unknown")
     now = datetime.now(timezone.utc).isoformat()
 
     requester = request_data.get("requester", {})
     software = request_data.get("image_config", {}).get("software", {})
-    enabled_software = sorted(k for k, v in software.items() if v is True or str(v).lower() in ("true", "1", "yes"))
+    enabled_software = sorted(
+        k for k, v in software.items()
+        if v is True or str(v).lower() in ("true", "1", "yes")
+    )
 
     audit_entry = {
         "request_id": request_id,
@@ -100,12 +183,13 @@ def write_audit_log(bucket_name: str, request_data: dict, fingerprint: str, acti
         "software_fingerprint": fingerprint,
         "image_config_name": request_data.get("image_config", {}).get("image_name", ""),
         "create_vm": request_data.get("image_config", {}).get("create_vm", False),
-        "action": action,  # "BUILD_TRIGGERED" or "DUPLICATE_FOUND"
+        "action": action,
     }
 
-    blob = bucket.blob(f"audit/{request_id}_{now.replace(':', '-')}.json")
+    blob_name = f"audit/{request_id}_{now.replace(':', '-')}.json"
+    blob = bucket.blob(blob_name)
     blob.upload_from_string(json.dumps(audit_entry, indent=2), content_type="application/json")
-    print(f"[AUDIT] Written to gs://{bucket_name}/audit/{blob.name}")
+    print(f"[AUDIT] Written to gs://{bucket_name}/{blob_name}")
     return audit_entry
 
 
@@ -202,10 +286,6 @@ def trigger_cloud_run_job(request_json_gcs: str):
 def process_request(cloud_event):
     """
     Main entry point. Triggered by Eventarc on GCS object.finalize.
-
-    Event data contains:
-      - bucket: the GCS bucket name
-      - name: the object path (e.g. requests/my-request.json)
     """
     data = cloud_event.data
     bucket_name = data["bucket"]
@@ -216,7 +296,6 @@ def process_request(cloud_event):
         print(f"[SKIP] Ignoring non-request file: {object_name}")
         return "Skipped", 200
 
-    # Ignore non-JSON files
     if not object_name.endswith(".json"):
         print(f"[SKIP] Ignoring non-JSON file: {object_name}")
         return "Skipped", 200
@@ -229,28 +308,46 @@ def process_request(cloud_event):
     blob = bucket.blob(object_name)
     request_data = json.loads(blob.download_as_text())
 
-    requester = request_data.get("requester", {})
+    # ── 2. Auto-detect who uploaded the file ──────────────────────────────
+    # User does NOT need to put name/email in JSON — we detect automatically
+    if "requester" not in request_data or not request_data["requester"].get("email"):
+        detected = detect_uploader(bucket_name, object_name)
+        request_data["requester"] = detected
+        print(f"[AUTO-DETECT] Requester: {detected['name']} <{detected['email']}>")
+    else:
+        print(f"[JSON] Requester provided in JSON: {request_data['requester']}")
+
+    requester = request_data["requester"]
     requester_name = requester.get("name", "unknown")
     requester_email = requester.get("email", "unknown")
-    request_id = request_data.get("request_id", "")
 
-    # Auto-generate request_id if missing
+    # ── 3. Auto-generate request_id ───────────────────────────────────────
+    request_id = request_data.get("request_id", "")
     if not request_id:
-        request_id = f"req-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{hashlib.md5(object_name.encode()).hexdigest()[:6]}"
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        hash_suffix = hashlib.md5(f"{object_name}{requester_email}".encode()).hexdigest()[:6]
+        request_id = f"req-{ts}-{hash_suffix}"
         request_data["request_id"] = request_id
 
+    # Set requested_at timestamp
+    if "requested_at" not in request_data:
+        request_data["requested_at"] = datetime.now(timezone.utc).isoformat()
+
     software = request_data.get("image_config", {}).get("software", {})
-    enabled_software = sorted(k for k, v in software.items() if v is True or str(v).lower() in ("true", "1", "yes"))
+    enabled_software = sorted(
+        k for k, v in software.items()
+        if v is True or str(v).lower() in ("true", "1", "yes")
+    )
 
     print(f"[REQUEST] ID: {request_id}")
     print(f"[REQUEST] Requester: {requester_name} <{requester_email}>")
     print(f"[REQUEST] Software: {', '.join(enabled_software)}")
 
-    # ── 2. Compute software fingerprint ───────────────────────────────────
+    # ── 4. Compute software fingerprint ───────────────────────────────────
     fingerprint = compute_software_fingerprint(software)
     print(f"[FINGERPRINT] {fingerprint} ({', '.join(enabled_software)})")
 
-    # ── 3. Check for existing image with same fingerprint ─────────────────
+    # ── 5. Check for existing image with same fingerprint ─────────────────
     existing_image = find_existing_image(fingerprint)
 
     if existing_image:
@@ -276,8 +373,17 @@ def process_request(cloud_event):
 
         return "Duplicate detected — skipped build", 200
 
-    # ── 4. No duplicate — trigger the build ───────────────────────────────
+    # ── 6. No duplicate — enrich JSON and trigger build ───────────────────
     print(f"[NEW] No existing image with fingerprint {fingerprint} — triggering build")
+
+    # Write the enriched JSON back (with requester info + request_id)
+    # so docker-entrypoint.sh can read it
+    enriched_blob = bucket.blob(object_name)
+    enriched_blob.upload_from_string(
+        json.dumps(request_data, indent=2),
+        content_type="application/json",
+    )
+    print(f"[ENRICH] Updated JSON with auto-detected requester info")
 
     # Write audit log
     write_audit_log(bucket_name, request_data, fingerprint, action="BUILD_TRIGGERED")

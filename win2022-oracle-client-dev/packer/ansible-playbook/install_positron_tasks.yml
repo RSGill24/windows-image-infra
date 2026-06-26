@@ -1,0 +1,58 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_positron_tasks.yml – Positron IDE (binary from GCS)
+#
+# Requires: Installer uploaded to gs://org-sec-agents-bucket/positron/
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create Positron temp directory
+  win_file:
+    path: "C:\\Temp\\positron"
+    state: directory
+
+- name: Check if Positron is already installed
+  win_shell: |
+    $pos = Get-ChildItem "C:\Program Files\Positron" -ErrorAction SilentlyContinue
+    $pos2 = Get-ChildItem "$env:LOCALAPPDATA\Programs\Positron" -ErrorAction SilentlyContinue
+    if ($pos -or $pos2) { echo "installed" } else { echo "not_installed" }
+  register: positron_check
+  changed_when: false
+
+- name: Download Positron installer from GCS
+  when: "'not_installed' in positron_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/positron/PositronSetup.exe C:\Temp\positron\PositronSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "Positron download failed" }
+  register: positron_download
+  failed_when: positron_download.rc != 0
+
+- name: Install Positron silently
+  when: "'not_installed' in positron_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\positron\PositronSetup.exe" -ArgumentList "/S", "/D=C:\Program Files\Positron" -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Positron installation failed with exit code $LASTEXITCODE" }
+  register: positron_install
+  failed_when: positron_install.rc != 0
+
+- name: Verify Positron installation
+  win_shell: |
+    $pos = Get-ChildItem "C:\Program Files\Positron" -Filter "positron.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pos) {
+      $pos = Get-ChildItem "$env:LOCALAPPDATA\Programs\Positron" -Filter "positron.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if (-not $pos) { throw "Positron binary not found" }
+    echo $pos.FullName
+  register: positron_bin
+  failed_when: positron_bin.rc != 0
+  changed_when: false
+
+- name: Log Positron installation success
+  debug:
+    msg: "Positron installed at: {{ positron_bin.stdout | trim }}"
+
+- name: Clean up Positron temp files
+  win_file:
+    path: "C:\\Temp\\positron"
+    state: absent
+  failed_when: false

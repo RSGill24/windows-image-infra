@@ -1,0 +1,41 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_visual_studio_tasks.yml – Visual Studio 2022 Community via Chocolatey
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Bootstrap Chocolatey (Visual Studio)
+  include_tasks: bootstrap_chocolatey_tasks.yml
+
+- name: Check if Visual Studio Community is already installed
+  win_shell: |
+    $vs = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\Community" -ErrorAction SilentlyContinue
+    if ($vs) { echo "installed" } else { echo "not_installed" }
+  register: vs_check
+  changed_when: false
+
+- name: Install Visual Studio 2022 Community via Chocolatey
+  when: "'not_installed' in vs_check.stdout"
+  win_shell: |
+    choco install visualstudio2022community --yes --no-progress --limit-output --execution-timeout=3600
+    if ($LASTEXITCODE -ne 0) { throw "Visual Studio Community installation failed with exit code $LASTEXITCODE" }
+  register: vs_install
+  failed_when: vs_install.rc != 0
+
+- name: Verify Visual Studio installation
+  win_shell: |
+    $devenv = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\Community" -Filter "devenv.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $devenv) { throw "devenv.exe not found" }
+    echo $devenv.FullName
+  register: vs_bin
+  failed_when: vs_bin.rc != 0
+  changed_when: false
+
+- name: Log Visual Studio installation success
+  debug:
+    msg: "Visual Studio 2022 Community installed at: {{ vs_bin.stdout | trim }}"
+
+- name: Clear Chocolatey download cache
+  win_shell: |
+    choco cache remove --all --yes --no-progress 2>$null
+  failed_when: false
+  changed_when: false

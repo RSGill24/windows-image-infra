@@ -2,13 +2,10 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 2 – Parameterized Windows Image Customization
 #
-# Controlled by three boolean variables passed in via ansible-playbook -e:
-#   install_oracle  (default: false)
-#   install_rstudio (default: false)
-#   install_conda   (default: false)
+# Controlled by boolean variables passed in via ansible-playbook -e:
+#   install_oracle, install_rstudio, install_conda, install_chrome, etc.
 #
-# Cloud Run / Terraform passes these as environment variables:
-#   INSTALL_ORACLE, INSTALL_RSTUDIO, INSTALL_CONDA  →  "true" / "false"
+# Cloud Run / JSON config passes these as environment variables.
 # The entrypoint script converts them to -e flags below.
 # ──────────────────────────────────────────────────────────────────────────────
 - name: Phase 2 – Parameterized Image Customization
@@ -17,9 +14,28 @@
 
   vars:
     # Defaults – all off; entrypoint overrides via -e flags
-    install_oracle:  false
-    install_rstudio: false
-    install_conda:   false
+    install_oracle:          false
+    install_rstudio:         false
+    install_conda:           false
+    install_chrome:          false
+    install_git:             false
+    install_python:          false
+    install_jupyterlab:      false
+    install_powershell_core: false
+    install_pycharm:         false
+    install_visual_studio:   false
+    install_paraview:        false
+    install_echoview:        false
+    install_matlab:          false
+    install_rstudio_pro:     false
+    install_positron:        false
+    install_anaconda:        false
+    install_gpu_drivers:     false
+    install_aalibrary:       false
+    install_echosms:         false
+    install_echostack:       false
+    install_gcp_utilities:   false
+    install_excel:           false
 
     # Shared paths
     installation_target_dir: "C:/Users/packer_user/installation/"
@@ -27,17 +43,94 @@
 
   tasks:
 
-    # ── Oracle Client ──────────────────────────────────────────────────────────
+    # ── Chocolatey-based installs ──────────────────────────────────────────────
+
+    - name: Install Google Chrome
+      include_tasks: install_chrome_tasks.yml
+      when: install_chrome | bool
+
+    - name: Install Git + GitHub Desktop
+      include_tasks: install_git_tasks.yml
+      when: install_git | bool
+
+    - name: Install Python (standalone)
+      include_tasks: install_python_tasks.yml
+      when: install_python | bool
+
+    - name: Install JupyterLab (requires Python)
+      include_tasks: install_jupyterlab_tasks.yml
+      when: install_jupyterlab | bool
+
+    - name: Install PowerShell Core (7+)
+      include_tasks: install_powershell_core_tasks.yml
+      when: install_powershell_core | bool
+
+    - name: Install PyCharm Community
+      include_tasks: install_pycharm_tasks.yml
+      when: install_pycharm | bool
+
+    - name: Install Visual Studio 2022 Community
+      include_tasks: install_visual_studio_tasks.yml
+      when: install_visual_studio | bool
+
+    - name: Install ParaView
+      include_tasks: install_paraview_tasks.yml
+      when: install_paraview | bool
+
+    - name: Install RStudio (OSS via Chocolatey)
+      include_tasks: install_rstudio_tasks.yml
+      when: install_rstudio | bool
+
+    - name: Install Conda / Miniconda (via Chocolatey)
+      include_tasks: install_conda_tasks.yml
+      when: install_conda | bool
+
+    - name: Install Anaconda (full distribution)
+      include_tasks: install_anaconda_tasks.yml
+      when: install_anaconda | bool
+
+    # ── Binary / GCS-based installs ────────────────────────────────────────────
+
     - name: Install Oracle Instant Client
       include_tasks: install_oracle_tasks.yml
       when: install_oracle | bool
 
-    # ── RStudio ────────────────────────────────────────────────────────────────
-    - name: Install RStudio (via Chocolatey)
-      include_tasks: install_rstudio_tasks.yml
-      when: install_rstudio | bool
+    - name: Install Echoview v16+
+      include_tasks: install_echoview_tasks.yml
+      when: install_echoview | bool
 
-    # ── Conda (Miniconda) ──────────────────────────────────────────────────────
-    - name: Install Conda / Miniconda (via Chocolatey)
-      include_tasks: install_conda_tasks.yml
-      when: install_conda | bool
+    - name: Install MATLAB
+      include_tasks: install_matlab_tasks.yml
+      when: install_matlab | bool
+
+    - name: Install RStudio Pro / Posit Workbench
+      include_tasks: install_rstudio_pro_tasks.yml
+      when: install_rstudio_pro | bool
+
+    - name: Install Positron IDE
+      include_tasks: install_positron_tasks.yml
+      when: install_positron | bool
+
+    - name: Install GPU / vGPU Drivers
+      include_tasks: install_gpu_drivers_tasks.yml
+      when: install_gpu_drivers | bool
+
+    - name: Install AA-SI aalibrary (Developer & ML)
+      include_tasks: install_aalibrary_tasks.yml
+      when: install_aalibrary | bool
+
+    - name: Install EchoSMs
+      include_tasks: install_echosms_tasks.yml
+      when: install_echosms | bool
+
+    - name: Install EchoStack
+      include_tasks: install_echostack_tasks.yml
+      when: install_echostack | bool
+
+    - name: Install GCP Cloud Utilities
+      include_tasks: install_gcp_utilities_tasks.yml
+      when: install_gcp_utilities | bool
+
+    - name: Install Microsoft Excel
+      include_tasks: install_excel_tasks.yml
+      when: install_excel | bool

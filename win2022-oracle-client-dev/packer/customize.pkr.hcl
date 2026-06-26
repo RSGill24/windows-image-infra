@@ -33,22 +33,137 @@ variable "installation_target_dir" { type = string }
 
 # ── Component-selection flags ─────────────────────────────────────────────────
 # Passed from the entrypoint/Cloud Run env vars → packer -var → ansible -e
+
 variable "install_oracle" {
   type    = string
   default = "false"
-  description = "Install Oracle Instant Client. Accepted values: true / false"
+  description = "Install Oracle Instant Client + SQL*Plus"
 }
 
 variable "install_rstudio" {
   type    = string
   default = "false"
-  description = "Install RStudio Desktop via Chocolatey. Accepted values: true / false"
+  description = "Install R + RStudio Desktop (OSS) via Chocolatey"
 }
 
 variable "install_conda" {
   type    = string
   default = "false"
-  description = "Install Miniconda3 (conda + Python) via Chocolatey. Accepted values: true / false"
+  description = "Install Miniconda3 (conda + Python) via Chocolatey"
+}
+
+variable "install_chrome" {
+  type    = string
+  default = "false"
+  description = "Install Google Chrome via Chocolatey"
+}
+
+variable "install_git" {
+  type    = string
+  default = "false"
+  description = "Install Git + GitHub Desktop via Chocolatey"
+}
+
+variable "install_python" {
+  type    = string
+  default = "false"
+  description = "Install standalone Python via Chocolatey"
+}
+
+variable "install_jupyterlab" {
+  type    = string
+  default = "false"
+  description = "Install JupyterLab via pip (requires Python)"
+}
+
+variable "install_powershell_core" {
+  type    = string
+  default = "false"
+  description = "Install PowerShell 7+ via Chocolatey"
+}
+
+variable "install_pycharm" {
+  type    = string
+  default = "false"
+  description = "Install PyCharm Community Edition via Chocolatey"
+}
+
+variable "install_visual_studio" {
+  type    = string
+  default = "false"
+  description = "Install Visual Studio 2022 Community via Chocolatey"
+}
+
+variable "install_paraview" {
+  type    = string
+  default = "false"
+  description = "Install ParaView via Chocolatey"
+}
+
+variable "install_echoview" {
+  type    = string
+  default = "false"
+  description = "Install Echoview v16+ (binary from GCS)"
+}
+
+variable "install_matlab" {
+  type    = string
+  default = "false"
+  description = "Install MATLAB (binary from GCS)"
+}
+
+variable "install_rstudio_pro" {
+  type    = string
+  default = "false"
+  description = "Install RStudio Pro / Posit Workbench (binary from GCS)"
+}
+
+variable "install_positron" {
+  type    = string
+  default = "false"
+  description = "Install Positron IDE (binary from GCS)"
+}
+
+variable "install_anaconda" {
+  type    = string
+  default = "false"
+  description = "Install full Anaconda distribution via Chocolatey"
+}
+
+variable "install_gpu_drivers" {
+  type    = string
+  default = "false"
+  description = "Install NVIDIA GPU/vGPU GRID drivers (binary from GCS)"
+}
+
+variable "install_aalibrary" {
+  type    = string
+  default = "false"
+  description = "Install AA-SI aalibrary Developer & ML (binary from GCS)"
+}
+
+variable "install_echosms" {
+  type    = string
+  default = "false"
+  description = "Install EchoSMs (binary from GCS)"
+}
+
+variable "install_echostack" {
+  type    = string
+  default = "false"
+  description = "Install EchoStack (binary from GCS)"
+}
+
+variable "install_gcp_utilities" {
+  type    = string
+  default = "false"
+  description = "Install/update GCP Cloud Utilities (Google Cloud SDK)"
+}
+
+variable "install_excel" {
+  type    = string
+  default = "false"
+  description = "Install Microsoft Excel via Office Deployment Tool (binary from GCS)"
 }
 
 # ── Source ────────────────────────────────────────────────────────────────────
@@ -153,7 +268,26 @@ build {
       # Component flags forwarded to Ansible
       "INSTALL_ORACLE=${var.install_oracle}",
       "INSTALL_RSTUDIO=${var.install_rstudio}",
-      "INSTALL_CONDA=${var.install_conda}"
+      "INSTALL_CONDA=${var.install_conda}",
+      "INSTALL_CHROME=${var.install_chrome}",
+      "INSTALL_GIT=${var.install_git}",
+      "INSTALL_PYTHON=${var.install_python}",
+      "INSTALL_JUPYTERLAB=${var.install_jupyterlab}",
+      "INSTALL_POWERSHELL_CORE=${var.install_powershell_core}",
+      "INSTALL_PYCHARM=${var.install_pycharm}",
+      "INSTALL_VISUAL_STUDIO=${var.install_visual_studio}",
+      "INSTALL_PARAVIEW=${var.install_paraview}",
+      "INSTALL_ECHOVIEW=${var.install_echoview}",
+      "INSTALL_MATLAB=${var.install_matlab}",
+      "INSTALL_RSTUDIO_PRO=${var.install_rstudio_pro}",
+      "INSTALL_POSITRON=${var.install_positron}",
+      "INSTALL_ANACONDA=${var.install_anaconda}",
+      "INSTALL_GPU_DRIVERS=${var.install_gpu_drivers}",
+      "INSTALL_AALIBRARY=${var.install_aalibrary}",
+      "INSTALL_ECHOSMS=${var.install_echosms}",
+      "INSTALL_ECHOSTACK=${var.install_echostack}",
+      "INSTALL_GCP_UTILITIES=${var.install_gcp_utilities}",
+      "INSTALL_EXCEL=${var.install_excel}"
     ]
     inline = [
       "set -eu",
@@ -190,13 +324,32 @@ build {
       "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=60\\nansible_winrm_operation_timeout_sec=120\\nansible_winrm_read_timeout_sec=150\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
 
       "set +e",
-      # Pass component flags as ansible extra-vars
+      # Pass all component flags as ansible extra-vars
       "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -vvv \\",
       "  -i \"$INVENTORY\" \\",
       "  -e \"ansible_password=$PACKER_PW\" \\",
       "  -e \"install_oracle=$INSTALL_ORACLE\" \\",
       "  -e \"install_rstudio=$INSTALL_RSTUDIO\" \\",
       "  -e \"install_conda=$INSTALL_CONDA\" \\",
+      "  -e \"install_chrome=$INSTALL_CHROME\" \\",
+      "  -e \"install_git=$INSTALL_GIT\" \\",
+      "  -e \"install_python=$INSTALL_PYTHON\" \\",
+      "  -e \"install_jupyterlab=$INSTALL_JUPYTERLAB\" \\",
+      "  -e \"install_powershell_core=$INSTALL_POWERSHELL_CORE\" \\",
+      "  -e \"install_pycharm=$INSTALL_PYCHARM\" \\",
+      "  -e \"install_visual_studio=$INSTALL_VISUAL_STUDIO\" \\",
+      "  -e \"install_paraview=$INSTALL_PARAVIEW\" \\",
+      "  -e \"install_echoview=$INSTALL_ECHOVIEW\" \\",
+      "  -e \"install_matlab=$INSTALL_MATLAB\" \\",
+      "  -e \"install_rstudio_pro=$INSTALL_RSTUDIO_PRO\" \\",
+      "  -e \"install_positron=$INSTALL_POSITRON\" \\",
+      "  -e \"install_anaconda=$INSTALL_ANACONDA\" \\",
+      "  -e \"install_gpu_drivers=$INSTALL_GPU_DRIVERS\" \\",
+      "  -e \"install_aalibrary=$INSTALL_AALIBRARY\" \\",
+      "  -e \"install_echosms=$INSTALL_ECHOSMS\" \\",
+      "  -e \"install_echostack=$INSTALL_ECHOSTACK\" \\",
+      "  -e \"install_gcp_utilities=$INSTALL_GCP_UTILITIES\" \\",
+      "  -e \"install_excel=$INSTALL_EXCEL\" \\",
       "  \"$PLAYBOOK_PATH\"",
       "PLAYBOOK_EXIT=$?",
       "set -e",

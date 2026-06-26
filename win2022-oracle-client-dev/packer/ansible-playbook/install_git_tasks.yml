@@ -1,0 +1,59 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_git_tasks.yml – Git + GitHub Desktop via Chocolatey
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Bootstrap Chocolatey (Git)
+  include_tasks: bootstrap_chocolatey_tasks.yml
+
+# ── Git ──────────────────────────────────────────────────────────────────────
+- name: Check if Git is already installed
+  win_stat:
+    path: "C:\\Program Files\\Git\\cmd\\git.exe"
+  register: git_stat
+
+- name: Install Git via Chocolatey
+  when: not git_stat.stat.exists
+  win_shell: |
+    choco install git --yes --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) { throw "Git installation failed with exit code $LASTEXITCODE" }
+  register: git_install
+  failed_when: git_install.rc != 0
+
+- name: Verify Git installation
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    git --version
+  register: git_version
+  failed_when: git_version.rc != 0
+  changed_when: false
+
+- name: Log Git version
+  debug:
+    msg: "Git version: {{ git_version.stdout | trim }}"
+
+# ── GitHub Desktop ───────────────────────────────────────────────────────────
+- name: Check if GitHub Desktop is already installed
+  win_shell: |
+    $path = Get-ChildItem "$env:LOCALAPPDATA\GitHubDesktop" -ErrorAction SilentlyContinue
+    if ($path) { echo "installed" } else { echo "not_installed" }
+  register: ghdesktop_check
+  changed_when: false
+
+- name: Install GitHub Desktop via Chocolatey
+  when: "'not_installed' in ghdesktop_check.stdout"
+  win_shell: |
+    choco install github-desktop --yes --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) { throw "GitHub Desktop installation failed with exit code $LASTEXITCODE" }
+  register: ghdesktop_install
+  failed_when: ghdesktop_install.rc != 0
+
+- name: Log GitHub Desktop installation success
+  debug:
+    msg: "GitHub Desktop installed successfully"
+
+- name: Clear Chocolatey download cache
+  win_shell: |
+    choco cache remove --all --yes --no-progress 2>$null
+  failed_when: false
+  changed_when: false

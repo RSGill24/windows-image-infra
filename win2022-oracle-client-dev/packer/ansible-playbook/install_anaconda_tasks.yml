@@ -1,0 +1,74 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_anaconda_tasks.yml – Full Anaconda distribution via Chocolatey
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Bootstrap Chocolatey (Anaconda)
+  include_tasks: bootstrap_chocolatey_tasks.yml
+
+- name: Check if Anaconda is already installed
+  win_stat:
+    path: "C:\\tools\\Anaconda3\\Scripts\\conda.exe"
+  register: anaconda_stat
+
+- name: Install Anaconda3 via Chocolatey
+  when: not anaconda_stat.stat.exists
+  win_shell: |
+    choco install anaconda3 --yes --no-progress --limit-output `
+      --params "'/AddToPath:1 /RegisterPython:0 /InstallationType:AllUsers'" `
+      --execution-timeout=3600
+    if ($LASTEXITCODE -ne 0) { throw "Anaconda3 installation failed with exit code $LASTEXITCODE" }
+  register: anaconda_install
+  failed_when: anaconda_install.rc != 0
+
+- name: Verify Anaconda conda binary exists
+  win_stat:
+    path: "C:\\tools\\Anaconda3\\Scripts\\conda.exe"
+  register: anaconda_bin
+  failed_when: not anaconda_bin.stat.exists
+
+- name: Set ANACONDA_HOME machine environment variable
+  win_shell: |
+    [Environment]::SetEnvironmentVariable('ANACONDA_HOME', 'C:\tools\Anaconda3', 'Machine')
+
+- name: Add Anaconda to system PATH
+  win_shell: |
+    $anacondaRoot = "C:\tools\Anaconda3"
+    $addPaths = @(
+      $anacondaRoot,
+      "$anacondaRoot\Scripts",
+      "$anacondaRoot\Library\bin"
+    )
+    $currentPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    $pathParts = $currentPath -split ';'
+    foreach ($p in $addPaths) {
+      if ($pathParts -notcontains $p) {
+        $currentPath = "$currentPath;$p"
+      }
+    }
+    [Environment]::SetEnvironmentVariable('PATH', $currentPath, 'Machine')
+  changed_when: false
+
+- name: Initialise Anaconda shell hooks (PowerShell)
+  win_shell: |
+    $conda = "C:\tools\Anaconda3\Scripts\conda.exe"
+    & $conda init powershell --all --quiet
+  failed_when: false
+  changed_when: false
+
+- name: Verify Anaconda conda version
+  win_shell: |
+    & "C:\tools\Anaconda3\Scripts\conda.exe" --version
+  register: anaconda_version
+  failed_when: anaconda_version.rc != 0
+  changed_when: false
+
+- name: Log Anaconda version
+  debug:
+    msg: "Anaconda conda version: {{ anaconda_version.stdout | trim }}"
+
+- name: Clear Chocolatey download cache
+  win_shell: |
+    choco cache remove --all --yes --no-progress 2>$null
+  failed_when: false
+  changed_when: false

@@ -1,0 +1,77 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_matlab_tasks.yml – MATLAB (binary installer from GCS)
+#
+# Requires:
+#   - Installer: gs://org-sec-agents-bucket/matlab/matlab_installer.exe
+#   - License file: gs://org-sec-agents-bucket/matlab/installer_input.txt
+#     (contains license key, install dir, product selection)
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create MATLAB temp directory
+  win_file:
+    path: "C:\\Temp\\matlab"
+    state: directory
+
+- name: Check if MATLAB is already installed
+  win_shell: |
+    $ml = Get-ChildItem "C:\Program Files\MATLAB" -ErrorAction SilentlyContinue
+    if ($ml) { echo "installed" } else { echo "not_installed" }
+  register: matlab_check
+  changed_when: false
+
+- name: Download MATLAB installer from GCS
+  when: "'not_installed' in matlab_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/matlab/matlab_installer.exe C:\Temp\matlab\matlab_installer.exe
+    if ($LASTEXITCODE -ne 0) { throw "MATLAB installer download failed" }
+  register: matlab_dl_installer
+  failed_when: matlab_dl_installer.rc != 0
+
+- name: Download MATLAB license/input file from GCS
+  when: "'not_installed' in matlab_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/matlab/installer_input.txt C:\Temp\matlab\installer_input.txt
+    if ($LASTEXITCODE -ne 0) { throw "MATLAB license file download failed" }
+  register: matlab_dl_license
+  failed_when: matlab_dl_license.rc != 0
+
+- name: Install MATLAB silently
+  when: "'not_installed' in matlab_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\matlab\matlab_installer.exe" `
+      -ArgumentList "-inputFile", "C:\Temp\matlab\installer_input.txt", "-mode", "silent" `
+      -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0) { throw "MATLAB installation failed with exit code $LASTEXITCODE" }
+  register: matlab_install
+  failed_when: matlab_install.rc != 0
+
+- name: Verify MATLAB installation
+  win_shell: |
+    $matlab = Get-ChildItem "C:\Program Files\MATLAB" -Filter "matlab.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $matlab) { throw "matlab.exe not found" }
+    echo $matlab.FullName
+  register: matlab_bin
+  failed_when: matlab_bin.rc != 0
+  changed_when: false
+
+- name: Add MATLAB to system PATH
+  win_shell: |
+    $matlabDir = (Get-ChildItem "C:\Program Files\MATLAB" -Filter "matlab.exe" -Recurse | Select-Object -First 1).DirectoryName
+    $currentPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    if ($currentPath -notlike "*$matlabDir*") {
+      [Environment]::SetEnvironmentVariable('PATH', "$currentPath;$matlabDir", 'Machine')
+    }
+  changed_when: false
+
+- name: Log MATLAB installation success
+  debug:
+    msg: "MATLAB installed at: {{ matlab_bin.stdout | trim }}"
+
+- name: Clean up MATLAB temp files
+  win_file:
+    path: "C:\\Temp\\matlab"
+    state: absent
+  failed_when: false

@@ -1,0 +1,43 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_jupyterlab_tasks.yml – JupyterLab via pip (requires Python)
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Ensure Python is available for JupyterLab
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    python --version
+  register: jupyter_python_check
+  failed_when: jupyter_python_check.rc != 0
+  changed_when: false
+
+- name: Check if JupyterLab is already installed
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    jupyter lab --version 2>$null
+    if ($LASTEXITCODE -ne 0) { echo "not_installed" }
+  register: jupyter_check
+  changed_when: false
+  failed_when: false
+
+- name: Install JupyterLab via pip
+  when: "'not_installed' in jupyter_check.stdout or jupyter_check.rc != 0"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    python -m pip install --upgrade pip
+    python -m pip install jupyterlab
+    if ($LASTEXITCODE -ne 0) { throw "JupyterLab installation failed" }
+  register: jupyter_install
+  failed_when: jupyter_install.rc != 0
+
+- name: Verify JupyterLab installation
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    jupyter lab --version
+  register: jupyter_version
+  failed_when: jupyter_version.rc != 0
+  changed_when: false
+
+- name: Log JupyterLab version
+  debug:
+    msg: "JupyterLab version: {{ jupyter_version.stdout | trim }}"

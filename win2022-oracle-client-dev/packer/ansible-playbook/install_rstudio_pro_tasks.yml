@@ -1,0 +1,58 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_rstudio_pro_tasks.yml – RStudio Pro / Posit Workbench (binary from GCS)
+#
+# Requires: Installer uploaded to gs://org-sec-agents-bucket/posit/
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create Posit temp directory
+  win_file:
+    path: "C:\\Temp\\posit"
+    state: directory
+
+- name: Check if Posit Workbench is already installed
+  win_shell: |
+    $posit = Get-ChildItem "C:\Program Files\RStudio" -Filter "rstudio-server*" -ErrorAction SilentlyContinue
+    $posit2 = Get-ChildItem "C:\Program Files\Posit" -ErrorAction SilentlyContinue
+    if ($posit -or $posit2) { echo "installed" } else { echo "not_installed" }
+  register: positpro_check
+  changed_when: false
+
+- name: Download Posit Workbench installer from GCS
+  when: "'not_installed' in positpro_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/posit/PositWorkbenchSetup.exe C:\Temp\posit\PositWorkbenchSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "Posit Workbench download failed" }
+  register: posit_download
+  failed_when: posit_download.rc != 0
+
+- name: Install Posit Workbench silently
+  when: "'not_installed' in positpro_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\posit\PositWorkbenchSetup.exe" -ArgumentList "/S" -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Posit Workbench installation failed with exit code $LASTEXITCODE" }
+  register: posit_install
+  failed_when: posit_install.rc != 0
+
+- name: Verify Posit Workbench installation
+  win_shell: |
+    $posit = Get-ChildItem "C:\Program Files" -Filter "rstudio*" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.exe' } | Select-Object -First 1
+    if (-not $posit) {
+      $posit = Get-ChildItem "C:\Program Files\Posit" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if (-not $posit) { throw "Posit Workbench binary not found" }
+    echo $posit.FullName
+  register: posit_bin
+  failed_when: posit_bin.rc != 0
+  changed_when: false
+
+- name: Log Posit Workbench installation success
+  debug:
+    msg: "Posit Workbench installed at: {{ posit_bin.stdout | trim }}"
+
+- name: Clean up Posit temp files
+  win_file:
+    path: "C:\\Temp\\posit"
+    state: absent
+  failed_when: false

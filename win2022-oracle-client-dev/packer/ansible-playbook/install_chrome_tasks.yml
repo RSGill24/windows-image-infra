@@ -1,0 +1,36 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_chrome_tasks.yml – Google Chrome via Chocolatey
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Bootstrap Chocolatey (Chrome)
+  include_tasks: bootstrap_chocolatey_tasks.yml
+
+- name: Check if Chrome is already installed
+  win_stat:
+    path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+  register: chrome_stat
+
+- name: Install Google Chrome via Chocolatey
+  when: not chrome_stat.stat.exists
+  win_shell: |
+    choco install googlechrome --yes --no-progress --limit-output --ignore-checksums
+    if ($LASTEXITCODE -ne 0) { throw "Chrome installation failed with exit code $LASTEXITCODE" }
+  register: chrome_install
+  failed_when: chrome_install.rc != 0
+
+- name: Verify Chrome binary exists
+  win_stat:
+    path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+  register: chrome_bin
+  failed_when: not chrome_bin.stat.exists
+
+- name: Log Chrome installation success
+  debug:
+    msg: "Google Chrome installed successfully"
+
+- name: Clear Chocolatey download cache
+  win_shell: |
+    choco cache remove --all --yes --no-progress 2>$null
+  failed_when: false
+  changed_when: false

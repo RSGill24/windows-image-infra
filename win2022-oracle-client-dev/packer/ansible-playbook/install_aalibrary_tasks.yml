@@ -1,0 +1,58 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_aalibrary_tasks.yml – AA-SI aalibrary (Developer & ML) from GCS
+#
+# Requires: Package uploaded to gs://org-sec-agents-bucket/aalibrary/
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create aalibrary temp directory
+  win_file:
+    path: "C:\\Temp\\aalibrary"
+    state: directory
+
+- name: Check if AA-SI aalibrary is already installed
+  win_shell: |
+    $aa = Get-ChildItem "C:\Program Files\aalibrary" -ErrorAction SilentlyContinue
+    $aa2 = Get-ChildItem "C:\Program Files (x86)\aalibrary" -ErrorAction SilentlyContinue
+    if ($aa -or $aa2) { echo "installed" } else { echo "not_installed" }
+  register: aalibrary_check
+  changed_when: false
+
+- name: Download AA-SI aalibrary installer from GCS
+  when: "'not_installed' in aalibrary_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/aalibrary/aalibrary-setup.exe C:\Temp\aalibrary\aalibrary-setup.exe
+    if ($LASTEXITCODE -ne 0) { throw "AA-SI aalibrary download failed" }
+  register: aalibrary_download
+  failed_when: aalibrary_download.rc != 0
+
+- name: Install AA-SI aalibrary silently
+  when: "'not_installed' in aalibrary_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\aalibrary\aalibrary-setup.exe" -ArgumentList "/S" -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "AA-SI aalibrary installation failed with exit code $LASTEXITCODE" }
+  register: aalibrary_install
+  failed_when: aalibrary_install.rc != 0
+
+- name: Verify AA-SI aalibrary installation
+  win_shell: |
+    $aa = Get-ChildItem "C:\Program Files" -Filter "aalibrary*" -Recurse -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $aa) {
+      $aa = Get-ChildItem "C:\Program Files (x86)" -Filter "aalibrary*" -Recurse -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if (-not $aa) { throw "AA-SI aalibrary installation not found" }
+    echo "AA-SI aalibrary installed at $($aa.FullName)"
+  register: aalibrary_verify
+  failed_when: aalibrary_verify.rc != 0
+  changed_when: false
+
+- name: Log AA-SI aalibrary installation
+  debug:
+    msg: "{{ aalibrary_verify.stdout | trim }}"
+
+- name: Clean up aalibrary temp files
+  win_file:
+    path: "C:\\Temp\\aalibrary"
+    state: absent
+  failed_when: false

@@ -1,0 +1,58 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_echostack_tasks.yml – EchoStack (binary from GCS)
+#
+# Requires: Installer uploaded to gs://org-sec-agents-bucket/echostack/
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create EchoStack temp directory
+  win_file:
+    path: "C:\\Temp\\echostack"
+    state: directory
+
+- name: Check if EchoStack is already installed
+  win_shell: |
+    $es = Get-ChildItem "C:\Program Files\EchoStack" -ErrorAction SilentlyContinue
+    $es2 = Get-ChildItem "C:\Program Files (x86)\EchoStack" -ErrorAction SilentlyContinue
+    if ($es -or $es2) { echo "installed" } else { echo "not_installed" }
+  register: echostack_check
+  changed_when: false
+
+- name: Download EchoStack installer from GCS
+  when: "'not_installed' in echostack_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/echostack/EchoStackSetup.exe C:\Temp\echostack\EchoStackSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "EchoStack download failed" }
+  register: echostack_download
+  failed_when: echostack_download.rc != 0
+
+- name: Install EchoStack silently
+  when: "'not_installed' in echostack_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\echostack\EchoStackSetup.exe" -ArgumentList "/S" -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "EchoStack installation failed with exit code $LASTEXITCODE" }
+  register: echostack_install
+  failed_when: echostack_install.rc != 0
+
+- name: Verify EchoStack installation
+  win_shell: |
+    $es = Get-ChildItem "C:\Program Files" -Filter "EchoStack*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $es) {
+      $es = Get-ChildItem "C:\Program Files (x86)" -Filter "EchoStack*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if (-not $es) { throw "EchoStack installation not found" }
+    echo "EchoStack installed at $($es.FullName)"
+  register: echostack_verify
+  failed_when: echostack_verify.rc != 0
+  changed_when: false
+
+- name: Log EchoStack installation
+  debug:
+    msg: "{{ echostack_verify.stdout | trim }}"
+
+- name: Clean up EchoStack temp files
+  win_file:
+    path: "C:\\Temp\\echostack"
+    state: absent
+  failed_when: false

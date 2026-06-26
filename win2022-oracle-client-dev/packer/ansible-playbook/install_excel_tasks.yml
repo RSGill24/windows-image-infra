@@ -1,0 +1,90 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_excel_tasks.yml – Microsoft Excel (Office deployment from GCS)
+#
+# Requires:
+#   - Office Deployment Tool + config: gs://org-sec-agents-bucket/office/
+#   - configuration.xml should specify Excel-only install:
+#       <Add OfficeClientEdition="64">
+#         <Product ID="O365ProPlusRetail">
+#           <ExcludeApp ID="..." />  (exclude all except Excel)
+#         </Product>
+#       </Add>
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create Office temp directory
+  win_file:
+    path: "C:\\Temp\\office"
+    state: directory
+
+- name: Check if Microsoft Excel is already installed
+  win_shell: |
+    $excel = Get-ChildItem "C:\Program Files\Microsoft Office" -Filter "EXCEL.EXE" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    $excel2 = Get-ChildItem "C:\Program Files (x86)\Microsoft Office" -Filter "EXCEL.EXE" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($excel -or $excel2) { echo "installed" } else { echo "not_installed" }
+  register: excel_check
+  changed_when: false
+
+- name: Download Office Deployment Tool from GCS
+  when: "'not_installed' in excel_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/office/officedeploymenttool.exe C:\Temp\office\officedeploymenttool.exe
+    if ($LASTEXITCODE -ne 0) { throw "Office Deployment Tool download failed" }
+  register: odt_download
+  failed_when: odt_download.rc != 0
+
+- name: Download Office configuration XML from GCS
+  when: "'not_installed' in excel_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/office/configuration.xml C:\Temp\office\configuration.xml
+    if ($LASTEXITCODE -ne 0) { throw "Office configuration download failed" }
+  register: odt_config_download
+  failed_when: odt_config_download.rc != 0
+
+- name: Extract Office Deployment Tool
+  when: "'not_installed' in excel_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\office\officedeploymenttool.exe" `
+      -ArgumentList "/quiet", "/extract:C:\Temp\office" `
+      -Wait -NoNewWindow
+
+- name: Download Office binaries using ODT
+  when: "'not_installed' in excel_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\office\setup.exe" `
+      -ArgumentList "/download", "C:\Temp\office\configuration.xml" `
+      -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0) { throw "Office download failed with exit code $LASTEXITCODE" }
+  register: office_download
+  failed_when: office_download.rc != 0
+
+- name: Install Microsoft Excel via ODT
+  when: "'not_installed' in excel_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\office\setup.exe" `
+      -ArgumentList "/configure", "C:\Temp\office\configuration.xml" `
+      -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0) { throw "Office installation failed with exit code $LASTEXITCODE" }
+  register: office_install
+  failed_when: office_install.rc != 0
+
+- name: Verify Microsoft Excel installation
+  win_shell: |
+    $excel = Get-ChildItem "C:\Program Files" -Filter "EXCEL.EXE" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $excel) { throw "EXCEL.EXE not found after installation" }
+    echo $excel.FullName
+  register: excel_bin
+  failed_when: excel_bin.rc != 0
+  changed_when: false
+
+- name: Log Excel installation success
+  debug:
+    msg: "Microsoft Excel installed at: {{ excel_bin.stdout | trim }}"
+
+- name: Clean up Office temp files
+  win_file:
+    path: "C:\\Temp\\office"
+    state: absent
+  failed_when: false

@@ -1,0 +1,61 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_echoview_tasks.yml – Echoview v16+ (binary installer from GCS)
+#
+# Requires: Installer uploaded to gs://org-sec-agents-bucket/echoview/
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create Echoview temp directory
+  win_file:
+    path: "C:\\Temp\\echoview"
+    state: directory
+
+- name: Check if Echoview is already installed
+  win_shell: |
+    $ev = Get-ChildItem "C:\Program Files\Echoview Software" -ErrorAction SilentlyContinue
+    if ($ev) { echo "installed" } else { echo "not_installed" }
+  register: echoview_check
+  changed_when: false
+
+- name: Download Echoview installer from GCS
+  when: "'not_installed' in echoview_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/echoview/EchoviewSetup.exe C:\Temp\echoview\EchoviewSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "Echoview download failed" }
+  register: echoview_download
+  failed_when: echoview_download.rc != 0
+
+- name: Verify Echoview installer downloaded
+  when: "'not_installed' in echoview_check.stdout"
+  win_stat:
+    path: "C:\\Temp\\echoview\\EchoviewSetup.exe"
+  register: echoview_installer
+  failed_when: not echoview_installer.stat.exists
+
+- name: Install Echoview silently
+  when: "'not_installed' in echoview_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\echoview\EchoviewSetup.exe" -ArgumentList "/S", "/v/qn" -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Echoview installation failed with exit code $LASTEXITCODE" }
+  register: echoview_install
+  failed_when: echoview_install.rc != 0
+
+- name: Verify Echoview installation
+  win_shell: |
+    $ev = Get-ChildItem "C:\Program Files\Echoview Software" -ErrorAction SilentlyContinue
+    if (-not $ev) { throw "Echoview installation directory not found" }
+    echo "Echoview installed at C:\Program Files\Echoview Software"
+  register: echoview_verify
+  failed_when: echoview_verify.rc != 0
+  changed_when: false
+
+- name: Log Echoview installation success
+  debug:
+    msg: "{{ echoview_verify.stdout | trim }}"
+
+- name: Clean up Echoview temp files
+  win_file:
+    path: "C:\\Temp\\echoview"
+    state: absent
+  failed_when: false

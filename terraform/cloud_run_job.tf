@@ -1,11 +1,8 @@
 ################################################################################
-# variables.tf  –  declare these in your root module
-################################################################################
-# variable "project_id"  { type = string }
-# variable "region"      { type = string }
-# variable "install_oracle"  { type = bool   default = false }
-# variable "install_rstudio" { type = bool   default = false }
-# variable "install_conda"   { type = bool   default = false }
+# cloud_run_job.tf
+#
+# Cloud Run Job for the parameterized Windows image builder.
+# Supports both ENV mode (backward-compatible) and JSON mode (Eventarc).
 ################################################################################
 
 resource "google_cloud_run_v2_job" "windows_image_builder" {
@@ -24,7 +21,7 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
       service_account = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
 
       max_retries = 1
-      timeout     = "3600s"
+      timeout     = "7200s" # 2 hours — more software = longer builds
 
       vpc_access {
         network_interfaces {
@@ -87,7 +84,28 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
           value = "customize.pkr.hcl"
         }
 
-        # ── Component-selection flags ───────────────────────────────────────
+        # ── Secret name (NOT the password itself) ───────────────────────────
+        env {
+          name  = "WINRM_SECRET"
+          value = "packer-winrm-password"
+        }
+
+        # ── JSON mode / metadata config ─────────────────────────────────────
+        # REQUEST_JSON_GCS is set at runtime by Eventarc trigger override
+        env {
+          name  = "REQUEST_JSON_GCS"
+          value = ""
+        }
+        env {
+          name  = "GCS_STATUS_BUCKET"
+          value = "${var.project_id}-image-builder-requests"
+        }
+        env {
+          name  = "PUBSUB_TOPIC"
+          value = "image-builder-notifications"
+        }
+
+        # ── Component-selection flags (ENV mode / defaults) ─────────────────
         env {
           name  = "INSTALL_ORACLE"
           value = tostring(var.install_oracle)
@@ -100,14 +118,81 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
           name  = "INSTALL_CONDA"
           value = tostring(var.install_conda)
         }
-
-        # ── Secret name (NOT the password itself) ───────────────────────────
-        # docker-entrypoint.sh calls:
-        #   gcloud secrets versions access latest --secret $WINRM_SECRET
-        # So this must be the Secret Manager secret ID, not the password value.
         env {
-          name  = "WINRM_SECRET"
-          value = "packer-winrm-password"
+          name  = "INSTALL_CHROME"
+          value = tostring(var.install_chrome)
+        }
+        env {
+          name  = "INSTALL_GIT"
+          value = tostring(var.install_git)
+        }
+        env {
+          name  = "INSTALL_PYTHON"
+          value = tostring(var.install_python)
+        }
+        env {
+          name  = "INSTALL_JUPYTERLAB"
+          value = tostring(var.install_jupyterlab)
+        }
+        env {
+          name  = "INSTALL_POWERSHELL_CORE"
+          value = tostring(var.install_powershell_core)
+        }
+        env {
+          name  = "INSTALL_PYCHARM"
+          value = tostring(var.install_pycharm)
+        }
+        env {
+          name  = "INSTALL_VISUAL_STUDIO"
+          value = tostring(var.install_visual_studio)
+        }
+        env {
+          name  = "INSTALL_PARAVIEW"
+          value = tostring(var.install_paraview)
+        }
+        env {
+          name  = "INSTALL_ECHOVIEW"
+          value = tostring(var.install_echoview)
+        }
+        env {
+          name  = "INSTALL_MATLAB"
+          value = tostring(var.install_matlab)
+        }
+        env {
+          name  = "INSTALL_RSTUDIO_PRO"
+          value = tostring(var.install_rstudio_pro)
+        }
+        env {
+          name  = "INSTALL_POSITRON"
+          value = tostring(var.install_positron)
+        }
+        env {
+          name  = "INSTALL_ANACONDA"
+          value = tostring(var.install_anaconda)
+        }
+        env {
+          name  = "INSTALL_GPU_DRIVERS"
+          value = tostring(var.install_gpu_drivers)
+        }
+        env {
+          name  = "INSTALL_AALIBRARY"
+          value = tostring(var.install_aalibrary)
+        }
+        env {
+          name  = "INSTALL_ECHOSMS"
+          value = tostring(var.install_echosms)
+        }
+        env {
+          name  = "INSTALL_ECHOSTACK"
+          value = tostring(var.install_echostack)
+        }
+        env {
+          name  = "INSTALL_GCP_UTILITIES"
+          value = tostring(var.install_gcp_utilities)
+        }
+        env {
+          name  = "INSTALL_EXCEL"
+          value = tostring(var.install_excel)
         }
       }
     }
@@ -115,13 +200,13 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
 }
 
 ################################################################################
-# Cloud Scheduler – triggers the Cloud Run job on a schedule
+# Cloud Scheduler – triggers the Cloud Run job on a schedule (ENV mode)
 ################################################################################
 
 resource "google_cloud_scheduler_job" "windows_image_builder_schedule" {
   name             = "windows-image-builder-schedule"
   description      = "Scheduled build of the parameterized Windows image"
-  schedule         = "0 2 * * 1"   # every Monday at 02:00 UTC
+  schedule         = "0 2 * * 1" # every Monday at 02:00 UTC
   time_zone        = "UTC"
   project          = var.project_id
   region           = var.region
@@ -145,9 +230,28 @@ resource "google_cloud_scheduler_job" "windows_image_builder_schedule" {
         containerOverrides = [{
           name = "windows-packer-builder"
           env = [
-            { name = "INSTALL_ORACLE",  value = tostring(var.install_oracle)  },
+            { name = "INSTALL_ORACLE", value = tostring(var.install_oracle) },
             { name = "INSTALL_RSTUDIO", value = tostring(var.install_rstudio) },
-            { name = "INSTALL_CONDA",   value = tostring(var.install_conda)   }
+            { name = "INSTALL_CONDA", value = tostring(var.install_conda) },
+            { name = "INSTALL_CHROME", value = tostring(var.install_chrome) },
+            { name = "INSTALL_GIT", value = tostring(var.install_git) },
+            { name = "INSTALL_PYTHON", value = tostring(var.install_python) },
+            { name = "INSTALL_JUPYTERLAB", value = tostring(var.install_jupyterlab) },
+            { name = "INSTALL_POWERSHELL_CORE", value = tostring(var.install_powershell_core) },
+            { name = "INSTALL_PYCHARM", value = tostring(var.install_pycharm) },
+            { name = "INSTALL_VISUAL_STUDIO", value = tostring(var.install_visual_studio) },
+            { name = "INSTALL_PARAVIEW", value = tostring(var.install_paraview) },
+            { name = "INSTALL_ECHOVIEW", value = tostring(var.install_echoview) },
+            { name = "INSTALL_MATLAB", value = tostring(var.install_matlab) },
+            { name = "INSTALL_RSTUDIO_PRO", value = tostring(var.install_rstudio_pro) },
+            { name = "INSTALL_POSITRON", value = tostring(var.install_positron) },
+            { name = "INSTALL_ANACONDA", value = tostring(var.install_anaconda) },
+            { name = "INSTALL_GPU_DRIVERS", value = tostring(var.install_gpu_drivers) },
+            { name = "INSTALL_AALIBRARY", value = tostring(var.install_aalibrary) },
+            { name = "INSTALL_ECHOSMS", value = tostring(var.install_echosms) },
+            { name = "INSTALL_ECHOSTACK", value = tostring(var.install_echostack) },
+            { name = "INSTALL_GCP_UTILITIES", value = tostring(var.install_gcp_utilities) },
+            { name = "INSTALL_EXCEL", value = tostring(var.install_excel) }
           ]
         }]
       }
@@ -158,4 +262,3 @@ resource "google_cloud_scheduler_job" "windows_image_builder_schedule" {
     }
   }
 }
-

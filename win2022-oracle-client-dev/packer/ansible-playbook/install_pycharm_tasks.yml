@@ -1,0 +1,41 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_pycharm_tasks.yml – PyCharm Community Edition via Chocolatey
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Bootstrap Chocolatey (PyCharm)
+  include_tasks: bootstrap_chocolatey_tasks.yml
+
+- name: Check if PyCharm Community is already installed
+  win_shell: |
+    $path = Get-ChildItem "C:\Program Files\JetBrains" -Filter "PyCharm Community*" -Directory -ErrorAction SilentlyContinue
+    if ($path) { echo "installed" } else { echo "not_installed" }
+  register: pycharm_check
+  changed_when: false
+
+- name: Install PyCharm Community via Chocolatey
+  when: "'not_installed' in pycharm_check.stdout"
+  win_shell: |
+    choco install pycharm-community --yes --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) { throw "PyCharm Community installation failed with exit code $LASTEXITCODE" }
+  register: pycharm_install
+  failed_when: pycharm_install.rc != 0
+
+- name: Verify PyCharm installation
+  win_shell: |
+    $pycharm = Get-ChildItem "C:\Program Files\JetBrains" -Filter "pycharm*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pycharm) { throw "PyCharm binary not found" }
+    echo $pycharm.FullName
+  register: pycharm_bin
+  failed_when: pycharm_bin.rc != 0
+  changed_when: false
+
+- name: Log PyCharm installation success
+  debug:
+    msg: "PyCharm Community installed at: {{ pycharm_bin.stdout | trim }}"
+
+- name: Clear Chocolatey download cache
+  win_shell: |
+    choco cache remove --all --yes --no-progress 2>$null
+  failed_when: false
+  changed_when: false

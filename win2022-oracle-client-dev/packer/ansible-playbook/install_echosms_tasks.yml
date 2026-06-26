@@ -1,0 +1,58 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_echosms_tasks.yml – EchoSMs (binary from GCS)
+#
+# Requires: Installer uploaded to gs://org-sec-agents-bucket/echosms/
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create EchoSMs temp directory
+  win_file:
+    path: "C:\\Temp\\echosms"
+    state: directory
+
+- name: Check if EchoSMs is already installed
+  win_shell: |
+    $es = Get-ChildItem "C:\Program Files\EchoSMs" -ErrorAction SilentlyContinue
+    $es2 = Get-ChildItem "C:\Program Files (x86)\EchoSMs" -ErrorAction SilentlyContinue
+    if ($es -or $es2) { echo "installed" } else { echo "not_installed" }
+  register: echosms_check
+  changed_when: false
+
+- name: Download EchoSMs installer from GCS
+  when: "'not_installed' in echosms_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/echosms/EchoSMsSetup.exe C:\Temp\echosms\EchoSMsSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "EchoSMs download failed" }
+  register: echosms_download
+  failed_when: echosms_download.rc != 0
+
+- name: Install EchoSMs silently
+  when: "'not_installed' in echosms_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\echosms\EchoSMsSetup.exe" -ArgumentList "/S" -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "EchoSMs installation failed with exit code $LASTEXITCODE" }
+  register: echosms_install
+  failed_when: echosms_install.rc != 0
+
+- name: Verify EchoSMs installation
+  win_shell: |
+    $es = Get-ChildItem "C:\Program Files" -Filter "EchoSMs*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $es) {
+      $es = Get-ChildItem "C:\Program Files (x86)" -Filter "EchoSMs*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if (-not $es) { throw "EchoSMs installation not found" }
+    echo "EchoSMs installed at $($es.FullName)"
+  register: echosms_verify
+  failed_when: echosms_verify.rc != 0
+  changed_when: false
+
+- name: Log EchoSMs installation
+  debug:
+    msg: "{{ echosms_verify.stdout | trim }}"
+
+- name: Clean up EchoSMs temp files
+  win_file:
+    path: "C:\\Temp\\echosms"
+    state: absent
+  failed_when: false

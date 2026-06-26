@@ -1,0 +1,65 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_gpu_drivers_tasks.yml – NVIDIA GPU/vGPU GRID drivers from GCS
+#
+# Requires: NVIDIA GRID driver uploaded to gs://org-sec-agents-bucket/gpu/
+# Note: The Packer build VM must use a GPU-enabled machine type (e.g. n1-standard-8
+#       with --accelerator) for the driver to install correctly, or install in
+#       "headless" mode for image preparation.
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Create GPU driver temp directory
+  win_file:
+    path: "C:\\Temp\\gpu"
+    state: directory
+
+- name: Check if NVIDIA drivers are already installed
+  win_shell: |
+    $nvidia = Get-ChildItem "C:\Program Files\NVIDIA Corporation" -ErrorAction SilentlyContinue
+    if ($nvidia) { echo "installed" } else { echo "not_installed" }
+  register: gpu_check
+  changed_when: false
+
+- name: Download NVIDIA GRID driver from GCS
+  when: "'not_installed' in gpu_check.stdout"
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    & gsutil cp gs://org-sec-agents-bucket/gpu/nvidia-grid-driver.exe C:\Temp\gpu\nvidia-grid-driver.exe
+    if ($LASTEXITCODE -ne 0) { throw "NVIDIA driver download failed" }
+  register: gpu_download
+  failed_when: gpu_download.rc != 0
+
+- name: Install NVIDIA GRID driver silently
+  when: "'not_installed' in gpu_check.stdout"
+  win_shell: |
+    Start-Process -FilePath "C:\Temp\gpu\nvidia-grid-driver.exe" `
+      -ArgumentList "-s", "-noreboot" `
+      -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) { throw "NVIDIA driver installation failed with exit code $LASTEXITCODE" }
+  register: gpu_install
+  failed_when: gpu_install.rc != 0
+
+- name: Verify NVIDIA driver installation
+  win_shell: |
+    $nvidia = Get-ChildItem "C:\Program Files\NVIDIA Corporation" -ErrorAction SilentlyContinue
+    if (-not $nvidia) { throw "NVIDIA Corporation directory not found" }
+    # Try nvidia-smi if available
+    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($smi) {
+      & nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>$null
+    } else {
+      echo "NVIDIA drivers installed (nvidia-smi not available — GPU may not be attached during image build)"
+    }
+  register: gpu_verify
+  failed_when: gpu_verify.rc != 0
+  changed_when: false
+
+- name: Log GPU driver installation
+  debug:
+    msg: "{{ gpu_verify.stdout | trim }}"
+
+- name: Clean up GPU driver temp files
+  win_file:
+    path: "C:\\Temp\\gpu"
+    state: absent
+  failed_when: false

@@ -26,14 +26,14 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
       vpc_access {
         network_interfaces {
           network    = "app-network"
-          subnetwork = "app-subnet1"
+          subnetwork = "batch-subnet"
         }
         egress = "ALL_TRAFFIC"
       }
 
       containers {
         name  = "windows-packer-builder"
-        image = "${var.region}-docker.pkg.dev/${var.project_id}/packer-images/windows-packer-customizer:latest"
+        image = "${var.region}-docker.pkg.dev/${var.project_id}/packer-images/windows-packer-software:latest"
 
         resources {
           limits = {

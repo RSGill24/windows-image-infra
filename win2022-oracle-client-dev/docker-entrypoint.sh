@@ -79,8 +79,8 @@ write_status() {
     --arg zone "${ZONE}" \
     --arg image_name "${BUILT_IMAGE_NAME:-pending}" \
     --arg vm_name "${CREATED_VM_NAME:-none}" \
-    --argjson create_vm "${CREATE_VM:-false}" \
-    --argjson software "${SOFTWARE_JSON:-{}}" \
+    --argjson create_vm "$([ "${CREATE_VM:-false}" = "true" ] && echo true || echo false)" \
+    --argjson software "$(printf '%s' "${SOFTWARE_JSON:-{}}" | jq -c '.')" \
     --arg extra "${extra}" \
     '{
       request_id: $request_id,

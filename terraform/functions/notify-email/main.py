@@ -47,8 +47,15 @@ def build_email_html(data):
     request_id = data.get("request_id", "N/A")
     project_id = data.get("project_id", "N/A")
 
-    status_color = "#28a745" if status == "COMPLETED" else "#dc3545"
-    status_label = "Successfully Built" if status == "COMPLETED" else "Build Failed"
+    if status == "COMPLETED":
+        status_color = "#28a745"
+        status_label = "Successfully Built"
+    elif status == "DUPLICATE":
+        status_color = "#17a2b8"
+        status_label = "Image Already Exists"
+    else:
+        status_color = "#dc3545"
+        status_label = "Build Failed"
 
     vm_section = ""
     if vm_name and vm_name not in ("none", "FAILED", ""):

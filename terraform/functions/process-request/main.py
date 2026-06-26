@@ -1,0 +1,295 @@
+"""
+Cloud Function: process-request
+
+Pre-processor that sits between GCS upload and Cloud Run.
+Triggered by Eventarc when a JSON file lands in /requests/.
+
+Responsibilities:
+  1. Read the uploaded JSON request
+  2. Log audit metadata to /audit/ in the same bucket
+  3. Compute a software fingerprint (hash of enabled software)
+  4. Check if an image with that fingerprint already exists
+  5. If duplicate → write status, notify user, skip Cloud Run
+  6. If new → trigger Cloud Run job with REQUEST_JSON_GCS
+"""
+
+import base64
+import hashlib
+import json
+import os
+from datetime import datetime, timezone
+
+import functions_framework
+from google.cloud import compute_v1, pubsub_v1, run_v2, storage
+
+
+PROJECT_ID = os.environ.get("PROJECT_ID")
+REGION = os.environ.get("REGION", "us-east4")
+BUCKET_NAME = os.environ.get("BUCKET_NAME")
+CLOUD_RUN_JOB = os.environ.get("CLOUD_RUN_JOB", "windows-image-builder")
+PUBSUB_TOPIC = os.environ.get("PUBSUB_TOPIC", "image-builder-notifications")
+
+
+def compute_software_fingerprint(software: dict) -> str:
+    """
+    Create a deterministic hash of the enabled software combination.
+    Only includes keys with truthy values, sorted alphabetically.
+    """
+    enabled = sorted(k for k, v in software.items() if v is True or str(v).lower() in ("true", "1", "yes"))
+    fingerprint_str = ",".join(enabled)
+    return hashlib.sha256(fingerprint_str.encode()).hexdigest()[:16]
+
+
+def find_existing_image(fingerprint: str) -> dict | None:
+    """
+    Check if a GCP image with this software fingerprint label exists.
+    Returns image info dict if found, None otherwise.
+    """
+    client = compute_v1.ImagesClient()
+    request = compute_v1.ListImagesRequest(
+        project=PROJECT_ID,
+        filter=f'labels.software-fingerprint="{fingerprint}" AND deprecated.state!="DELETED"',
+        max_results=5,
+    )
+
+    for image in client.list(request=request):
+        # Return the most recent non-deprecated active image
+        if not image.deprecated or image.deprecated.state == "":
+            return {
+                "name": image.name,
+                "family": image.family,
+                "creation_timestamp": image.creation_timestamp,
+                "self_link": image.self_link,
+            }
+        # Also return deprecated images (they still exist)
+        if image.deprecated.state == "DEPRECATED":
+            return {
+                "name": image.name,
+                "family": image.family,
+                "creation_timestamp": image.creation_timestamp,
+                "self_link": image.self_link,
+                "status": "DEPRECATED",
+            }
+    return None
+
+
+def write_audit_log(bucket_name: str, request_data: dict, fingerprint: str, action: str):
+    """
+    Write an audit entry to /audit/ in the GCS bucket.
+    Each request gets a permanent audit record regardless of outcome.
+    """
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+
+    request_id = request_data.get("request_id", f"unknown-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}")
+    now = datetime.now(timezone.utc).isoformat()
+
+    requester = request_data.get("requester", {})
+    software = request_data.get("image_config", {}).get("software", {})
+    enabled_software = sorted(k for k, v in software.items() if v is True or str(v).lower() in ("true", "1", "yes"))
+
+    audit_entry = {
+        "request_id": request_id,
+        "timestamp": now,
+        "requester": {
+            "name": requester.get("name", "unknown"),
+            "email": requester.get("email", "unknown"),
+            "team": requester.get("team", "unknown"),
+        },
+        "software_requested": enabled_software,
+        "software_fingerprint": fingerprint,
+        "image_config_name": request_data.get("image_config", {}).get("image_name", ""),
+        "create_vm": request_data.get("image_config", {}).get("create_vm", False),
+        "action": action,  # "BUILD_TRIGGERED" or "DUPLICATE_FOUND"
+    }
+
+    blob = bucket.blob(f"audit/{request_id}_{now.replace(':', '-')}.json")
+    blob.upload_from_string(json.dumps(audit_entry, indent=2), content_type="application/json")
+    print(f"[AUDIT] Written to gs://{bucket_name}/audit/{blob.name}")
+    return audit_entry
+
+
+def write_status(bucket_name: str, request_data: dict, status: str, message: str, image_name: str = ""):
+    """Write status JSON to /status/ in the bucket."""
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+
+    request_id = request_data.get("request_id", "unknown")
+    requester = request_data.get("requester", {})
+    now = datetime.now(timezone.utc).isoformat()
+
+    status_data = {
+        "request_id": request_id,
+        "status": status,
+        "requester": {
+            "name": requester.get("name", "unknown"),
+            "email": requester.get("email", "unknown"),
+            "team": requester.get("team", "unknown"),
+        },
+        "requested_at": request_data.get("requested_at", now),
+        "updated_at": now,
+        "config": {
+            "image_family": request_data.get("image_config", {}).get("image_name", ""),
+            "project_id": PROJECT_ID,
+            "create_vm": request_data.get("image_config", {}).get("create_vm", False),
+            "software": request_data.get("image_config", {}).get("software", {}),
+        },
+        "result": {
+            "image_name": image_name,
+            "vm_name": "none",
+        },
+        "message": message,
+    }
+
+    blob = bucket.blob(f"status/{request_id}.json")
+    blob.upload_from_string(json.dumps(status_data, indent=2), content_type="application/json")
+    print(f"[STATUS] {status} → gs://{bucket_name}/status/{request_id}.json")
+
+
+def publish_notification(request_data: dict, status: str, message: str, image_name: str = ""):
+    """Publish to Pub/Sub for email notification."""
+    publisher = pubsub_v1.PublisherClient()
+    topic_path = publisher.topic_path(PROJECT_ID, PUBSUB_TOPIC)
+
+    requester = request_data.get("requester", {})
+
+    payload = json.dumps({
+        "request_id": request_data.get("request_id", "unknown"),
+        "status": status,
+        "requester_name": requester.get("name", "unknown"),
+        "requester_email": requester.get("email", "unknown"),
+        "image_name": image_name,
+        "vm_name": "none",
+        "message": message,
+        "project_id": PROJECT_ID,
+    })
+
+    future = publisher.publish(
+        topic_path,
+        payload.encode("utf-8"),
+        request_id=request_data.get("request_id", "unknown"),
+        status=status,
+    )
+    print(f"[NOTIFY] Published to {PUBSUB_TOPIC}: {future.result()}")
+
+
+def trigger_cloud_run_job(request_json_gcs: str):
+    """Trigger the Cloud Run job with REQUEST_JSON_GCS override."""
+    client = run_v2.JobsClient()
+
+    job_name = f"projects/{PROJECT_ID}/locations/{REGION}/jobs/{CLOUD_RUN_JOB}"
+
+    override = run_v2.RunJobRequest.Overrides(
+        container_overrides=[
+            run_v2.RunJobRequest.Overrides.ContainerOverride(
+                name="windows-packer-builder",
+                env=[
+                    run_v2.EnvVar(name="REQUEST_JSON_GCS", value=request_json_gcs),
+                ],
+            )
+        ]
+    )
+
+    request = run_v2.RunJobRequest(name=job_name, overrides=override)
+    operation = client.run_job(request=request)
+
+    print(f"[CLOUD RUN] Triggered job: {CLOUD_RUN_JOB}")
+    print(f"[CLOUD RUN] Execution: {operation.metadata}")
+    return operation
+
+
+@functions_framework.cloud_event
+def process_request(cloud_event):
+    """
+    Main entry point. Triggered by Eventarc on GCS object.finalize.
+
+    Event data contains:
+      - bucket: the GCS bucket name
+      - name: the object path (e.g. requests/my-request.json)
+    """
+    data = cloud_event.data
+    bucket_name = data["bucket"]
+    object_name = data["name"]
+
+    # Only process files in the requests/ prefix
+    if not object_name.startswith("requests/"):
+        print(f"[SKIP] Ignoring non-request file: {object_name}")
+        return "Skipped", 200
+
+    # Ignore non-JSON files
+    if not object_name.endswith(".json"):
+        print(f"[SKIP] Ignoring non-JSON file: {object_name}")
+        return "Skipped", 200
+
+    print(f"[START] Processing request: gs://{bucket_name}/{object_name}")
+
+    # ── 1. Read the JSON request ──────────────────────────────────────────
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(object_name)
+    request_data = json.loads(blob.download_as_text())
+
+    requester = request_data.get("requester", {})
+    requester_name = requester.get("name", "unknown")
+    requester_email = requester.get("email", "unknown")
+    request_id = request_data.get("request_id", "")
+
+    # Auto-generate request_id if missing
+    if not request_id:
+        request_id = f"req-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{hashlib.md5(object_name.encode()).hexdigest()[:6]}"
+        request_data["request_id"] = request_id
+
+    software = request_data.get("image_config", {}).get("software", {})
+    enabled_software = sorted(k for k, v in software.items() if v is True or str(v).lower() in ("true", "1", "yes"))
+
+    print(f"[REQUEST] ID: {request_id}")
+    print(f"[REQUEST] Requester: {requester_name} <{requester_email}>")
+    print(f"[REQUEST] Software: {', '.join(enabled_software)}")
+
+    # ── 2. Compute software fingerprint ───────────────────────────────────
+    fingerprint = compute_software_fingerprint(software)
+    print(f"[FINGERPRINT] {fingerprint} ({', '.join(enabled_software)})")
+
+    # ── 3. Check for existing image with same fingerprint ─────────────────
+    existing_image = find_existing_image(fingerprint)
+
+    if existing_image:
+        image_name = existing_image["name"]
+        image_family = existing_image.get("family", "")
+        created_at = existing_image.get("creation_timestamp", "")
+
+        print(f"[DUPLICATE] Image already exists: {image_name} (created: {created_at})")
+
+        # Write audit log
+        write_audit_log(bucket_name, request_data, fingerprint, action="DUPLICATE_FOUND")
+
+        # Write status
+        message = (
+            f"Hi {requester_name}, an image with the exact same software combination "
+            f"already exists: '{image_name}' (family: {image_family}). "
+            f"No new build is needed. You can use this existing image directly."
+        )
+        write_status(bucket_name, request_data, "DUPLICATE", message, image_name=image_name)
+
+        # Notify user
+        publish_notification(request_data, "DUPLICATE", message, image_name=image_name)
+
+        return "Duplicate detected — skipped build", 200
+
+    # ── 4. No duplicate — trigger the build ───────────────────────────────
+    print(f"[NEW] No existing image with fingerprint {fingerprint} — triggering build")
+
+    # Write audit log
+    write_audit_log(bucket_name, request_data, fingerprint, action="BUILD_TRIGGERED")
+
+    # Write initial status
+    write_status(
+        bucket_name, request_data, "QUEUED",
+        f"Build queued for {requester_name}. Software: {', '.join(enabled_software)}",
+    )
+
+    # Trigger Cloud Run job
+    request_json_gcs = f"gs://{bucket_name}/{object_name}"
+    trigger_cloud_run_job(request_json_gcs)
+
+    return "Build triggered", 200

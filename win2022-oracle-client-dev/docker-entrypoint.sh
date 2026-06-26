@@ -343,6 +343,31 @@ if [ "${ALL_FALSE}" = "true" ]; then
   exit 0
 fi
 
+# ── Compute software fingerprint (for duplicate detection) ───────────────────
+# Must match the logic in process-request Cloud Function
+ENABLED_SOFTWARE=""
+for pair in \
+  "anaconda:${INSTALL_ANACONDA}" "aalibrary:${INSTALL_AALIBRARY}" \
+  "chrome:${INSTALL_CHROME}" "conda:${INSTALL_CONDA}" \
+  "echoview:${INSTALL_ECHOVIEW}" "echosms:${INSTALL_ECHOSMS}" \
+  "echostack:${INSTALL_ECHOSTACK}" "excel:${INSTALL_EXCEL}" \
+  "gcp_utilities:${INSTALL_GCP_UTILITIES}" "git:${INSTALL_GIT}" \
+  "gpu_drivers:${INSTALL_GPU_DRIVERS}" "jupyterlab:${INSTALL_JUPYTERLAB}" \
+  "matlab:${INSTALL_MATLAB}" "oracle_client:${INSTALL_ORACLE}" \
+  "paraview:${INSTALL_PARAVIEW}" "positron:${INSTALL_POSITRON}" \
+  "powershell_core:${INSTALL_POWERSHELL_CORE}" "pycharm_community:${INSTALL_PYCHARM}" \
+  "python:${INSTALL_PYTHON}" "rstudio:${INSTALL_RSTUDIO}" \
+  "rstudio_pro:${INSTALL_RSTUDIO_PRO}" "visual_studio_community:${INSTALL_VISUAL_STUDIO}"; do
+  key="${pair%%:*}"
+  val="${pair##*:}"
+  if [ "${val}" = "true" ]; then
+    ENABLED_SOFTWARE="${ENABLED_SOFTWARE:+${ENABLED_SOFTWARE},}${key}"
+  fi
+done
+
+SOFTWARE_FINGERPRINT=$(echo -n "${ENABLED_SOFTWARE}" | sha256sum | cut -c1-16)
+echo "[FINGERPRINT] ${SOFTWARE_FINGERPRINT} (${ENABLED_SOFTWARE})"
+
 # ── Update status: IN_PROGRESS ───────────────────────────────────────────────
 write_status "IN_PROGRESS" "Building image with selected software"
 
@@ -429,6 +454,15 @@ BUILT_IMAGE_NAME=$(gcloud compute images list \
   --limit=1)
 
 echo "Built image: ${BUILT_IMAGE_NAME}"
+
+# ── Label image with software fingerprint (for duplicate detection) ──────────
+if [ -n "${BUILT_IMAGE_NAME}" ] && [ -n "${SOFTWARE_FINGERPRINT}" ]; then
+  echo "[LABEL] Adding software-fingerprint=${SOFTWARE_FINGERPRINT} to ${BUILT_IMAGE_NAME}"
+  gcloud compute images add-labels "${BUILT_IMAGE_NAME}" \
+    --project="${PROJECT_ID}" \
+    --labels="software-fingerprint=${SOFTWARE_FINGERPRINT},request-id=${REQUEST_ID},built-by=image-builder" \
+    || echo "[WARN] Failed to add labels to image"
+fi
 
 # ── Deprecate old images ─────────────────────────────────────────────────────
 if [ -n "${BUILT_IMAGE_NAME}" ]; then

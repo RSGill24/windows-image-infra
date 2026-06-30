@@ -33,7 +33,7 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
 
       containers {
         name  = "windows-packer-builder"
-        image = "${var.region}-docker.pkg.dev/${var.project_id}/packer-images/windows-packer-customizer:latest"
+        image = "${var.region}-docker.pkg.dev/${var.project_id}/packer-images/windows-packer-software:latest"
 
         resources {
           limits = {

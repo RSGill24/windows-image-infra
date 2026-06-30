@@ -168,3 +168,17 @@ variable "install_excel" {
   default     = false
   description = "Install Microsoft Excel via Office Deployment Tool"
 }
+
+# ── Jira Integration ─────────────────────────────────────────────────────────
+
+variable "jira_raw_bucket_name" {
+  type        = string
+  description = "GCS bucket for raw Jira webhook payloads"
+  default     = "nmfs-winde-jira-raw-dev"
+}
+
+variable "jira_webhook_secret_name" {
+  type        = string
+  description = "Secret Manager secret name for Jira webhook authentication"
+  default     = "jira-webhook-secret"
+}

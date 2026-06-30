@@ -300,6 +300,15 @@ def process_request(cloud_event):
         print(f"[SKIP] Ignoring non-JSON file: {object_name}")
         return "Skipped", 200
 
+    # ── Guard: skip if already processed (prevents recursive trigger) ────
+    storage_client_check = storage.Client()
+    bucket_check = storage_client_check.bucket(bucket_name)
+    blob_check = bucket_check.blob(object_name)
+    raw = json.loads(blob_check.download_as_text())
+    if raw.get("_processed"):
+        print(f"[SKIP] Already processed (recursive trigger blocked): {object_name}")
+        return "Already processed", 200
+
     print(f"[START] Processing request: gs://{bucket_name}/{object_name}")
 
     # ── 1. Read the JSON request ──────────────────────────────────────────
@@ -376,14 +385,26 @@ def process_request(cloud_event):
     # ── 6. No duplicate — enrich JSON and trigger build ───────────────────
     print(f"[NEW] No existing image with fingerprint {fingerprint} — triggering build")
 
-    # Write the enriched JSON back (with requester info + request_id)
-    # so docker-entrypoint.sh can read it
-    enriched_blob = bucket.blob(object_name)
+    # Mark as processed to prevent recursive triggers
+    request_data["_processed"] = True
+
+    # Write enriched JSON to /processed/ (not /requests/) for Cloud Run to read
+    processed_name = object_name.replace("requests/", "processed/", 1)
+    enriched_blob = bucket.blob(processed_name)
     enriched_blob.upload_from_string(
         json.dumps(request_data, indent=2),
         content_type="application/json",
     )
-    print(f"[ENRICH] Updated JSON with auto-detected requester info")
+    print(f"[ENRICH] Written enriched JSON to gs://{bucket_name}/{processed_name}")
+
+    # Also mark the original as processed so re-triggers are blocked
+    original_blob = bucket.blob(object_name)
+    original_data = request_data.copy()
+    original_blob.upload_from_string(
+        json.dumps(original_data, indent=2),
+        content_type="application/json",
+    )
+    print(f"[ENRICH] Marked original as processed")
 
     # Write audit log
     write_audit_log(bucket_name, request_data, fingerprint, action="BUILD_TRIGGERED")
@@ -394,8 +415,8 @@ def process_request(cloud_event):
         f"Build queued for {requester_name}. Software: {', '.join(enabled_software)}",
     )
 
-    # Trigger Cloud Run job
-    request_json_gcs = f"gs://{bucket_name}/{object_name}"
+    # Trigger Cloud Run job with the enriched JSON path
+    request_json_gcs = f"gs://{bucket_name}/{processed_name}"
     trigger_cloud_run_job(request_json_gcs)
 
     return "Build triggered", 200

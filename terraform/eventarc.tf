@@ -64,42 +64,8 @@ resource "google_pubsub_topic" "image_builder_notifications" {
 # - If new → trigger Cloud Run job
 # ══════════════════════════════════════════════════════════════════════════════
 
-resource "google_service_account" "process_request_sa" {
-  account_id   = "cf-process-request"
-  display_name = "Cloud Function – Process Image Build Request"
-  project      = var.project_id
-}
-
-# Permissions for the process-request function
-resource "google_project_iam_member" "process_request_storage" {
-  project = var.project_id
-  role    = "roles/storage.objectAdmin"
-  member  = "serviceAccount:${google_service_account.process_request_sa.email}"
-}
-
-resource "google_project_iam_member" "process_request_compute_viewer" {
-  project = var.project_id
-  role    = "roles/compute.imageUser"
-  member  = "serviceAccount:${google_service_account.process_request_sa.email}"
-}
-
-resource "google_project_iam_member" "process_request_run_invoker" {
-  project = var.project_id
-  role    = "roles/run.invoker"
-  member  = "serviceAccount:${google_service_account.process_request_sa.email}"
-}
-
-resource "google_project_iam_member" "process_request_run_developer" {
-  project = var.project_id
-  role    = "roles/run.developer"
-  member  = "serviceAccount:${google_service_account.process_request_sa.email}"
-}
-
-resource "google_project_iam_member" "process_request_pubsub_publisher" {
-  project = var.project_id
-  role    = "roles/pubsub.publisher"
-  member  = "serviceAccount:${google_service_account.process_request_sa.email}"
-}
+# All components use the shared packer-win-sa service account.
+# IAM roles are assigned manually (see README.md).
 
 # Source code bucket for Cloud Functions
 resource "google_storage_bucket" "function_source" {
@@ -145,7 +111,7 @@ resource "google_cloudfunctions2_function" "process_request" {
     available_memory   = "512Mi"
     timeout_seconds    = 120
 
-    service_account_email = google_service_account.process_request_sa.email
+    service_account_email = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
 
     environment_variables = {
       PROJECT_ID    = var.project_id
@@ -166,24 +132,6 @@ resource "google_cloudfunctions2_function" "process_request" {
 # Eventarc trigger: GCS upload → process-request Cloud Function
 # ══════════════════════════════════════════════════════════════════════════════
 
-resource "google_service_account" "eventarc_trigger_sa" {
-  account_id   = "eventarc-image-builder"
-  display_name = "Eventarc Image Builder Trigger"
-  project      = var.project_id
-}
-
-resource "google_project_iam_member" "eventarc_eventreceiver" {
-  project = var.project_id
-  role    = "roles/eventarc.eventReceiver"
-  member  = "serviceAccount:${google_service_account.eventarc_trigger_sa.email}"
-}
-
-resource "google_project_iam_member" "eventarc_invoker" {
-  project = var.project_id
-  role    = "roles/run.invoker"
-  member  = "serviceAccount:${google_service_account.eventarc_trigger_sa.email}"
-}
-
 resource "google_eventarc_trigger" "image_builder_trigger" {
   name     = "image-builder-gcs-trigger"
   location = var.region
@@ -200,10 +148,13 @@ resource "google_eventarc_trigger" "image_builder_trigger" {
   }
 
   destination {
-    cloud_function = google_cloudfunctions2_function.process_request.name
+    cloud_run_service {
+      service = google_cloudfunctions2_function.process_request.service_config[0].service
+      region  = var.region
+    }
   }
 
-  service_account = google_service_account.eventarc_trigger_sa.email
+  service_account = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
 
   labels = {
     env     = "dev"
@@ -230,18 +181,6 @@ resource "google_storage_bucket_object" "notification_function_source" {
   source = data.archive_file.notification_function_zip.output_path
 }
 
-resource "google_service_account" "notification_function_sa" {
-  account_id   = "cf-image-notify"
-  display_name = "Cloud Function – Image Builder Email Notification"
-  project      = var.project_id
-}
-
-resource "google_project_iam_member" "notification_sa_secret_accessor" {
-  project = var.project_id
-  role    = "roles/secretmanager.secretAccessor"
-  member  = "serviceAccount:${google_service_account.notification_function_sa.email}"
-}
-
 resource "google_cloudfunctions2_function" "notify_email" {
   name     = "image-builder-notify-email"
   location = var.region
@@ -264,7 +203,7 @@ resource "google_cloudfunctions2_function" "notify_email" {
     available_memory   = "256Mi"
     timeout_seconds    = 60
 
-    service_account_email = google_service_account.notification_function_sa.email
+    service_account_email = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
 
     environment_variables = {
       SENDGRID_API_KEY_SECRET = var.sendgrid_api_key_secret

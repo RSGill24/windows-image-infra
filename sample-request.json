@@ -1,6 +1,6 @@
 {
   "image_config": {
-    "image_name": "ds-team-windows-2022",
+    "image_name": "nmfs-windows-software-2022-{timestamp}",
     "create_vm": true,
     "keep_image": true,
     "software": {

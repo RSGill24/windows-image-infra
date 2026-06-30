@@ -1,24 +1,4 @@
 #!/usr/bin/env bash
-# ──────────────────────────────────────────────────────────────────────────────
-# docker-entrypoint.sh
-#
-# Parameterized entrypoint for the Windows image builder container.
-#
-# Supports TWO modes:
-#   1. JSON mode  – set REQUEST_JSON_GCS to a GCS path (gs://bucket/requests/req.json)
-#                   Triggered by Eventarc when a JSON file lands in the bucket.
-#   2. ENV mode   – set individual INSTALL_* env vars (backward-compatible)
-#
-# Metadata tracking:
-#   Writes status JSON to GCS_STATUS_BUCKET/status/<request_id>.json
-#   at each stage: RECEIVED → IN_PROGRESS → COMPLETED / FAILED
-#
-# VM creation:
-#   If create_vm=true in the JSON, creates a Compute Engine VM from the image.
-#
-# Email notification:
-#   Publishes to PUBSUB_TOPIC on completion for Cloud Function to send email.
-# ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 echo "Phase 2: Parameterized Windows Image Builder — $(date -u)"
@@ -79,8 +59,8 @@ write_status() {
     --arg zone "${ZONE}" \
     --arg image_name "${BUILT_IMAGE_NAME:-pending}" \
     --arg vm_name "${CREATED_VM_NAME:-none}" \
-    --argjson create_vm "${CREATE_VM:-false}" \
-    --argjson software "${SOFTWARE_JSON:-{}}" \
+    --argjson create_vm "$([ "${CREATE_VM}" = "true" ] && echo true || echo false)" \
+    --argjson software "${SOFTWARE_JSON:-"{}"}" \
     --arg extra "${extra}" \
     '{
       request_id: $request_id,

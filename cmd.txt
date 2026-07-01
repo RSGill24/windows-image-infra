@@ -1,5 +1,2 @@
-git checkout --ours -- ".cloudbuild/triggers.yaml"
-
-git add ".cloudbuild/triggers.yaml"
-
-git rebase --continue
+git status --short
+git diff --name-only --diff-filter=U

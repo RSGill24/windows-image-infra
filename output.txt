@@ -1,11 +1,3 @@
-rajinder_gill@cloudshell:~/win2022-dev1/nmfs-gcp-winde (ggn-nmfs-winde-dev-1)$ git status --short
-git diff --name-only --diff-filter=U
- D "win2022-main/packer/ harden_ww.pkr.hcl"
- D "win2022-oracle-client-dev/packer/ ansible-playbook/install_oracle_tasks.yml"
- D "win2022-oracle-client-dev/packer/ ansible-playbook/main.yml"
- D "win2022-oracle-client-dev/packer/ scripts/Dockerfile"
-?? win2022-main/packer/harden_ww.pkr.hcl
-?? win2022-main/packer/packer.zip
-?? win2022-oracle-client-dev/.cloudbuild-oracle-submit.yaml.swp
-?? win2022-oracle-client-dev/packer/ansible-playbook/
-?? win2022-oracle-client-dev/packer/scripts/
+rajinder_gill@cloudshell:~/win2022-dev1/nmfs-gcp-winde (ggn-nmfs-winde-dev-1)$ git push origin dev
+error: src refspec dev does not match any
+error: failed to push some refs to 'https://ops-ssm-1-538861448533-git.us-central1.sourcemanager.dev/nmfs-ops-source/nmfs-gcp-winde.git'

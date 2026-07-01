@@ -1,2 +1,5 @@
-git status --short
-git diff --name-only --diff-filter=U
+git add -A
+
+git commit -m "Fix file paths and resolve conflicts"
+
+git push origin dev

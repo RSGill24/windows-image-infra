@@ -1,5 +1,9 @@
-git add -A
+1. 
+gcloud builds submit .   --config=cloudbuild-win2022-customizer-submit.yaml   --region=us-central1
 
-git commit -m "Fix file paths and resolve conflicts"
-
-git push origin dev
+2. 
+gcloud run jobs execute windows-image-builder-software \
+  --region us-east4 \
+  --project big-mender-473219-r2 \
+  --update-env-vars=SOURCE_IMAGE_FAMILY=nmfs-windows-2022,SOURCE_IMAGE_PROJECT_ID=big-mender-473219-r2,IMAGE_FAMILY=nmfs-windows-2022,INSTALL_RSTUDIO=true,INSTALL_ORACLE=true,INSTALL_CONDA=true \
+  --wait

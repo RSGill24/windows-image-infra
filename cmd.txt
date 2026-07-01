@@ -1,1 +1,5 @@
-git fetch origin
+git checkout --ours -- ".cloudbuild/triggers.yaml"
+
+git add ".cloudbuild/triggers.yaml"
+
+git rebase --continue

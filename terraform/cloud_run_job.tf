@@ -6,9 +6,10 @@
 ################################################################################
 
 resource "google_cloud_run_v2_job" "windows_image_builder" {
-  name     = "windows-image-builder"
-  location = var.region
-  project  = var.project_id
+  name                = "windows-image-builder"
+  location            = var.region
+  project             = var.project_id
+  deletion_protection = false
 
   labels = {
     env     = "dev"
@@ -33,7 +34,7 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
 
       containers {
         name  = "windows-packer-builder"
-        image = "${var.region}-docker.pkg.dev/${var.project_id}/packer-images/windows-packer-software:latest"
+        image = "${var.region}-docker.pkg.dev/${var.project_id}/packer-images/windows-packer-builder:latest"
 
         resources {
           limits = {

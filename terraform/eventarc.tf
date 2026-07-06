@@ -21,7 +21,7 @@ resource "google_storage_bucket" "image_builder_requests" {
   location                    = var.region
   project                     = var.project_id
   uniform_bucket_level_access = true
-  force_destroy               = false
+  force_destroy               = true
 
   labels = {
     env     = "dev"
@@ -134,12 +134,14 @@ resource "google_eventarc_trigger" "image_builder_trigger" {
 
   destination {
     cloud_run_service {
-      service = "image-builder-process-request"
+      service = element(split("/", google_cloudfunctions2_function.process_request.service_config[0].service), length(split("/", google_cloudfunctions2_function.process_request.service_config[0].service)) - 1)
       region  = var.region
     }
   }
 
   service_account = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
+
+  depends_on = [google_cloudfunctions2_function.process_request]
 
   labels = {
     env     = "dev"

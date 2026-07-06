@@ -58,7 +58,7 @@ resource "google_storage_bucket" "jira_raw" {
   location                    = var.region
   project                     = var.project_id
   uniform_bucket_level_access = true
-  force_destroy               = false
+  force_destroy               = true
 
   labels = {
     env     = "dev"
@@ -127,9 +127,10 @@ resource "google_bigquery_dataset" "jira_curated" {
 # ── jira_raw.issue_events ────────────────────────────────────────────────────
 
 resource "google_bigquery_table" "issue_events" {
-  dataset_id = google_bigquery_dataset.jira_raw.dataset_id
-  table_id   = "issue_events"
-  project    = var.project_id
+  dataset_id          = google_bigquery_dataset.jira_raw.dataset_id
+  table_id            = "issue_events"
+  project             = var.project_id
+  deletion_protection = false
 
   schema = jsonencode([
     { name = "event_id",              type = "STRING",    mode = "REQUIRED", description = "Unique event UUID" },
@@ -164,9 +165,10 @@ resource "google_bigquery_table" "issue_events" {
 # ── jira_curated.issue_current ───────────────────────────────────────────────
 
 resource "google_bigquery_table" "issue_current" {
-  dataset_id = google_bigquery_dataset.jira_curated.dataset_id
-  table_id   = "issue_current"
-  project    = var.project_id
+  dataset_id          = google_bigquery_dataset.jira_curated.dataset_id
+  table_id            = "issue_current"
+  project             = var.project_id
+  deletion_protection = false
 
   schema = jsonencode([
     { name = "issue_key",             type = "STRING",    mode = "REQUIRED", description = "Jira issue key" },
@@ -195,9 +197,10 @@ resource "google_bigquery_table" "issue_current" {
 # ── jira_curated.issue_history ───────────────────────────────────────────────
 
 resource "google_bigquery_table" "issue_history" {
-  dataset_id = google_bigquery_dataset.jira_curated.dataset_id
-  table_id   = "issue_history"
-  project    = var.project_id
+  dataset_id          = google_bigquery_dataset.jira_curated.dataset_id
+  table_id            = "issue_history"
+  project             = var.project_id
+  deletion_protection = false
 
   schema = jsonencode([
     { name = "history_id",    type = "STRING",    mode = "REQUIRED", description = "Unique history entry UUID" },
@@ -224,9 +227,10 @@ resource "google_bigquery_table" "issue_history" {
 # ══════════════════════════════════════════════════════════════════════════════
 
 resource "google_cloud_run_v2_service" "jira_ingest_api" {
-  name     = "jira-ingest-api"
-  location = var.region
-  project  = var.project_id
+  name                = "jira-ingest-api"
+  location            = var.region
+  project             = var.project_id
+  deletion_protection = false
 
   labels = {
     env     = "dev"
@@ -365,12 +369,14 @@ resource "google_eventarc_trigger" "jira_raw_trigger" {
 
   destination {
     cloud_run_service {
-      service = "jira-processor"
+      service = element(split("/", google_cloudfunctions2_function.jira_processor.service_config[0].service), length(split("/", google_cloudfunctions2_function.jira_processor.service_config[0].service)) - 1)
       region  = var.region
     }
   }
 
   service_account = local.packer_sa_email
+
+  depends_on = [google_cloudfunctions2_function.jira_processor]
 
   labels = {
     env     = "dev"

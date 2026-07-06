@@ -41,20 +41,6 @@ resource "google_storage_bucket" "image_builder_requests" {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Pub/Sub topic: build completion notifications
-# ══════════════════════════════════════════════════════════════════════════════
-
-resource "google_pubsub_topic" "image_builder_notifications" {
-  name    = "image-builder-notifications"
-  project = var.project_id
-
-  labels = {
-    env     = "dev"
-    managed = "terraform"
-  }
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Cloud Function 1: process-request (pre-processor)
 #
 # Triggered by Eventarc on GCS object.finalize in /requests/
@@ -114,11 +100,10 @@ resource "google_cloudfunctions2_function" "process_request" {
     service_account_email = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
 
     environment_variables = {
-      PROJECT_ID    = var.project_id
-      REGION        = var.region
-      BUCKET_NAME   = google_storage_bucket.image_builder_requests.name
-      CLOUD_RUN_JOB = google_cloud_run_v2_job.windows_image_builder.name
-      PUBSUB_TOPIC  = google_pubsub_topic.image_builder_notifications.name
+      PROJECT_ID       = var.project_id
+      REGION           = var.region
+      BUCKET_NAME      = google_storage_bucket.image_builder_requests.name
+      BUILDER_JOB_NAME = google_cloud_run_v2_job.windows_image_builder.name
     }
   }
 
@@ -149,75 +134,12 @@ resource "google_eventarc_trigger" "image_builder_trigger" {
 
   destination {
     cloud_run_service {
-      service = google_cloudfunctions2_function.process_request.service_config[0].service
+      service = "image-builder-process-request"
       region  = var.region
     }
   }
 
   service_account = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
-
-  labels = {
-    env     = "dev"
-    managed = "terraform"
-  }
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Cloud Function 2: notify-email
-#
-# Triggered by Pub/Sub when build completes, fails, or duplicate found.
-# Sends email to the requester via SendGrid.
-# ══════════════════════════════════════════════════════════════════════════════
-
-data "archive_file" "notification_function_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/functions/notify-email"
-  output_path = "${path.module}/functions/notify-email.zip"
-}
-
-resource "google_storage_bucket_object" "notification_function_source" {
-  name   = "notify-email-${data.archive_file.notification_function_zip.output_md5}.zip"
-  bucket = google_storage_bucket.function_source.name
-  source = data.archive_file.notification_function_zip.output_path
-}
-
-resource "google_cloudfunctions2_function" "notify_email" {
-  name     = "image-builder-notify-email"
-  location = var.region
-  project  = var.project_id
-
-  build_config {
-    runtime     = "python312"
-    entry_point = "handle_pubsub"
-
-    source {
-      storage_source {
-        bucket = google_storage_bucket.function_source.name
-        object = google_storage_bucket_object.notification_function_source.name
-      }
-    }
-  }
-
-  service_config {
-    max_instance_count = 1
-    available_memory   = "256Mi"
-    timeout_seconds    = 60
-
-    service_account_email = "packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
-
-    environment_variables = {
-      SENDGRID_API_KEY_SECRET = var.sendgrid_api_key_secret
-      FROM_EMAIL              = var.notification_from_email
-      PROJECT_ID              = var.project_id
-    }
-  }
-
-  event_trigger {
-    trigger_region = var.region
-    event_type     = "google.cloud.pubsub.topic.v1.messagePublished"
-    pubsub_topic   = google_pubsub_topic.image_builder_notifications.id
-    retry_policy   = "RETRY_POLICY_RETRY"
-  }
 
   labels = {
     env     = "dev"
@@ -244,7 +166,3 @@ output "status_path" {
   description = "Build status metadata per request ID"
 }
 
-output "pubsub_topic" {
-  value       = google_pubsub_topic.image_builder_notifications.name
-  description = "Pub/Sub topic for build completion notifications"
-}

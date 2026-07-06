@@ -21,20 +21,6 @@ variable "region" {
   default     = "us-east4"
 }
 
-# ── Notification config ───────────────────────────────────────────────────────
-
-variable "sendgrid_api_key_secret" {
-  type        = string
-  description = "Secret Manager secret name containing the SendGrid API key"
-  default     = "sendgrid-api-key"
-}
-
-variable "notification_from_email" {
-  type        = string
-  description = "From email address for build notifications"
-  default     = "noreply@example.com"
-}
-
 # ── Component flags (used in ENV mode / Cloud Scheduler) ──────────────────────
 
 variable "install_oracle" {

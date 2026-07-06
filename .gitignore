@@ -3,3 +3,6 @@
 *.tfstate.backup
 .terraform.lock.hcl
 terraform/terraform.tfvars
+CLIENT_EFFORT_DOCUMENT.html
+CLIENT_EFFORT_DOCUMENT.md
+CLIENT_EFFORT_DOCUMENT.pdf

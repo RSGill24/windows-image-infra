@@ -23,14 +23,13 @@ import os
 from datetime import datetime, timezone
 
 import functions_framework
-from google.cloud import compute_v1, logging as cloud_logging, pubsub_v1, run_v2, storage
+from google.cloud import compute_v1, logging as cloud_logging, run_v2, storage
 
 
 PROJECT_ID = os.environ.get("PROJECT_ID")
 REGION = os.environ.get("REGION", "us-east4")
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
-CLOUD_RUN_JOB = os.environ.get("CLOUD_RUN_JOB", "windows-image-builder")
-PUBSUB_TOPIC = os.environ.get("PUBSUB_TOPIC", "image-builder-notifications")
+CLOUD_RUN_JOB = os.environ.get("BUILDER_JOB_NAME", "windows-image-builder")
 
 
 def detect_uploader(bucket_name: str, object_name: str) -> dict:
@@ -230,33 +229,6 @@ def write_status(bucket_name: str, request_data: dict, status: str, message: str
     print(f"[STATUS] {status} → gs://{bucket_name}/status/{request_id}.json")
 
 
-def publish_notification(request_data: dict, status: str, message: str, image_name: str = ""):
-    """Publish to Pub/Sub for email notification."""
-    publisher = pubsub_v1.PublisherClient()
-    topic_path = publisher.topic_path(PROJECT_ID, PUBSUB_TOPIC)
-
-    requester = request_data.get("requester", {})
-
-    payload = json.dumps({
-        "request_id": request_data.get("request_id", "unknown"),
-        "status": status,
-        "requester_name": requester.get("name", "unknown"),
-        "requester_email": requester.get("email", "unknown"),
-        "image_name": image_name,
-        "vm_name": "none",
-        "message": message,
-        "project_id": PROJECT_ID,
-    })
-
-    future = publisher.publish(
-        topic_path,
-        payload.encode("utf-8"),
-        request_id=request_data.get("request_id", "unknown"),
-        status=status,
-    )
-    print(f"[NOTIFY] Published to {PUBSUB_TOPIC}: {future.result()}")
-
-
 def trigger_cloud_run_job(request_json_gcs: str):
     """Trigger the Cloud Run job with REQUEST_JSON_GCS override."""
     client = run_v2.JobsClient()
@@ -376,9 +348,6 @@ def process_request(cloud_event):
             f"No new build is needed. You can use this existing image directly."
         )
         write_status(bucket_name, request_data, "DUPLICATE", message, image_name=image_name)
-
-        # Notify user
-        publish_notification(request_data, "DUPLICATE", message, image_name=image_name)
 
         return "Duplicate detected — skipped build", 200
 

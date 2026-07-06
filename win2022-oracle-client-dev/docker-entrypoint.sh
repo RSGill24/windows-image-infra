@@ -18,9 +18,8 @@ INSTALLATION_TARGET_DIR="${INSTALLATION_TARGET_DIR:-C:/Users/packer_user/install
 INSTALLATION_SOURCE_DIR="${INSTALLATION_SOURCE_DIR:-./ansible-playbook}"
 PACKER_TEMPLATE="${PACKER_TEMPLATE:-customize.pkr.hcl}"
 
-# ── Metadata / notification config ──────────────────────────────────────────
+# ── Metadata config ───────────────────────────────────────────────────────────
 GCS_STATUS_BUCKET="${GCS_STATUS_BUCKET:-}"
-PUBSUB_TOPIC="${PUBSUB_TOPIC:-image-builder-notifications}"
 REQUEST_JSON_GCS="${REQUEST_JSON_GCS:-}"
 
 # ── Helper: convert to strict boolean ────────────────────────────────────────
@@ -45,6 +44,17 @@ write_status() {
   local now
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+  # Write software JSON to temp file to avoid bash quoting issues with --argjson
+  local sw_file="/tmp/software_json_$$.json"
+  if [ -f "${REQUEST_JSON_LOCAL:-/dev/null}" ]; then
+    jq -c '.image_config.software // {}' "${REQUEST_JSON_LOCAL}" > "${sw_file}" 2>/dev/null || printf '%s' '{}' > "${sw_file}"
+  else
+    printf '%s' '{}' > "${sw_file}"
+  fi
+
+  local create_vm_val
+  create_vm_val=$([ "${CREATE_VM}" = "true" ] && echo true || echo false)
+
   local status_json
   status_json=$(jq -n \
     --arg request_id "${REQUEST_ID}" \
@@ -59,8 +69,8 @@ write_status() {
     --arg zone "${ZONE}" \
     --arg image_name "${BUILT_IMAGE_NAME:-pending}" \
     --arg vm_name "${CREATED_VM_NAME:-none}" \
-    --argjson create_vm "$([ "${CREATE_VM}" = "true" ] && echo true || echo false)" \
-    --argjson software "${SOFTWARE_JSON:-"{}"}" \
+    --argjson create_vm "${create_vm_val}" \
+    --slurpfile software "${sw_file}" \
     --arg extra "${extra}" \
     '{
       request_id: $request_id,
@@ -77,7 +87,7 @@ write_status() {
         project_id: $project_id,
         zone: $zone,
         create_vm: $create_vm,
-        software: $software
+        software: $software[0]
       },
       result: {
         image_name: $image_name,
@@ -86,47 +96,11 @@ write_status() {
       message: $extra
     }')
 
+  rm -f "${sw_file}"
+
   local status_path="gs://${GCS_STATUS_BUCKET}/status/${REQUEST_ID}.json"
   echo "${status_json}" | gsutil -q cp - "${status_path}"
   echo "[STATUS] ${status} → ${status_path}"
-}
-
-# ── Helper: publish notification to Pub/Sub ──────────────────────────────────
-publish_notification() {
-  local status="$1"
-  local message="$2"
-
-  if [ -z "${PUBSUB_TOPIC:-}" ]; then
-    echo "[NOTIFY] No PUBSUB_TOPIC set — skipping notification"
-    return 0
-  fi
-
-  local payload
-  payload=$(jq -n \
-    --arg request_id "${REQUEST_ID:-unknown}" \
-    --arg status "${status}" \
-    --arg requester_name "${REQUESTER_NAME:-unknown}" \
-    --arg requester_email "${REQUESTER_EMAIL:-unknown}" \
-    --arg image_name "${BUILT_IMAGE_NAME:-unknown}" \
-    --arg vm_name "${CREATED_VM_NAME:-none}" \
-    --arg message "${message}" \
-    --arg project_id "${PROJECT_ID}" \
-    '{
-      request_id: $request_id,
-      status: $status,
-      requester_name: $requester_name,
-      requester_email: $requester_email,
-      image_name: $image_name,
-      vm_name: $vm_name,
-      message: $message,
-      project_id: $project_id
-    }')
-
-  gcloud pubsub topics publish "${PUBSUB_TOPIC}" \
-    --project="${PROJECT_ID}" \
-    --message="${payload}" \
-    --attribute="request_id=${REQUEST_ID:-unknown},status=${status}" \
-    || echo "[WARN] Failed to publish Pub/Sub notification"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -197,12 +171,13 @@ if [ -n "${REQUEST_JSON_GCS}" ]; then
 
   # Parse image config
   IMAGE_CONFIG_NAME=$(jq -r '.image_config.image_name // empty' "${REQUEST_JSON_LOCAL}")
+  IMAGE_CONFIG_FAMILY=$(jq -r '.image_config.image_family // empty' "${REQUEST_JSON_LOCAL}")
   CREATE_VM=$(jq -r '.image_config.create_vm // false' "${REQUEST_JSON_LOCAL}")
   KEEP_IMAGE=$(jq -r '.image_config.keep_image // true' "${REQUEST_JSON_LOCAL}")
 
-  # Override IMAGE_FAMILY if custom name provided
-  if [ -n "${IMAGE_CONFIG_NAME}" ]; then
-    IMAGE_FAMILY="${IMAGE_CONFIG_NAME}"
+  # Override IMAGE_FAMILY from JSON (defaults to nmfs-windows-2022)
+  if [ -n "${IMAGE_CONFIG_FAMILY}" ]; then
+    IMAGE_FAMILY="${IMAGE_CONFIG_FAMILY}"
   fi
 
   # Parse software flags
@@ -236,9 +211,16 @@ if [ -n "${REQUEST_JSON_GCS}" ]; then
   echo "[JSON] Image Name    : ${IMAGE_CONFIG_NAME:-default}"
   echo "[JSON] Create VM     : ${CREATE_VM}"
   echo "[JSON] Keep Image    : ${KEEP_IMAGE}"
+  echo "[JSON] SOFTWARE_JSON : ${SOFTWARE_JSON}"
+
+  # Validate SOFTWARE_JSON is valid JSON, fallback to empty object
+  if ! echo "${SOFTWARE_JSON}" | jq empty 2>/dev/null; then
+    echo "[WARN] SOFTWARE_JSON is not valid JSON, resetting to {}"
+    SOFTWARE_JSON="{}"
+  fi
 
   # Write initial status
-  write_status "RECEIVED" "Request received from ${REQUESTER_NAME}"
+  write_status "RECEIVED" "Request received from ${REQUESTER_NAME}" || echo "[WARN] write_status RECEIVED failed, continuing..."
 
 else
   # ── ENV MODE (backward compatible) ─────────────────────────────────────────
@@ -319,7 +301,7 @@ done
 if [ "${ALL_FALSE}" = "true" ]; then
   echo "[WARN] No components selected – exiting early."
   write_status "FAILED" "No software components selected"
-  publish_notification "FAILED" "No software components were selected in the request."
+
   exit 0
 fi
 
@@ -349,7 +331,7 @@ SOFTWARE_FINGERPRINT=$(echo -n "${ENABLED_SOFTWARE}" | sha256sum | cut -c1-16)
 echo "[FINGERPRINT] ${SOFTWARE_FINGERPRINT} (${ENABLED_SOFTWARE})"
 
 # ── Update status: IN_PROGRESS ───────────────────────────────────────────────
-write_status "IN_PROGRESS" "Building image with selected software"
+write_status "IN_PROGRESS" "Building image with selected software" || echo "[WARN] write_status IN_PROGRESS failed, continuing..."
 
 # ── Fetch WinRM secret ───────────────────────────────────────────────────────
 PACKER_PW=$(gcloud secrets versions access latest \
@@ -378,6 +360,7 @@ PACKER_VARS=(
   -var "source_image_family=${SOURCE_IMAGE_FAMILY}"
   -var "service_account_email=${SERVICE_ACCOUNT_EMAIL}"
   -var "image_family=${IMAGE_FAMILY}"
+  -var "image_name=${IMAGE_CONFIG_NAME}"
   -var "machine_type=${MACHINE_TYPE}"
   -var "zone=${ZONE}"
   -var "installation_source_dir=${INSTALLATION_SOURCE_DIR}"
@@ -420,8 +403,7 @@ fi
 if ! packer build "${PACKER_VARS[@]}" "${PACKER_TEMPLATE}"; then
   echo "[ERROR] Packer build failed"
   [ -f /tmp/packer-debug.log ] && tail -100 /tmp/packer-debug.log
-  write_status "FAILED" "Packer build failed — check logs"
-  publish_notification "FAILED" "Image build failed for request ${REQUEST_ID}. Check Cloud Run logs."
+  write_status "FAILED" "Packer build failed — check logs" || true
   exit 1
 fi
 
@@ -510,17 +492,7 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 # COMPLETION: write final status + send notification
 # ══════════════════════════════════════════════════════════════════════════════
-write_status "COMPLETED" "Image build and provisioning completed successfully"
-
-# Build notification message
-NOTIFY_MSG="Your custom Windows image '${BUILT_IMAGE_NAME}' has been created successfully in project '${PROJECT_ID}'."
-if [ -n "${CREATED_VM_NAME}" ] && [ "${CREATED_VM_NAME}" != "FAILED" ]; then
-  NOTIFY_MSG="${NOTIFY_MSG} VM '${CREATED_VM_NAME}' has been created from this image in zone '${ZONE}'."
-elif [ "${CREATED_VM_NAME}" = "FAILED" ]; then
-  NOTIFY_MSG="${NOTIFY_MSG} VM creation was requested but failed. The image is available in the image library."
-fi
-
-publish_notification "COMPLETED" "${NOTIFY_MSG}"
+write_status "COMPLETED" "Image build and provisioning completed successfully" || echo "[WARN] write_status COMPLETED failed, continuing..."
 
 echo "══════════════════════════════════════════════════════════════"
 echo "  BUILD COMPLETE"

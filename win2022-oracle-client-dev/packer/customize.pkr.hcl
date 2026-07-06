@@ -26,6 +26,10 @@ variable "source_image_project_id" { type = string }
 variable "source_image_family"     { type = string }
 variable "service_account_email"   { type = string }
 variable "image_family"            { type = string }
+variable "image_name" {
+  type    = string
+  default = ""
+}
 variable "machine_type"            { type = string }
 variable "zone"                    { type = string }
 variable "installation_source_dir" { type = string }
@@ -194,11 +198,14 @@ source "googlecompute" "customize_windows" {
   subnetwork = "app-subnet1"
 
   disk_size = 250
+  disk_type = "pd-ssd"
   tags      = ["winrm"]
 
   image_family = var.image_family
-  image_name   = "nmfs-windows-2022-software-{{timestamp}}"
+  image_name   = var.image_name != "" ? var.image_name : "nmfs-windows-2022-software-{{timestamp}}"
   machine_type = var.machine_type
+
+  image_storage_locations = ["us"]
 
   metadata = {
     enable-oslogin = "FALSE"

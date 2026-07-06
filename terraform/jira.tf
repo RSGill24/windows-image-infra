@@ -365,7 +365,7 @@ resource "google_eventarc_trigger" "jira_raw_trigger" {
 
   destination {
     cloud_run_service {
-      service = google_cloudfunctions2_function.jira_processor.service_config[0].service
+      service = "jira-processor"
       region  = var.region
     }
   }

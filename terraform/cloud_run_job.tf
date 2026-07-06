@@ -100,11 +100,6 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
           name  = "GCS_STATUS_BUCKET"
           value = "${var.project_id}-image-builder-requests"
         }
-        env {
-          name  = "PUBSUB_TOPIC"
-          value = "image-builder-notifications"
-        }
-
         # ── Component-selection flags (ENV mode / defaults) ─────────────────
         env {
           name  = "INSTALL_ORACLE"

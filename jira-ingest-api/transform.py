@@ -54,21 +54,75 @@ def extract_software(payload: dict) -> dict:
     Extract software selections from Jira payload.
 
     Checks these locations in order:
-      1. payload["software"] — direct dict of {name: bool}
-      2. payload["image_config"]["software"] — nested under image_config
-      3. Individual install_* fields in the payload root
+      1. payload["software_selections"] — comma-separated string from Jira checkboxes
+      2. payload["software"] — direct dict of {name: bool}
+      3. payload["image_config"]["software"] — nested under image_config
+      4. Individual install_* fields in the payload root
 
     Returns a dict with all VALID_SOFTWARE_KEYS, defaulting to False.
     """
     software = {}
 
-    # Location 1: top-level "software" dict
-    if isinstance(payload.get("software"), dict):
+    # Map Jira checkbox display names to internal software keys
+    DISPLAY_TO_KEY = {
+        "chrome": "chrome",
+        "git": "git",
+        "python": "python",
+        "jupyterlab": "jupyterlab",
+        "conda": "conda",
+        "anaconda": "anaconda",
+        "rstudio": "rstudio",
+        "rstudio_pro": "rstudio_pro",
+        "rstudio pro": "rstudio_pro",
+        "pycharm": "pycharm_community",
+        "pycharm_community": "pycharm_community",
+        "pycharm community": "pycharm_community",
+        "visual_studio": "visual_studio_community",
+        "visual_studio_community": "visual_studio_community",
+        "visual studio community": "visual_studio_community",
+        "powershell": "powershell_core",
+        "powershell_core": "powershell_core",
+        "powershell core": "powershell_core",
+        "positron": "positron",
+        "paraview": "paraview",
+        "echoview": "echoview",
+        "echosms": "echosms",
+        "echostack": "echostack",
+        "matlab": "matlab",
+        "gpu_drivers": "gpu_drivers",
+        "gpu drivers": "gpu_drivers",
+        "oracle_client": "oracle_client",
+        "oracle client": "oracle_client",
+        "aalibrary": "aalibrary",
+        "aa library": "aalibrary",
+        "aa-si aalibrary": "aalibrary",
+        "gcp_utilities": "gcp_utilities",
+        "gcp utilities": "gcp_utilities",
+        "excel": "excel",
+    }
+
+    # Location 1: Jira checkboxes → comma-separated string (e.g. "Chrome, Git, Python")
+    if isinstance(payload.get("software_selections"), str) and payload["software_selections"].strip():
+        selected_names = [s.strip().lower() for s in payload["software_selections"].split(",")]
+        for name in selected_names:
+            matched_key = DISPLAY_TO_KEY.get(name) or DISPLAY_TO_KEY.get(name.replace(" ", "_"))
+            if matched_key:
+                software[matched_key] = True
+    # Location 2: Jira checkboxes → array of objects (e.g. [{"value": "Chrome"}])
+    elif isinstance(payload.get("software_selections"), list):
+        for item in payload["software_selections"]:
+            name = item.get("value", item) if isinstance(item, dict) else str(item)
+            name = name.strip().lower()
+            matched_key = DISPLAY_TO_KEY.get(name) or DISPLAY_TO_KEY.get(name.replace(" ", "_"))
+            if matched_key:
+                software[matched_key] = True
+    # Location 3: top-level "software" dict
+    elif isinstance(payload.get("software"), dict):
         software = payload["software"]
-    # Location 2: nested under image_config
+    # Location 4: nested under image_config
     elif isinstance(payload.get("image_config", {}).get("software"), dict):
         software = payload["image_config"]["software"]
-    # Location 3: individual install_* fields
+    # Location 5: individual install_* fields
     else:
         for key in VALID_SOFTWARE_KEYS:
             install_key = f"install_{key}"
@@ -114,10 +168,12 @@ def transform_jira_to_image_config(payload: dict) -> dict:
             "Expected a 'software' dict with at least one item set to true."
         )
 
-    # Build image name from issue key
-    issue_key = normalized["issue_key"]
+    # Build image name: nmfs-windows-2022-{software}-{timestamp}
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    image_name = f"nmfs-windows-software-2022-{issue_key.lower()}-{ts}"
+    # Use short software names joined by hyphens (max 5 to keep name reasonable)
+    sw_names = [k.replace("_", "") for k in enabled[:5]]
+    sw_part = "-".join(sw_names) if sw_names else "custom"
+    image_name = f"nmfs-windows-2022-{sw_part}-{ts}"
 
     # Determine create_vm and keep_image from payload (defaults: true)
     create_vm = _to_bool(
@@ -130,6 +186,7 @@ def transform_jira_to_image_config(payload: dict) -> dict:
     return {
         "image_config": {
             "image_name": image_name,
+            "image_family": "nmfs-windows-2022",
             "create_vm": create_vm,
             "keep_image": keep_image,
             "software": software,

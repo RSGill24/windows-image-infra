@@ -77,6 +77,5 @@ ENV INSTALL_EXCEL="false"
 # ── JSON mode config (set by Eventarc trigger) ────────────────────────────────
 ENV REQUEST_JSON_GCS=""
 ENV GCS_STATUS_BUCKET=""
-ENV PUBSUB_TOPIC="image-builder-notifications"
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

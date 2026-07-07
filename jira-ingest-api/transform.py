@@ -175,6 +175,9 @@ def transform_jira_to_image_config(payload: dict) -> dict:
     sw_part = "-".join(sw_names) if sw_names else "custom"
     image_name = f"nmfs-windows-2022-{sw_part}-{ts}"
 
+    # Image family is per software combination so different combos don't deprecate each other
+    image_family = f"nmfs-windows-2022-{sw_part}"
+
     # Determine create_vm and keep_image from payload (defaults: true)
     create_vm = _to_bool(
         payload.get("create_vm", payload.get("image_config", {}).get("create_vm", True))
@@ -186,7 +189,7 @@ def transform_jira_to_image_config(payload: dict) -> dict:
     return {
         "image_config": {
             "image_name": image_name,
-            "image_family": "nmfs-windows-2022",
+            "image_family": image_family,
             "create_vm": create_vm,
             "keep_image": keep_image,
             "software": software,

@@ -644,3 +644,4 @@ SSM trigger test after fix - Tue Jul  7 12:33:51 IST 2026
 SSM trigger test final - Tue Jul  7 12:36:18 IST 2026
 SSM trigger IAM test - Tue Jul  7 12:39:24 IST 2026
 SSM trigger repo service account test - Tue Jul  7 12:41:19 IST 2026
+SSM trigger event type test - Tue Jul  7 12:57:02 IST 2026

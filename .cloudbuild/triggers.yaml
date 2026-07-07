@@ -6,21 +6,3 @@ triggers:
   includedGitRefs: ^dev$
   serviceAccount: projects/big-mender-473219-r2/serviceAccounts/packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com
   disabled: false
-  substitutions:
-    _PROJECT_ID: big-mender-473219-r2
-    _SOURCE_IMAGE_PROJECT_ID: big-mender-473219-r2
-    _SOURCE_IMAGE_FAMILY: nmfs-windows-2022
-    _ZONE: us-east4-b
-    _REGION: us-east4
-    _IMAGE_FAMILY: nmfs-windows-2022
-    _WINRM_SECRET: packer-winrm-password
-    _PACKER_TEMPLATE: win2022-oracle-client-dev/packer/customize.pkr.hcl
-    _PACKER_VERSION: "1.9.4"
-    _INSTALLATION_SOURCE_DIR: ./ansible-playbook
-    _INSTALLATION_TARGET_DIR: C:/Users/packer_user/installation/
-    _MACHINE_TYPE: e2-standard-8
-    _AR_REPO: packer-images
-    _IMAGE_NAME: windows-packer-customizer
-    _INSTALL_ORACLE: "false"
-    _INSTALL_RSTUDIO: "false"
-    _INSTALL_CONDA: "false"

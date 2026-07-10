@@ -137,7 +137,7 @@ notify_jira() {
     -H "Authorization: Basic ${auth}" \
     -H "Content-Type: application/json" \
     -d "${payload}" \
-    "${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_TICKET_ID}/comment" 2>/dev/null || echo "000")
+    "${JIRA_BASE_URL}/rest/api/2/issue/${JIRA_TICKET_ID}/comment" 2>/dev/null || echo "000")
 
   if [ "${http_code}" = "201" ] || [ "${http_code}" = "200" ]; then
     echo "[JIRA] Comment posted on ${JIRA_TICKET_ID}"

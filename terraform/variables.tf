@@ -168,3 +168,15 @@ variable "jira_webhook_secret_name" {
   description = "Secret Manager secret name for Jira webhook authentication"
   default     = "jira-webhook-secret"
 }
+
+variable "jira_base_url" {
+  type        = string
+  description = "Jira Cloud base URL (e.g. https://yoursite.atlassian.net)"
+  default     = ""
+}
+
+variable "jira_api_email" {
+  type        = string
+  description = "Email address for Jira API authentication"
+  default     = ""
+}

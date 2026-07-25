@@ -7,4 +7,4 @@ CLIENT_EFFORT_DOCUMENT.html
 CLIENT_EFFORT_DOCUMENT.md
 CLIENT_EFFORT_DOCUMENT.pdf
 .DS_Store
-.cloudbuild-docker.yaml
+cloudbuild-docker.yaml

@@ -33,7 +33,7 @@ def normalize_jira_payload(payload: dict) -> dict:
         "created": payload.get("created") or datetime.now(timezone.utc).isoformat(),
         "updated": payload.get("updated") or datetime.now(timezone.utc).isoformat(),
         "source_system": payload.get("sourceSystem") or "jira",
-        "reporter_email": payload.get("reporter_email") or payload.get("reporterEmail") or "",
+        "reporter_email": payload.get("notification_email") or payload.get("notificationEmail") or payload.get("reporter_email") or payload.get("reporterEmail") or "",
         "reporter_display_name": payload.get("reporter_display_name") or payload.get("reporterDisplayName"),
         "first_name": payload.get("first_name") or payload.get("firstName") or "",
         "group_name": payload.get("group_name") or payload.get("groupName") or "",

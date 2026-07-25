@@ -180,3 +180,11 @@ variable "jira_api_email" {
   description = "Email address for Jira API authentication"
   default     = ""
 }
+
+# ── Email Notification (Gmail SMTP) ─────────────────────────────────────────
+
+variable "gmail_sender_email" {
+  type        = string
+  description = "Gmail address used to send build notification emails"
+  default     = ""
+}

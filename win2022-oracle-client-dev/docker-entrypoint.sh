@@ -23,6 +23,10 @@ JIRA_BASE_URL="${JIRA_BASE_URL:-}"
 JIRA_API_TOKEN_SECRET="${JIRA_API_TOKEN_SECRET:-jira-api-token}"
 JIRA_API_EMAIL="${JIRA_API_EMAIL:-}"
 
+# ── Email notification config (Gmail SMTP) ───────────────────────────────────
+GMAIL_SENDER_EMAIL="${GMAIL_SENDER_EMAIL:-}"
+GMAIL_APP_PASSWORD_SECRET="${GMAIL_APP_PASSWORD_SECRET:-gmail-app-password}"
+
 # ── Metadata config ───────────────────────────────────────────────────────────
 GCS_STATUS_BUCKET="${GCS_STATUS_BUCKET:-}"
 REQUEST_JSON_GCS="${REQUEST_JSON_GCS:-}"
@@ -143,6 +147,47 @@ notify_jira() {
     echo "[JIRA] Comment posted on ${JIRA_TICKET_ID}"
   else
     echo "[JIRA] WARNING: Failed to post comment on ${JIRA_TICKET_ID} (HTTP ${http_code})"
+  fi
+}
+
+# ── Helper: send email via Gmail SMTP ────────────────────────────────────────
+send_email() {
+  local recipient="$1"
+  local subject="$2"
+  local body="$3"
+
+  if [ -z "${GMAIL_SENDER_EMAIL}" ] || [ -z "${recipient}" ]; then
+    echo "[EMAIL] Skipping — GMAIL_SENDER_EMAIL or recipient not set"
+    return 0
+  fi
+
+  # Fetch Gmail App Password from Secret Manager
+  local app_password
+  app_password=$(gcloud secrets versions access latest --secret="${GMAIL_APP_PASSWORD_SECRET}" --project="${PROJECT_ID}" 2>/dev/null || true)
+  if [ -z "${app_password}" ]; then
+    echo "[EMAIL] WARNING: Could not fetch app password from secret '${GMAIL_APP_PASSWORD_SECRET}'"
+    return 0
+  fi
+
+  # Build RFC 2822 email message
+  local email_msg
+  email_msg="From: ${GMAIL_SENDER_EMAIL}
+To: ${recipient}
+Subject: ${subject}
+Content-Type: text/plain; charset=UTF-8
+
+${body}"
+
+  if curl -s \
+    --url "smtps://smtp.gmail.com:465" \
+    --ssl-reqd \
+    --mail-from "${GMAIL_SENDER_EMAIL}" \
+    --mail-rcpt "${recipient}" \
+    --user "${GMAIL_SENDER_EMAIL}:${app_password}" \
+    -T - <<< "${email_msg}" 2>/dev/null; then
+    echo "[EMAIL] Notification sent to ${recipient}"
+  else
+    echo "[EMAIL] WARNING: Failed to send email to ${recipient}"
   fi
 }
 
@@ -568,3 +613,9 @@ Zone: ${ZONE}
 You can connect to your VM via IAP Remote Desktop once it's running."
 
 notify_jira "${JIRA_COMMENT}" || echo "[WARN] Jira notification failed, build is still successful"
+
+# ── Email notification to requester ───────────────────────────────────────────
+if [ -n "${REQUESTER_EMAIL}" ] && [ "${REQUESTER_EMAIL}" != "unknown" ]; then
+  EMAIL_SUBJECT="[Image Builder] Your image ${BUILT_IMAGE_NAME} is ready"
+  send_email "${REQUESTER_EMAIL}" "${EMAIL_SUBJECT}" "${JIRA_COMMENT}" || echo "[WARN] Email notification failed, build is still successful"
+fi

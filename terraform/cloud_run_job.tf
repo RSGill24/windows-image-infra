@@ -114,6 +114,15 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
           name  = "JIRA_API_TOKEN_SECRET"
           value = "jira-api-token"
         }
+        # ── Email notification config (Gmail SMTP) ─────────────────────────
+        env {
+          name  = "GMAIL_SENDER_EMAIL"
+          value = var.gmail_sender_email
+        }
+        env {
+          name  = "GMAIL_APP_PASSWORD_SECRET"
+          value = "gmail-app-password"
+        }
 
         # ── Component-selection flags (ENV mode / defaults) ─────────────────
         env {

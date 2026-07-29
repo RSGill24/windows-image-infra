@@ -1,17 +1,48 @@
-1. 
-gcloud builds submit .   --config=cloudbuild-win2022-customizer-submit.yaml   --region=us-central1
+1.
+nano gceagent-assignment.yaml
 
 2.
-gcloud run jobs create windows-image-builder-software \
-  --image=us-east4-docker.pkg.dev/big-mender-473219-r2/packer-images/windows-packer-builder:latest \
-  --region=us-east4 \
-  --project=ggn-nmfs-winde-dev-1 \
-  --service-account=images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com \
-  --cpu=2 \
-  --memory=4Gi \
-  --task-timeout=36000 \
-  --max-retries=0 \
-  --set-env-vars=PROJECT_ID=ggn-nmfs-winde-dev-1,SOURCE_IMAGE_PROJECT_ID=nmfs-trusted-images-dev,SOURCE_IMAGE_FAMILY=nmfs-windows-2022,ZONE=us-east4-b,IMAGE_FAMILY=nmfs-windows-2022,WINRM_SECRET=packer-winrm-password,PACKER_TEMPLATE=./customize.pkr.hcl,PACKER_VERSION=1.9.4,INSTALLATION_SOURCE_DIR=./ansible-playbook,INSTALLATION_TARGET_DIR=C:/Users/packer_user/installation/,MACHINE_TYPE=e2-standard-8,REGION=us-east4,AR_REPO=packer-images,IMAGE_NAME=windows-packer-customizer,INSTALL_ORACLE=true,INSTALL_RSTUDIO=true,INSTALL_CONDA=true
+instanceFilter:
+  all: true
+
+rollout:
+  disruptionBudget:
+    fixed: 10
+  minWaitDuration: 30s
+
+osPolicies:
+- id: enable-gceagent
+  mode: ENFORCEMENT
+
+  resourceGroups:
+  - resources:
+    - id: start-gceagent
+      exec:
+        validate:
+          interpreter: POWERSHELL
+          script: |
+            $svc = Get-Service GCEAgent -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -eq "Running") {
+              exit 100
+            }
+            exit 101
+
+        enforce:
+          interpreter: POWERSHELL
+          script: |
+            Set-Service GCEAgent -StartupType Automatic
+            Start-Service GCEAgent
+
+Save it:
+Ctrl + O
+Enter
+Ctrl + X
+
 
 3.
-gcloud run jobs execute windows-image-builder-software --region=us-east4 --wait
+gcloud compute os-config os-policy-assignments create enable-gceagent \
+    --location=us-central1-a \
+    --file=gceagent-assignment.yaml
+
+
+

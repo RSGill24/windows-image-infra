@@ -2,7 +2,6 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # install_anaconda_tasks.yml – Full Anaconda distribution via Chocolatey
 # ──────────────────────────────────────────────────────────────────────────────
-
 - name: Bootstrap Chocolatey (Anaconda)
   include_tasks: bootstrap_chocolatey_tasks.yml
 
@@ -15,7 +14,7 @@
   when: not anaconda_stat.stat.exists
   win_shell: |
     choco install anaconda3 --yes --no-progress --limit-output `
-      --params "'/AddToPath:1 /RegisterPython:0 /InstallationType:AllUsers'" `
+      --params "'/InstallationType:AllUsers /AddToPath:1 /RegisterPython:0 /D=C:\tools\Anaconda3'" `
       --execution-timeout=3600
     if ($LASTEXITCODE -ne 0) { throw "Anaconda3 installation failed with exit code $LASTEXITCODE" }
   register: anaconda_install
@@ -30,6 +29,7 @@
 - name: Set ANACONDA_HOME machine environment variable
   win_shell: |
     [Environment]::SetEnvironmentVariable('ANACONDA_HOME', 'C:\tools\Anaconda3', 'Machine')
+  changed_when: false
 
 - name: Add Anaconda to system PATH
   win_shell: |

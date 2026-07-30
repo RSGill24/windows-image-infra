@@ -51,6 +51,54 @@ variable "install_conda" {
   description = "Install Miniconda3 (conda + Python) via Chocolatey. Accepted values: true / false"
 }
 
+variable "install_chrome" {
+  type    = string
+  default = "false"
+  description = "Install Google Chrome via Chocolatey. Accepted values: true / false"
+}
+
+variable "install_git" {
+  type    = string
+  default = "false"
+  description = "Install Git + GitHub Desktop via Chocolatey. Accepted values: true / false"
+}
+
+variable "install_python" {
+  type    = string
+  default = "false"
+  description = "Install Python via Chocolatey. Accepted values: true / false"
+}
+
+variable "install_anaconda" {
+  type    = string
+  default = "false"
+  description = "Install Anaconda via Chocolatey. Accepted values: true / false"
+}
+
+variable "install_pycharm" {
+  type    = string
+  default = "false"
+  description = "Install PyCharm Community via Chocolatey. Accepted values: true / false"
+}
+
+variable "install_visual_studio" {
+  type    = string
+  default = "false"
+  description = "Install Visual Studio Community via Chocolatey. Accepted values: true / false"
+}
+
+variable "install_powershell_core" {
+  type    = string
+  default = "false"
+  description = "Install PowerShell 7+ via Chocolatey. Accepted values: true / false"
+}
+
+variable "install_paraview" {
+  type    = string
+  default = "false"
+  description = "Install ParaView via Chocolatey. Accepted values: true / false"
+}
+
 # ── Source ────────────────────────────────────────────────────────────────────
 source "googlecompute" "customize_windows" {
   project_id              = var.project_id
@@ -153,7 +201,15 @@ build {
       # Component flags forwarded to Ansible
       "INSTALL_ORACLE=${var.install_oracle}",
       "INSTALL_RSTUDIO=${var.install_rstudio}",
-      "INSTALL_CONDA=${var.install_conda}"
+      "INSTALL_CONDA=${var.install_conda}",
+      "INSTALL_CHROME=${var.install_chrome}",
+      "INSTALL_GIT=${var.install_git}",
+      "INSTALL_PYTHON=${var.install_python}",
+      "INSTALL_ANACONDA=${var.install_anaconda}",
+      "INSTALL_PYCHARM=${var.install_pycharm}",
+      "INSTALL_VISUAL_STUDIO=${var.install_visual_studio}",
+      "INSTALL_POWERSHELL_CORE=${var.install_powershell_core}",
+      "INSTALL_PARAVIEW=${var.install_paraview}"
     ]
     inline = [
       "set -eu",
@@ -197,6 +253,14 @@ build {
       "  -e \"install_oracle=$INSTALL_ORACLE\" \\",
       "  -e \"install_rstudio=$INSTALL_RSTUDIO\" \\",
       "  -e \"install_conda=$INSTALL_CONDA\" \\",
+      "  -e \"install_chrome=$INSTALL_CHROME\" \\",
+      "  -e \"install_git=$INSTALL_GIT\" \\",
+      "  -e \"install_python=$INSTALL_PYTHON\" \\",
+      "  -e \"install_anaconda=$INSTALL_ANACONDA\" \\",
+      "  -e \"install_pycharm=$INSTALL_PYCHARM\" \\",
+      "  -e \"install_visual_studio=$INSTALL_VISUAL_STUDIO\" \\",
+      "  -e \"install_powershell_core=$INSTALL_POWERSHELL_CORE\" \\",
+      "  -e \"install_paraview=$INSTALL_PARAVIEW\" \\",
       "  \"$PLAYBOOK_PATH\"",
       "PLAYBOOK_EXIT=$?",
       "set -e",

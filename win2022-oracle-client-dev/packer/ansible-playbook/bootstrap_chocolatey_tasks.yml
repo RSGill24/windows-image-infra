@@ -1,0 +1,39 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# bootstrap_chocolatey_tasks.yml
+#
+# Shared Chocolatey bootstrap – include from any task file that needs choco.
+# Idempotent: skips if Chocolatey is already installed.
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Check if Chocolatey is already installed
+  win_stat:
+    path: "C:\\ProgramData\\chocolatey\\bin\\choco.exe"
+  register: choco_stat
+
+- name: Install Chocolatey package manager
+  when: not choco_stat.stat.exists
+  win_shell: |
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+  register: choco_install
+  failed_when: choco_install.rc != 0
+
+- name: Verify Chocolatey is available
+  win_shell: choco --version
+  register: choco_ver
+  failed_when: choco_ver.rc != 0
+  changed_when: false
+
+- name: Log Chocolatey version
+  debug:
+    msg: "Chocolatey version: {{ choco_ver.stdout | trim }}"
+
+- name: Ensure chocolatey.org community source is present
+  win_shell: |
+    $src = choco source list | Select-String "chocolatey"
+    if (-not $src) {
+      choco source add --name="chocolatey" --source="https://community.chocolatey.org/api/v2/" --priority=0
+    }
+  changed_when: false

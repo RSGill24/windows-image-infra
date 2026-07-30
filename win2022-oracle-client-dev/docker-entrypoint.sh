@@ -5,9 +5,17 @@
 # Parameterized entrypoint for the Windows image builder container.
 #
 # Installation flags (set via Cloud Run env vars / Terraform):
-#   INSTALL_ORACLE    – "true"/"false"  (default: false)
-#   INSTALL_RSTUDIO   – "true"/"false"  (default: false)
-#   INSTALL_CONDA     – "true"/"false"  (default: false)
+#   INSTALL_ORACLE           – "true"/"false"  (default: false)
+#   INSTALL_RSTUDIO          – "true"/"false"  (default: false)
+#   INSTALL_CONDA            – "true"/"false"  (default: false)
+#   INSTALL_CHROME           – "true"/"false"  (default: false)
+#   INSTALL_GIT              – "true"/"false"  (default: false)
+#   INSTALL_PYTHON           – "true"/"false"  (default: false)
+#   INSTALL_ANACONDA         – "true"/"false"  (default: false)
+#   INSTALL_PYCHARM          – "true"/"false"  (default: false)
+#   INSTALL_VISUAL_STUDIO    – "true"/"false"  (default: false)
+#   INSTALL_POWERSHELL_CORE  – "true"/"false"  (default: false)
+#   INSTALL_PARAVIEW         – "true"/"false"  (default: false)
 #
 # Image / infra vars (set via Cloud Run env vars / Terraform):
 #   PROJECT_ID, SOURCE_IMAGE_PROJECT_ID, SOURCE_IMAGE_FAMILY
@@ -48,12 +56,28 @@ to_bool() {
 INSTALL_ORACLE=$(to_bool "${INSTALL_ORACLE:-false}")
 INSTALL_RSTUDIO=$(to_bool "${INSTALL_RSTUDIO:-false}")
 INSTALL_CONDA=$(to_bool "${INSTALL_CONDA:-false}")
+INSTALL_CHROME=$(to_bool "${INSTALL_CHROME:-false}")
+INSTALL_GIT=$(to_bool "${INSTALL_GIT:-false}")
+INSTALL_PYTHON=$(to_bool "${INSTALL_PYTHON:-false}")
+INSTALL_ANACONDA=$(to_bool "${INSTALL_ANACONDA:-false}")
+INSTALL_PYCHARM=$(to_bool "${INSTALL_PYCHARM:-false}")
+INSTALL_VISUAL_STUDIO=$(to_bool "${INSTALL_VISUAL_STUDIO:-false}")
+INSTALL_POWERSHELL_CORE=$(to_bool "${INSTALL_POWERSHELL_CORE:-false}")
+INSTALL_PARAVIEW=$(to_bool "${INSTALL_PARAVIEW:-false}")
 
 echo "──────────────────────────────────────────────"
 echo "  Installation components:"
-echo "    Oracle Client : ${INSTALL_ORACLE}"
-echo "    RStudio       : ${INSTALL_RSTUDIO}"
-echo "    Conda/Python  : ${INSTALL_CONDA}"
+echo "    Oracle Client      : ${INSTALL_ORACLE}"
+echo "    RStudio            : ${INSTALL_RSTUDIO}"
+echo "    Conda/Python       : ${INSTALL_CONDA}"
+echo "    Chrome             : ${INSTALL_CHROME}"
+echo "    Git                : ${INSTALL_GIT}"
+echo "    Python             : ${INSTALL_PYTHON}"
+echo "    Anaconda           : ${INSTALL_ANACONDA}"
+echo "    PyCharm Community  : ${INSTALL_PYCHARM}"
+echo "    Visual Studio      : ${INSTALL_VISUAL_STUDIO}"
+echo "    PowerShell Core    : ${INSTALL_POWERSHELL_CORE}"
+echo "    ParaView           : ${INSTALL_PARAVIEW}"
 echo "  Infra:"
 echo "    PROJECT_ID    : ${PROJECT_ID}"
 echo "    IMAGE_FAMILY  : ${IMAGE_FAMILY}"
@@ -63,8 +87,16 @@ echo "────────────────────────�
 # Guard: at least one component must be selected
 if [ "${INSTALL_ORACLE}" = "false" ] && \
    [ "${INSTALL_RSTUDIO}" = "false" ] && \
-   [ "${INSTALL_CONDA}" = "false" ]; then
-  echo "[WARN] No components selected (INSTALL_ORACLE / INSTALL_RSTUDIO / INSTALL_CONDA are all false)."
+   [ "${INSTALL_CONDA}" = "false" ] && \
+   [ "${INSTALL_CHROME}" = "false" ] && \
+   [ "${INSTALL_GIT}" = "false" ] && \
+   [ "${INSTALL_PYTHON}" = "false" ] && \
+   [ "${INSTALL_ANACONDA}" = "false" ] && \
+   [ "${INSTALL_PYCHARM}" = "false" ] && \
+   [ "${INSTALL_VISUAL_STUDIO}" = "false" ] && \
+   [ "${INSTALL_POWERSHELL_CORE}" = "false" ] && \
+   [ "${INSTALL_PARAVIEW}" = "false" ]; then
+  echo "[WARN] No components selected (all INSTALL_* flags are false)."
   echo "[WARN] Nothing to install – exiting early."
   exit 0
 fi
@@ -87,7 +119,7 @@ fi
 
 # ── Build the ansible extra-vars string ──────────────────────────────────────
 # These are forwarded into customize.pkr.hcl → shell-local → ansible-playbook
-ANSIBLE_EXTRA_VARS="install_oracle=${INSTALL_ORACLE} install_rstudio=${INSTALL_RSTUDIO} install_conda=${INSTALL_CONDA}"
+ANSIBLE_EXTRA_VARS="install_oracle=${INSTALL_ORACLE} install_rstudio=${INSTALL_RSTUDIO} install_conda=${INSTALL_CONDA} install_chrome=${INSTALL_CHROME} install_git=${INSTALL_GIT} install_python=${INSTALL_PYTHON} install_anaconda=${INSTALL_ANACONDA} install_pycharm=${INSTALL_PYCHARM} install_visual_studio=${INSTALL_VISUAL_STUDIO} install_powershell_core=${INSTALL_POWERSHELL_CORE} install_paraview=${INSTALL_PARAVIEW}"
 export ANSIBLE_EXTRA_VARS
 
 # ── Packer init ───────────────────────────────────────────────────────────────
@@ -107,6 +139,14 @@ PACKER_VARS=(
   -var "install_oracle=${INSTALL_ORACLE}"
   -var "install_rstudio=${INSTALL_RSTUDIO}"
   -var "install_conda=${INSTALL_CONDA}"
+  -var "install_chrome=${INSTALL_CHROME}"
+  -var "install_git=${INSTALL_GIT}"
+  -var "install_python=${INSTALL_PYTHON}"
+  -var "install_anaconda=${INSTALL_ANACONDA}"
+  -var "install_pycharm=${INSTALL_PYCHARM}"
+  -var "install_visual_studio=${INSTALL_VISUAL_STUDIO}"
+  -var "install_powershell_core=${INSTALL_POWERSHELL_CORE}"
+  -var "install_paraview=${INSTALL_PARAVIEW}"
 )
 
 # ── Validate ──────────────────────────────────────────────────────────────────
@@ -149,4 +189,4 @@ if [ -n "${LATEST_IMAGE}" ]; then
 fi
 
 echo "Build complete: ${LATEST_IMAGE}"
-echo "Components installed — oracle:${INSTALL_ORACLE}  rstudio:${INSTALL_RSTUDIO}  conda:${INSTALL_CONDA}"
+echo "Components installed — oracle:${INSTALL_ORACLE} rstudio:${INSTALL_RSTUDIO} conda:${INSTALL_CONDA} chrome:${INSTALL_CHROME} git:${INSTALL_GIT} python:${INSTALL_PYTHON} anaconda:${INSTALL_ANACONDA} pycharm:${INSTALL_PYCHARM} visual_studio:${INSTALL_VISUAL_STUDIO} powershell_core:${INSTALL_POWERSHELL_CORE} paraview:${INSTALL_PARAVIEW}"

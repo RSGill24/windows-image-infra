@@ -17,6 +17,14 @@ substitutions:
   _INSTALL_ORACLE:           "false"
   _INSTALL_RSTUDIO:          "false"
   _INSTALL_CONDA:            "false"
+  _INSTALL_CHROME:           "false"
+  _INSTALL_GIT:              "false"
+  _INSTALL_PYTHON:           "false"
+  _INSTALL_ANACONDA:         "false"
+  _INSTALL_PYCHARM:          "false"
+  _INSTALL_VISUAL_STUDIO:    "false"
+  _INSTALL_POWERSHELL_CORE:  "false"
+  _INSTALL_PARAVIEW:         "false"
 
 steps:
 

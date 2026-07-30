@@ -2,31 +2,41 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 2 – Parameterized Windows Image Customization
 #
-# Controlled by three boolean variables passed in via ansible-playbook -e:
-#   install_oracle  (default: false)
-#   install_rstudio (default: false)
-#   install_conda   (default: false)
+# Controlled by boolean variables passed in via ansible-playbook -e:
+#   install_oracle, install_rstudio, install_conda,
+#   install_chrome, install_git, install_python, install_anaconda,
+#   install_pycharm, install_visual_studio, install_powershell_core, install_paraview
+#   (default: false for all)
 #
 # Cloud Run / Terraform passes these as environment variables:
-#   INSTALL_ORACLE, INSTALL_RSTUDIO, INSTALL_CONDA  →  "true" / "false"
+#   INSTALL_ORACLE, INSTALL_RSTUDIO, INSTALL_CONDA,
+#   INSTALL_CHROME, INSTALL_GIT, INSTALL_PYTHON, INSTALL_ANACONDA,
+#   INSTALL_PYCHARM, INSTALL_VISUAL_STUDIO, INSTALL_POWERSHELL_CORE, INSTALL_PARAVIEW
+#   →  "true" / "false"
 # The entrypoint script converts them to -e flags below.
 # ──────────────────────────────────────────────────────────────────────────────
 - name: Phase 2 – Parameterized Image Customization
   hosts: all
   gather_facts: yes
-
   vars:
     # Defaults – all off; entrypoint overrides via -e flags
-    install_oracle:  false
-    install_rstudio: false
-    install_conda:   false
-
+    install_oracle:          false
+    install_rstudio:         false
+    install_conda:           false
+    install_chrome:          false
+    install_git:             false
+    install_python:          false
+    install_anaconda:        false
+    install_pycharm:         false
+    install_visual_studio:   false
+    install_powershell_core: false
+    install_paraview:        false
+    
     # Shared paths
     installation_target_dir: "C:/Users/packer_user/installation/"
     temp_dir: "C:\\Temp"
-
+  
   tasks:
-
     # ── Oracle Client ──────────────────────────────────────────────────────────
     - name: Install Oracle Instant Client
       include_tasks: install_oracle_tasks.yml
@@ -41,3 +51,43 @@
     - name: Install Conda / Miniconda (via Chocolatey)
       include_tasks: install_conda_tasks.yml
       when: install_conda | bool
+
+    # ── Google Chrome ──────────────────────────────────────────────────────────
+    - name: Install Google Chrome (via Chocolatey)
+      include_tasks: install_chrome_tasks.yml
+      when: install_chrome | bool
+
+    # ── Git + GitHub Desktop ───────────────────────────────────────────────────
+    - name: Install Git (via Chocolatey)
+      include_tasks: install_git_tasks.yml
+      when: install_git | bool
+
+    # ── Python ─────────────────────────────────────────────────────────────────
+    - name: Install Python (via Chocolatey)
+      include_tasks: install_python_tasks.yml
+      when: install_python | bool
+
+    # ── Anaconda ───────────────────────────────────────────────────────────────
+    - name: Install Anaconda (via Chocolatey)
+      include_tasks: install_anaconda_tasks.yml
+      when: install_anaconda | bool
+
+    # ── PyCharm Community ──────────────────────────────────────────────────────
+    - name: Install PyCharm Community (via Chocolatey)
+      include_tasks: install_pycharm_tasks.yml
+      when: install_pycharm | bool
+
+    # ── Visual Studio Community ────────────────────────────────────────────────
+    - name: Install Visual Studio Community (via Chocolatey)
+      include_tasks: install_visual_studio_tasks.yml
+      when: install_visual_studio | bool
+
+    # ── PowerShell 7+ ──────────────────────────────────────────────────────────
+    - name: Install PowerShell Core (via Chocolatey)
+      include_tasks: install_powershell_core_tasks.yml
+      when: install_powershell_core | bool
+
+    # ── ParaView ───────────────────────────────────────────────────────────────
+    - name: Install ParaView (via Chocolatey)
+      include_tasks: install_paraview_tasks.yml
+      when: install_paraview | bool

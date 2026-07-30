@@ -1,0 +1,45 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_python_tasks.yml – Standalone Python + JupyterLab via Chocolatey/pip
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Bootstrap Chocolatey (Python)
+  include_tasks: bootstrap_chocolatey_tasks.yml
+
+# ── Python ───────────────────────────────────────────────────────────────────
+- name: Check if Python is already installed
+  win_shell: |
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    if ($py) { echo "installed" } else { echo "not_installed" }
+  register: python_check
+  changed_when: false
+
+- name: Install Python via Chocolatey
+  when: "'not_installed' in python_check.stdout"
+  win_shell: |
+    choco install python --yes --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) { throw "Python installation failed with exit code $LASTEXITCODE" }
+  register: python_install
+  failed_when: python_install.rc != 0
+
+- name: Refresh PATH after Python install
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+
+- name: Verify Python installation
+  win_shell: |
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    python --version
+  register: python_version
+  failed_when: python_version.rc != 0
+  changed_when: false
+
+- name: Log Python version
+  debug:
+    msg: "Python version: {{ python_version.stdout | trim }}"
+
+- name: Clear Chocolatey download cache
+  win_shell: |
+    choco cache remove --all --yes --no-progress 2>$null
+  failed_when: false
+  changed_when: false

@@ -1,0 +1,41 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_paraview_tasks.yml – ParaView via Chocolatey
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Bootstrap Chocolatey (ParaView)
+  include_tasks: bootstrap_chocolatey_tasks.yml
+
+- name: Check if ParaView is already installed
+  win_shell: |
+    $pv = Get-ChildItem "C:\Program Files" -Filter "ParaView*" -Directory -ErrorAction SilentlyContinue
+    if ($pv) { echo "installed" } else { echo "not_installed" }
+  register: paraview_check
+  changed_when: false
+
+- name: Install ParaView via Chocolatey
+  when: "'not_installed' in paraview_check.stdout"
+  win_shell: |
+    choco install paraview --yes --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) { throw "ParaView installation failed with exit code $LASTEXITCODE" }
+  register: paraview_install
+  failed_when: paraview_install.rc != 0
+
+- name: Verify ParaView installation
+  win_shell: |
+    $pv = Get-ChildItem "C:\Program Files" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pv) { throw "paraview.exe not found" }
+    echo $pv.FullName
+  register: paraview_bin
+  failed_when: paraview_bin.rc != 0
+  changed_when: false
+
+- name: Log ParaView installation success
+  debug:
+    msg: "ParaView installed at: {{ paraview_bin.stdout | trim }}"
+
+- name: Clear Chocolatey download cache
+  win_shell: |
+    choco cache remove --all --yes --no-progress 2>$null
+  failed_when: false
+  changed_when: false

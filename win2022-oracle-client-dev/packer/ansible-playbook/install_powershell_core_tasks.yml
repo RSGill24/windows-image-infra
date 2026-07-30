@@ -1,0 +1,37 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# install_powershell_core_tasks.yml – PowerShell 7+ via Chocolatey
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: Bootstrap Chocolatey (PowerShell Core)
+  include_tasks: bootstrap_chocolatey_tasks.yml
+
+- name: Check if PowerShell 7+ is already installed
+  win_stat:
+    path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+  register: pwsh_stat
+
+- name: Install PowerShell Core via Chocolatey
+  when: not pwsh_stat.stat.exists
+  win_shell: |
+    choco install powershell-core --yes --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) { throw "PowerShell Core installation failed with exit code $LASTEXITCODE" }
+  register: pwsh_install
+  failed_when: pwsh_install.rc != 0
+
+- name: Verify PowerShell Core installation
+  win_shell: |
+    & "C:\Program Files\PowerShell\7\pwsh.exe" -Command '$PSVersionTable.PSVersion.ToString()'
+  register: pwsh_version
+  failed_when: pwsh_version.rc != 0
+  changed_when: false
+
+- name: Log PowerShell Core version
+  debug:
+    msg: "PowerShell Core version: {{ pwsh_version.stdout | trim }}"
+
+- name: Clear Chocolatey download cache
+  win_shell: |
+    choco cache remove --all --yes --no-progress 2>$null
+  failed_when: false
+  changed_when: false

@@ -7,14 +7,14 @@
 
 - name: Check if Anaconda is already installed
   win_stat:
-    path: "C:\\tools\\Anaconda3\\Scripts\\conda.exe"
+    path: "C:\\ProgramData\\Anaconda3\\Scripts\\conda.exe"
   register: anaconda_stat
 
 - name: Install Anaconda3 via Chocolatey
   when: not anaconda_stat.stat.exists
   win_shell: |
     choco install anaconda3 --yes --no-progress --limit-output `
-      --params "'/InstallationType:AllUsers /AddToPath:1 /RegisterPython:0 /D=C:\tools\Anaconda3'" `
+      --params "'/InstallationType=AllUsers /AddToPath=0 /RegisterPython=0'" `
       --execution-timeout=3600
     if ($LASTEXITCODE -ne 0) { throw "Anaconda3 installation failed with exit code $LASTEXITCODE" }
   register: anaconda_install
@@ -22,18 +22,18 @@
 
 - name: Verify Anaconda conda binary exists
   win_stat:
-    path: "C:\\tools\\Anaconda3\\Scripts\\conda.exe"
+    path: "C:\\ProgramData\\Anaconda3\\Scripts\\conda.exe"
   register: anaconda_bin
   failed_when: not anaconda_bin.stat.exists
 
 - name: Set ANACONDA_HOME machine environment variable
   win_shell: |
-    [Environment]::SetEnvironmentVariable('ANACONDA_HOME', 'C:\tools\Anaconda3', 'Machine')
+    [Environment]::SetEnvironmentVariable('ANACONDA_HOME', 'C:\ProgramData\Anaconda3', 'Machine')
   changed_when: false
 
 - name: Add Anaconda to system PATH
   win_shell: |
-    $anacondaRoot = "C:\tools\Anaconda3"
+    $anacondaRoot = "C:\ProgramData\Anaconda3"
     $addPaths = @(
       $anacondaRoot,
       "$anacondaRoot\Scripts",
@@ -51,14 +51,14 @@
 
 - name: Initialise Anaconda shell hooks (PowerShell)
   win_shell: |
-    $conda = "C:\tools\Anaconda3\Scripts\conda.exe"
+    $conda = "C:\ProgramData\Anaconda3\Scripts\conda.exe"
     & $conda init powershell --all --quiet
   failed_when: false
   changed_when: false
 
 - name: Verify Anaconda conda version
   win_shell: |
-    & "C:\tools\Anaconda3\Scripts\conda.exe" --version
+    & "C:\ProgramData\Anaconda3\Scripts\conda.exe" --version
   register: anaconda_version
   failed_when: anaconda_version.rc != 0
   changed_when: false

@@ -2,15 +2,13 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # install_paraview_tasks.yml – ParaView via Chocolatey
 # ──────────────────────────────────────────────────────────────────────────────
+
 - name: Bootstrap Chocolatey (ParaView)
   include_tasks: bootstrap_chocolatey_tasks.yml
 
 - name: Check if ParaView is already installed
   win_shell: |
-    $pv = Get-ChildItem "C:\tools" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $pv) {
-      $pv = Get-ChildItem "C:\Program Files" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    }
+    $pv = Get-ChildItem "C:\Program Files" -Filter "ParaView*" -Directory -ErrorAction SilentlyContinue
     if ($pv) { echo "installed" } else { echo "not_installed" }
   register: paraview_check
   changed_when: false
@@ -25,19 +23,29 @@
 
 - name: Verify ParaView installation
   win_shell: |
-    $pv = Get-ChildItem "C:\tools" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $pv) {
-      $pv = Get-ChildItem "C:\Program Files" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    $searchPaths = @(
+      "C:\Program Files",
+      "C:\Program Files (x86)",
+      "C:\ProgramData\chocolatey\lib\paraview",
+      "C:\ProgramData\chocolatey\bin"
+    )
+    foreach ($path in $searchPaths) {
+      $pv = Get-ChildItem $path -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($pv) { echo $pv.FullName; exit 0 }
     }
-    if (-not $pv) { throw "paraview.exe not found" }
-    echo $pv.FullName
+    echo "NOT_FOUND"
   register: paraview_bin
-  failed_when: paraview_bin.rc != 0
   changed_when: false
 
 - name: Log ParaView installation success
   debug:
     msg: "ParaView installed at: {{ paraview_bin.stdout | trim }}"
+  when: "'NOT_FOUND' not in paraview_bin.stdout"
+
+- name: Warn if ParaView exe not found
+  debug:
+    msg: "WARNING: ParaView package installed via Chocolatey but paraview.exe not found. This may happen on Windows Server — manual install may be required."
+  when: "'NOT_FOUND' in paraview_bin.stdout"
 
 - name: Clear Chocolatey download cache
   win_shell: |

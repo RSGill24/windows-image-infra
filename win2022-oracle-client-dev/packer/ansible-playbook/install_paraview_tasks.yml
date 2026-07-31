@@ -1,7 +1,6 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
-# install_paraview_tasks.yml – ParaView via direct MSI download
-# Chocolatey package does not install on Windows Server ("System not supported")
+# install_paraview_tasks.yml – ParaView via GCS bucket download
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Check if ParaView is already installed
@@ -11,35 +10,30 @@
   register: paraview_check
   changed_when: false
 
-- name: Download ParaView MSI installer
+- name: Download ParaView MSI from GCS
   when: "'not_installed' in paraview_check.stdout"
   win_shell: |
-    $url = "https://www.paraview.org/paraview-downloads/download.php?submit=Download&version=v5.13&type=binary&os=Windows&downloadFile=ParaView-5.13.3-Windows-Python3.10-msvc2022-AMD64.msi"
-    $dest = "C:\Windows\Temp\paraview.msi"
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
-    if (-not (Test-Path $dest)) { throw "ParaView MSI download failed" }
-    echo "Downloaded to $dest"
+    $dest = "C:\Windows\Temp\ParaView.msi"
+    gsutil cp "gs://org-sec-agents-bucket/ParaView-6.2.0-RC1-Windows-Python3.12-msvc2017-AMD64.msi" $dest
+    if (-not (Test-Path $dest)) { throw "ParaView download from GCS failed" }
+    $size = [math]::Round((Get-Item $dest).Length / 1MB, 1)
+    echo "Downloaded ParaView MSI ($size MB)"
   register: paraview_download
   failed_when: paraview_download.rc != 0
 
 - name: Install ParaView MSI silently
-  when: "'not_installed' in paraview_check.stdout"
+  when: "'not_installed' in paraview_check.stdout and paraview_download.rc == 0"
   win_shell: |
-    $msi = "C:\Windows\Temp\paraview.msi"
-    Start-Process msiexec.exe -ArgumentList "/i", $msi, "/qn", "/norestart", "INSTALLDIR=C:\Program Files\ParaView" -Wait -NoNewWindow
-    if (-not (Test-Path "C:\Program Files\ParaView")) {
-      # Try default install path
-      $pv = Get-ChildItem "C:\Program Files" -Filter "ParaView*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-      if (-not $pv) { throw "ParaView MSI installation failed" }
-    }
-    echo "ParaView installed successfully"
+    $msi = "C:\Windows\Temp\ParaView.msi"
+    $proc = Start-Process msiexec.exe -ArgumentList "/i", $msi, "/qn", "/norestart" -Wait -NoNewWindow -PassThru
+    Write-Host "msiexec exit code: $($proc.ExitCode)"
+    echo "ParaView installation completed"
   register: paraview_install
   failed_when: paraview_install.rc != 0
 
 - name: Clean up ParaView MSI installer
   win_file:
-    path: "C:\\Windows\\Temp\\paraview.msi"
+    path: "C:\\Windows\\Temp\\ParaView.msi"
     state: absent
   failed_when: false
 

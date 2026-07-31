@@ -553,6 +553,12 @@ if [ "$(to_bool "${CREATE_VM}")" = "true" ] && [ -n "${BUILT_IMAGE_NAME}" ]; the
     ACCELERATOR_FLAG="--accelerator=type=nvidia-tesla-t4,count=1 --maintenance-policy=TERMINATE"
   fi
 
+  # Use VM name as Windows hostname (truncated to 15 chars — Windows NetBIOS limit)
+  WIN_HOSTNAME=$(echo "${VM_NAME}" | tr '[:lower:]' '[:upper:]' | cut -c1-15)
+
+  # Startup script to rename Windows computer on first boot
+  STARTUP_SCRIPT="Rename-Computer -NewName '${WIN_HOSTNAME}' -Force -Restart"
+
   if gcloud compute instances create "${VM_NAME}" \
     --project="${PROJECT_ID}" \
     --zone="${ZONE}" \
@@ -570,7 +576,7 @@ if [ "$(to_bool "${CREATE_VM}")" = "true" ] && [ -n "${BUILT_IMAGE_NAME}" ]; the
     --shielded-integrity-monitoring \
     ${ACCELERATOR_FLAG} \
     --labels="created-by=image-builder,request-id=${REQUEST_ID}" \
-    --metadata="enable-oslogin=TRUE"; then
+    --metadata="enable-oslogin=TRUE,windows-startup-script-ps1=${STARTUP_SCRIPT}"; then
     echo "[VM] VM created successfully: ${VM_NAME}"
   else
     echo "[WARN] VM creation failed — image is still available: ${BUILT_IMAGE_NAME}"

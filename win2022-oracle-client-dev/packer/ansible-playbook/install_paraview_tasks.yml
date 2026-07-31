@@ -1,54 +1,61 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
-# install_paraview_tasks.yml – ParaView via Chocolatey
+# install_paraview_tasks.yml – ParaView via direct MSI download
+# Chocolatey package does not install on Windows Server ("System not supported")
 # ──────────────────────────────────────────────────────────────────────────────
-
-- name: Bootstrap Chocolatey (ParaView)
-  include_tasks: bootstrap_chocolatey_tasks.yml
 
 - name: Check if ParaView is already installed
   win_shell: |
-    $pv = Get-ChildItem "C:\Program Files" -Filter "ParaView*" -Directory -ErrorAction SilentlyContinue
+    $pv = Get-ChildItem "C:\Program Files" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($pv) { echo "installed" } else { echo "not_installed" }
   register: paraview_check
   changed_when: false
 
-- name: Install ParaView via Chocolatey
+- name: Download ParaView MSI installer
   when: "'not_installed' in paraview_check.stdout"
   win_shell: |
-    choco install paraview --yes --no-progress --limit-output
-    if ($LASTEXITCODE -ne 0) { throw "ParaView installation failed with exit code $LASTEXITCODE" }
+    $url = "https://www.paraview.org/paraview-downloads/download.php?submit=Download&version=v5.13&type=binary&os=Windows&downloadFile=ParaView-5.13.3-Windows-Python3.10-msvc2022-AMD64.msi"
+    $dest = "C:\Windows\Temp\paraview.msi"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+    if (-not (Test-Path $dest)) { throw "ParaView MSI download failed" }
+    echo "Downloaded to $dest"
+  register: paraview_download
+  failed_when: paraview_download.rc != 0
+
+- name: Install ParaView MSI silently
+  when: "'not_installed' in paraview_check.stdout"
+  win_shell: |
+    $msi = "C:\Windows\Temp\paraview.msi"
+    Start-Process msiexec.exe -ArgumentList "/i", $msi, "/qn", "/norestart", "INSTALLDIR=C:\Program Files\ParaView" -Wait -NoNewWindow
+    if (-not (Test-Path "C:\Program Files\ParaView")) {
+      # Try default install path
+      $pv = Get-ChildItem "C:\Program Files" -Filter "ParaView*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+      if (-not $pv) { throw "ParaView MSI installation failed" }
+    }
+    echo "ParaView installed successfully"
   register: paraview_install
   failed_when: paraview_install.rc != 0
 
+- name: Clean up ParaView MSI installer
+  win_file:
+    path: "C:\\Windows\\Temp\\paraview.msi"
+    state: absent
+  failed_when: false
+
 - name: Verify ParaView installation
   win_shell: |
-    $searchPaths = @(
-      "C:\Program Files",
-      "C:\Program Files (x86)",
-      "C:\ProgramData\chocolatey\lib\paraview",
-      "C:\ProgramData\chocolatey\bin"
-    )
-    foreach ($path in $searchPaths) {
-      $pv = Get-ChildItem $path -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-      if ($pv) { echo $pv.FullName; exit 0 }
-    }
-    echo "NOT_FOUND"
+    $pv = Get-ChildItem "C:\Program Files" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pv) { echo $pv.FullName } else { echo "NOT_FOUND" }
   register: paraview_bin
   changed_when: false
 
-- name: Log ParaView installation success
+- name: Log ParaView installation result
   debug:
     msg: "ParaView installed at: {{ paraview_bin.stdout | trim }}"
   when: "'NOT_FOUND' not in paraview_bin.stdout"
 
-- name: Warn if ParaView exe not found
+- name: Warn if ParaView not found after install
   debug:
-    msg: "WARNING: ParaView package installed via Chocolatey but paraview.exe not found. This may happen on Windows Server — manual install may be required."
+    msg: "WARNING: ParaView MSI ran but paraview.exe not found — may need manual verification."
   when: "'NOT_FOUND' in paraview_bin.stdout"
-
-- name: Clear Chocolatey download cache
-  win_shell: |
-    choco cache remove --all --yes --no-progress 2>$null
-  failed_when: false
-  changed_when: false

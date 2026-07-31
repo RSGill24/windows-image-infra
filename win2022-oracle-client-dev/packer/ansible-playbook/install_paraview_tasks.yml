@@ -2,13 +2,15 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # install_paraview_tasks.yml – ParaView via Chocolatey
 # ──────────────────────────────────────────────────────────────────────────────
-
 - name: Bootstrap Chocolatey (ParaView)
   include_tasks: bootstrap_chocolatey_tasks.yml
 
 - name: Check if ParaView is already installed
   win_shell: |
-    $pv = Get-ChildItem "C:\Program Files" -Filter "ParaView*" -Directory -ErrorAction SilentlyContinue
+    $pv = Get-ChildItem "C:\tools" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pv) {
+      $pv = Get-ChildItem "C:\Program Files" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
     if ($pv) { echo "installed" } else { echo "not_installed" }
   register: paraview_check
   changed_when: false
@@ -23,7 +25,10 @@
 
 - name: Verify ParaView installation
   win_shell: |
-    $pv = Get-ChildItem "C:\Program Files" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    $pv = Get-ChildItem "C:\tools" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pv) {
+      $pv = Get-ChildItem "C:\Program Files" -Filter "paraview.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
     if (-not $pv) { throw "paraview.exe not found" }
     echo $pv.FullName
   register: paraview_bin

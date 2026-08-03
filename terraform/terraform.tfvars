@@ -5,6 +5,9 @@ jira_webhook_secret_name = "jira-webhook-secret"
 jira_base_url            = "https://sedatacloud.atlassian.net"
 jira_api_email           = "nileshp@sedatacloud.com"
 gmail_sender_email       = "bobysoni9636@gmail.com"
+vm_network               = "app-network"
+vm_subnet                = "app-subnet1"
+shared_vpc_host_project  = ""
 
 install_chrome       = false
 install_git          = false

@@ -26,8 +26,8 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
 
       vpc_access {
         network_interfaces {
-          network    = "app-network"
-          subnetwork = "app-subnet1"
+          network    = var.vm_network
+          subnetwork = var.vm_subnet
         }
         egress = "ALL_TRAFFIC"
       }
@@ -62,7 +62,7 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
         }
         env {
           name  = "ZONE"
-          value = "${var.region}-b"
+          value = "${var.region}-c"
         }
         env {
           name  = "MACHINE_TYPE"
@@ -122,6 +122,20 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
         env {
           name  = "GMAIL_APP_PASSWORD_SECRET"
           value = "gmail-app-password"
+        }
+
+        # ── VM Network / Shared VPC config ────────────────────────────────
+        env {
+          name  = "VM_NETWORK"
+          value = var.vm_network
+        }
+        env {
+          name  = "VM_SUBNET"
+          value = var.vm_subnet
+        }
+        env {
+          name  = "SHARED_VPC_HOST_PROJECT"
+          value = var.shared_vpc_host_project
         }
 
         # ── Component-selection flags (ENV mode / defaults) ─────────────────

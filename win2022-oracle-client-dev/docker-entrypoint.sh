@@ -263,6 +263,17 @@ if [ -n "${REQUEST_JSON_GCS}" ]; then
   IMAGE_CONFIG_FAMILY=$(jq -r '.image_config.image_family // empty' "${REQUEST_JSON_LOCAL}")
   CREATE_VM=$(jq -r '.image_config.create_vm // false' "${REQUEST_JSON_LOCAL}")
   KEEP_IMAGE=$(jq -r '.image_config.keep_image // true' "${REQUEST_JSON_LOCAL}")
+  JSON_MACHINE_TYPE=$(jq -r '.image_config.machine_type // empty' "${REQUEST_JSON_LOCAL}")
+  if [ -n "${JSON_MACHINE_TYPE}" ]; then
+    MACHINE_TYPE="${JSON_MACHINE_TYPE}"
+    echo "[JSON] Machine type override: ${MACHINE_TYPE}"
+  fi
+  DISK_SIZE_GB=$(jq -r '.image_config.disk_size_gb // empty' "${REQUEST_JSON_LOCAL}")
+  if [ -n "${DISK_SIZE_GB}" ]; then
+    echo "[JSON] Disk size override: ${DISK_SIZE_GB}GB"
+  else
+    DISK_SIZE_GB="250"
+  fi
 
   # Override IMAGE_FAMILY from JSON (defaults to nmfs-windows-2022)
   if [ -n "${IMAGE_CONFIG_FAMILY}" ]; then
@@ -488,47 +499,61 @@ if ! gcloud auth list 2>&1 | grep -q "ACTIVE"; then
   exit 1
 fi
 
-# ── Packer build ─────────────────────────────────────────────────────────────
-if ! packer build "${PACKER_VARS[@]}" "${PACKER_TEMPLATE}"; then
-  echo "[ERROR] Packer build failed"
-  [ -f /tmp/packer-debug.log ] && tail -100 /tmp/packer-debug.log
-  write_status "FAILED" "Packer build failed — check logs" || true
-  exit 1
+# ── Check if build should be skipped (duplicate image, VM-only mode) ─────────
+SKIP_BUILD="false"
+if [ -f "${REQUEST_JSON_LOCAL:-/dev/null}" ]; then
+  SKIP_BUILD=$(jq -r '.image_config.skip_build // false' "${REQUEST_JSON_LOCAL}")
 fi
 
-# ── Get the built image name ─────────────────────────────────────────────────
-BUILT_IMAGE_NAME=$(gcloud compute images list \
-  --project="${PROJECT_ID}" \
-  --filter="family=${IMAGE_FAMILY}" \
-  --sort-by="~creationTimestamp" \
-  --format="value(name)" \
-  --limit=1)
-
-echo "Built image: ${BUILT_IMAGE_NAME}"
-
-# ── Label image with software fingerprint (for duplicate detection) ──────────
-if [ -n "${BUILT_IMAGE_NAME}" ] && [ -n "${SOFTWARE_FINGERPRINT}" ]; then
-  echo "[LABEL] Adding software-fingerprint=${SOFTWARE_FINGERPRINT} to ${BUILT_IMAGE_NAME}"
-  gcloud compute images add-labels "${BUILT_IMAGE_NAME}" \
-    --project="${PROJECT_ID}" \
-    --labels="software-fingerprint=${SOFTWARE_FINGERPRINT},request-id=${REQUEST_ID},built-by=image-builder" \
-    || echo "[WARN] Failed to add labels to image"
+if [ "${SKIP_BUILD}" = "true" ]; then
+  echo "[SKIP] Image already exists — skipping Packer build, proceeding to VM creation"
+  BUILT_IMAGE_NAME="${IMAGE_CONFIG_NAME}"
+  echo "[SKIP] Using existing image: ${BUILT_IMAGE_NAME}"
+else
+  # ── Packer build ───────────────────────────────────────────────────────────
+  if ! packer build "${PACKER_VARS[@]}" "${PACKER_TEMPLATE}"; then
+    echo "[ERROR] Packer build failed"
+    [ -f /tmp/packer-debug.log ] && tail -100 /tmp/packer-debug.log
+    write_status "FAILED" "Packer build failed — check logs" || true
+    exit 1
+  fi
 fi
 
-# ── Deprecate old images ─────────────────────────────────────────────────────
-if [ -n "${BUILT_IMAGE_NAME}" ]; then
-  OLD_IMAGES=$(gcloud compute images list \
+if [ "${SKIP_BUILD}" != "true" ]; then
+  # ── Get the built image name ───────────────────────────────────────────────
+  BUILT_IMAGE_NAME=$(gcloud compute images list \
     --project="${PROJECT_ID}" \
-    --filter="family=${IMAGE_FAMILY} AND name!=${BUILT_IMAGE_NAME}" \
-    --format="value(name)")
+    --filter="family=${IMAGE_FAMILY}" \
+    --sort-by="~creationTimestamp" \
+    --format="value(name)" \
+    --limit=1)
 
-  while IFS= read -r IMAGE; do
-    [ -z "$IMAGE" ] && continue
-    gcloud compute images deprecate "${IMAGE}" \
+  echo "Built image: ${BUILT_IMAGE_NAME}"
+
+  # ── Label image with software fingerprint (for duplicate detection) ────────
+  if [ -n "${BUILT_IMAGE_NAME}" ] && [ -n "${SOFTWARE_FINGERPRINT}" ]; then
+    echo "[LABEL] Adding software-fingerprint=${SOFTWARE_FINGERPRINT} to ${BUILT_IMAGE_NAME}"
+    gcloud compute images add-labels "${BUILT_IMAGE_NAME}" \
       --project="${PROJECT_ID}" \
-      --state=DEPRECATED \
-      --replacement="${BUILT_IMAGE_NAME}"
-  done <<< "${OLD_IMAGES}"
+      --labels="software-fingerprint=${SOFTWARE_FINGERPRINT},request-id=${REQUEST_ID},built-by=image-builder" \
+      || echo "[WARN] Failed to add labels to image"
+  fi
+
+  # ── Deprecate old images ───────────────────────────────────────────────────
+  if [ -n "${BUILT_IMAGE_NAME}" ]; then
+    OLD_IMAGES=$(gcloud compute images list \
+      --project="${PROJECT_ID}" \
+      --filter="family=${IMAGE_FAMILY} AND name!=${BUILT_IMAGE_NAME}" \
+      --format="value(name)")
+
+    while IFS= read -r IMAGE; do
+      [ -z "$IMAGE" ] && continue
+      gcloud compute images deprecate "${IMAGE}" \
+        --project="${PROJECT_ID}" \
+        --state=DEPRECATED \
+        --replacement="${BUILT_IMAGE_NAME}"
+    done <<< "${OLD_IMAGES}"
+  fi
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -539,10 +564,11 @@ CREATED_VM_NAME=""
 if [ "$(to_bool "${CREATE_VM}")" = "true" ] && [ -n "${BUILT_IMAGE_NAME}" ]; then
   echo "[VM] Creating VM from image: ${BUILT_IMAGE_NAME}"
 
-  # Generate VM name from image family or config name
+  # Generate unique VM name using image family + short unique suffix
+  VM_SUFFIX=$(echo "${REQUEST_ID:-$(date +%s)}" | sed 's/req-//' | cut -c1-10)
   VM_NAME_BASE="${IMAGE_CONFIG_NAME:-${IMAGE_FAMILY}}"
   # Sanitize: lowercase, replace non-alphanum with dash, truncate
-  VM_NAME=$(echo "${VM_NAME_BASE}-vm" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-60)
+  VM_NAME=$(echo "${VM_NAME_BASE}-${VM_SUFFIX}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-60)
   CREATED_VM_NAME="${VM_NAME}"
 
   # Determine machine type for VM (use GPU type if GPU drivers requested)
@@ -553,11 +579,50 @@ if [ "$(to_bool "${CREATE_VM}")" = "true" ] && [ -n "${BUILT_IMAGE_NAME}" ]; the
     ACCELERATOR_FLAG="--accelerator=type=nvidia-tesla-t4,count=1 --maintenance-policy=TERMINATE"
   fi
 
+  # Build subnet flag — Shared VPC uses full resource path
+  if [ -n "${SHARED_VPC_HOST_PROJECT:-}" ]; then
+    VM_SUBNET_FLAG="projects/${SHARED_VPC_HOST_PROJECT}/regions/${ZONE%-*}/subnetworks/${VM_SUBNET:-app-subnet1}"
+  else
+    VM_SUBNET_FLAG="${VM_SUBNET:-app-subnet1}"
+  fi
+
   # Use VM name as Windows hostname (truncated to 15 chars — Windows NetBIOS limit)
   WIN_HOSTNAME=$(echo "${VM_NAME}" | tr '[:lower:]' '[:upper:]' | cut -c1-15)
 
-  # Startup script to rename Windows computer on first boot
-  STARTUP_SCRIPT="Rename-Computer -NewName '${WIN_HOSTNAME}' -Force -Restart"
+  # Build workstation username from requester name: "Drew Beling" → "drew_beling"
+  WS_USERNAME=$(echo "${REQUESTER_NAME:-user}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z ]//g' | sed 's/  */ /g' | sed 's/ /_/g' | cut -c1-20)
+  [ -z "${WS_USERNAME}" ] && WS_USERNAME="workstation_user"
+
+  # Generate random password (16 chars, meets Windows complexity)
+  WS_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | head -c12)
+  WS_PASSWORD="${WS_PASSWORD}@1Aa"
+
+  echo "[VM] Workstation user: ${WS_USERNAME}"
+
+  # Startup script: rename computer + create workstation user (standard user + RDP access)
+  STARTUP_SCRIPT=$(cat <<'EOPS'
+# Rename computer
+Rename-Computer -NewName 'YOURHOST' -Force
+
+# Create workstation user
+$username = 'YOURUSER'
+$password = ConvertTo-SecureString 'YOURPASS' -AsPlainText -Force
+if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
+    New-LocalUser -Name $username -Password $password -FullName 'YOURFULLNAME' -PasswordNeverExpires -UserMayNotChangePassword:$false
+    # Remove from Administrators if added by default (demote to standard user)
+    Remove-LocalGroupMember -Group 'Administrators' -Member $username -ErrorAction SilentlyContinue
+    # Add to Remote Desktop Users for RDP access
+    Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $username
+    Write-Host "Workstation user '$username' created as standard user with RDP access"
+}
+Restart-Computer -Force
+EOPS
+)
+  # Replace placeholders with actual values
+  STARTUP_SCRIPT="${STARTUP_SCRIPT//YOURHOST/${WIN_HOSTNAME}}"
+  STARTUP_SCRIPT="${STARTUP_SCRIPT//YOURUSER/${WS_USERNAME}}"
+  STARTUP_SCRIPT="${STARTUP_SCRIPT//YOURPASS/${WS_PASSWORD}}"
+  STARTUP_SCRIPT="${STARTUP_SCRIPT//YOURFULLNAME/${REQUESTER_NAME:-Workstation User}}"
 
   if gcloud compute instances create "${VM_NAME}" \
     --project="${PROJECT_ID}" \
@@ -565,9 +630,9 @@ if [ "$(to_bool "${CREATE_VM}")" = "true" ] && [ -n "${BUILT_IMAGE_NAME}" ]; the
     --machine-type="${VM_MACHINE_TYPE}" \
     --image="${BUILT_IMAGE_NAME}" \
     --image-project="${PROJECT_ID}" \
-    --boot-disk-size=250GB \
-    --network="app-network" \
-    --subnet="app-subnet1" \
+    --boot-disk-size=${DISK_SIZE_GB:-250}GB \
+    --network="${VM_NETWORK:-app-network}" \
+    --subnet="${VM_SUBNET_FLAG}" \
     --no-address \
     --service-account="${SERVICE_ACCOUNT_EMAIL}" \
     --scopes="cloud-platform" \
@@ -575,7 +640,7 @@ if [ "$(to_bool "${CREATE_VM}")" = "true" ] && [ -n "${BUILT_IMAGE_NAME}" ]; the
     --shielded-vtpm \
     --shielded-integrity-monitoring \
     ${ACCELERATOR_FLAG} \
-    --labels="created-by=image-builder,request-id=${REQUEST_ID}" \
+    --labels="created-by=image-builder,request-id=${REQUEST_ID},workstation-user=${WS_USERNAME}" \
     --metadata="enable-oslogin=TRUE,windows-startup-script-ps1=${STARTUP_SCRIPT}"; then
     echo "[VM] VM created successfully: ${VM_NAME}"
   else
@@ -607,6 +672,17 @@ else
   VM_STATUS="VM creation was not requested."
 fi
 
+WS_CREDENTIALS=""
+if [ -n "${WS_USERNAME:-}" ] && [ -n "${WS_PASSWORD:-}" ] && [ "${CREATED_VM_NAME}" != "FAILED" ] && [ -n "${CREATED_VM_NAME}" ]; then
+  WS_CREDENTIALS="
+Workstation User Credentials:
+  Username: ${WS_USERNAME}
+  Password: ${WS_PASSWORD}
+  Access: Standard User + Remote Desktop
+
+Please change your password after first login."
+fi
+
 JIRA_COMMENT="Your workstation image is ready!
 
 Image Name: ${BUILT_IMAGE_NAME}
@@ -615,10 +691,9 @@ ${VM_STATUS}
 Request ID: ${REQUEST_ID}
 Project: ${PROJECT_ID}
 Zone: ${ZONE}
+${WS_CREDENTIALS}
 
 You can connect to your VM via IAP Remote Desktop once it's running."
-
-notify_jira "${JIRA_COMMENT}" || echo "[WARN] Jira notification failed, build is still successful"
 
 # ── Email notification to requester ───────────────────────────────────────────
 if [ -n "${REQUESTER_EMAIL}" ] && [ "${REQUESTER_EMAIL}" != "unknown" ]; then

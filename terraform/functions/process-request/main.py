@@ -31,6 +31,149 @@ REGION = os.environ.get("REGION", "us-east4")
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
 CLOUD_RUN_JOB = os.environ.get("BUILDER_JOB_NAME", "windows-image-builder")
 
+# All valid software keys (must match docker-entrypoint.sh / ansible playbooks)
+VALID_SOFTWARE_KEYS = {
+    "chrome", "git", "python", "jupyterlab", "conda", "anaconda",
+    "rstudio", "rstudio_pro", "pycharm_community", "visual_studio_community",
+    "powershell_core", "positron", "paraview", "echoview", "echosms",
+    "echostack", "matlab", "gpu_drivers", "oracle_client", "aalibrary",
+    "gcp_utilities", "excel",
+}
+
+# Map client-friendly software display names to internal keys
+CLIENT_SOFTWARE_MAP = {
+    "firefox": "chrome",  # browser category
+    "chrome": "chrome",
+    "google chrome": "chrome",
+    "git": "git",
+    "github desktop": "git",
+    "python": "python",
+    "jupyterlab": "jupyterlab",
+    "jupyter": "jupyterlab",
+    "conda": "conda",
+    "miniconda": "conda",
+    "anaconda": "anaconda",
+    "rstudio": "rstudio",
+    "rstudio pro": "rstudio_pro",
+    "pycharm": "pycharm_community",
+    "pycharm community": "pycharm_community",
+    "visual studio": "visual_studio_community",
+    "visual studio community": "visual_studio_community",
+    "vs code": "visual_studio_community",
+    "powershell": "powershell_core",
+    "powershell core": "powershell_core",
+    "positron": "positron",
+    "paraview": "paraview",
+    "echoview": "echoview",
+    "echosms": "echosms",
+    "echostack": "echostack",
+    "matlab": "matlab",
+    "gpu drivers": "gpu_drivers",
+    "nvidia drivers": "gpu_drivers",
+    "oracle client": "oracle_client",
+    "oracle drivers": "oracle_client",
+    "oracle": "oracle_client",
+    "aalibrary": "aalibrary",
+    "aa library": "aalibrary",
+    "gcp utilities": "gcp_utilities",
+    "gcloud sdk": "gcp_utilities",
+    "gcloud": "gcp_utilities",
+    "excel": "excel",
+    "microsoft excel": "excel",
+}
+
+# Map workstation size strings to GCP machine types + disk size
+# Client sends: "Large - (16 – 32 vCPU | RAM: 64 – 128 GB | Storage: 500GB – 1TB)"
+WORKSTATION_SIZE_MAP = {
+    "small": {"machine_type": "e2-standard-4", "disk_size_gb": 250},
+    "medium": {"machine_type": "e2-standard-8", "disk_size_gb": 250},
+    "large": {"machine_type": "e2-standard-16", "disk_size_gb": 500},
+    "xlarge": {"machine_type": "e2-standard-32", "disk_size_gb": 1000},
+    "x-large": {"machine_type": "e2-standard-32", "disk_size_gb": 1000},
+}
+
+
+def normalize_client_json(data: dict) -> dict:
+    """
+    Detect and normalize client's flat JSON format to our nested format.
+    Client format has: software_packages, workstation_size, submitter_name, etc.
+    Our format has: image_config.software, requester.name, etc.
+
+    Returns the normalized dict if client format detected, original dict otherwise.
+    """
+    # Detect client format: has software_packages but no image_config
+    if "image_config" in data or "software_packages" not in data:
+        return data
+
+    print("[NORMALIZE] Detected client JSON format — converting to pipeline format")
+
+    # Parse software_packages (comma-separated string)
+    software = {}
+    raw_packages = data.get("software_packages", "")
+    if isinstance(raw_packages, str) and raw_packages.strip():
+        for pkg in raw_packages.split(","):
+            pkg_clean = pkg.strip().lower()
+            matched_key = CLIENT_SOFTWARE_MAP.get(pkg_clean)
+            if matched_key:
+                software[matched_key] = True
+                print(f"[NORMALIZE] Mapped '{pkg.strip()}' → {matched_key}")
+            else:
+                print(f"[NORMALIZE] Unknown software '{pkg.strip()}' — skipped")
+
+    # Fill all software keys with defaults
+    full_software = {k: software.get(k, False) for k in sorted(VALID_SOFTWARE_KEYS)}
+
+    # Parse workstation_size to machine_type + disk_size
+    ws_size = data.get("workstation_size", "")
+    machine_type = "e2-standard-8"  # default medium
+    disk_size_gb = 250  # default
+    for size_key, spec in WORKSTATION_SIZE_MAP.items():
+        if size_key in ws_size.lower():
+            machine_type = spec["machine_type"]
+            disk_size_gb = spec["disk_size_gb"]
+            break
+    print(f"[NORMALIZE] Workstation size '{ws_size}' → machine_type={machine_type}, disk={disk_size_gb}GB")
+
+    # Build enabled software list for naming
+    enabled = sorted(k for k, v in full_software.items() if v)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    sw_names = [k.replace("_", "") for k in enabled[:5]]
+    sw_part = "-".join(sw_names) if sw_names else "custom"
+    image_name = f"nmfs-windows-2022-{sw_part}-{ts}"
+    image_family = f"nmfs-windows-2022-{sw_part}"
+
+    normalized = {
+        "image_config": {
+            "image_name": image_name,
+            "image_family": image_family,
+            "create_vm": True,
+            "keep_image": True,
+            "software": full_software,
+            "machine_type": machine_type,
+            "disk_size_gb": disk_size_gb,
+        },
+        "requester": {
+            "name": data.get("submitter_name", "unknown"),
+            "email": data.get("submitter_email", "unknown"),
+            "team": data.get("fmc", "unknown"),
+        },
+        "jira_metadata": {
+            "ticket_id": data.get("ticket_number", ""),
+            "project_key": data.get("ticket_number", "").rsplit("-", 1)[0] if "-" in data.get("ticket_number", "") else "",
+            "event_type": data.get("request_type", ""),
+            "status": data.get("status", ""),
+            "summary": data.get("summary", ""),
+            "source": "client-bucket-workflow",
+        },
+        "requested_at": data.get("created", datetime.now(timezone.utc).isoformat()),
+        "additional_unlisted_software": data.get("additional_unlisted_software", ""),
+    }
+
+    print(f"[NORMALIZE] Converted: requester={normalized['requester']['name']}, "
+          f"software={', '.join(enabled)}, machine_type={machine_type}")
+
+    return normalized
+
 
 def detect_uploader(bucket_name: str, object_name: str) -> dict:
     """
@@ -289,6 +432,9 @@ def process_request(cloud_event):
     blob = bucket.blob(object_name)
     request_data = json.loads(blob.download_as_text())
 
+    # ── 1b. Normalize client JSON format if detected ─────────────────────
+    request_data = normalize_client_json(request_data)
+
     # ── 2. Auto-detect who uploaded the file ──────────────────────────────
     # User does NOT need to put name/email in JSON — we detect automatically
     if "requester" not in request_data or not request_data["requester"].get("email"):
@@ -341,7 +487,38 @@ def process_request(cloud_event):
         # Write audit log
         write_audit_log(bucket_name, request_data, fingerprint, action="DUPLICATE_FOUND")
 
-        # Write status
+        create_vm = request_data.get("image_config", {}).get("create_vm", False)
+        if create_vm:
+            # Image exists but VM still needs to be created — trigger Cloud Run with existing image
+            print(f"[DUPLICATE] Image exists but create_vm=true — triggering VM creation")
+            request_data["image_config"]["image_name"] = image_name
+            request_data["image_config"]["skip_build"] = True
+            request_data["_processed"] = True
+
+            processed_name = object_name.replace("requests/", "processed/")
+            processed_blob = storage.Client().bucket(bucket_name).blob(processed_name)
+            processed_blob.upload_from_string(
+                json.dumps(request_data, indent=2), content_type="application/json"
+            )
+            print(f"[ENRICH] Written enriched JSON to gs://{bucket_name}/{processed_name}")
+
+            # Mark original as processed to block re-triggers
+            orig_blob = storage.Client().bucket(bucket_name).blob(object_name)
+            orig_blob.upload_from_string(
+                json.dumps(request_data, indent=2), content_type="application/json"
+            )
+            print(f"[ENRICH] Marked original as processed")
+
+            trigger_cloud_run_job(f"gs://{bucket_name}/{processed_name}")
+
+            message = (
+                f"Image '{image_name}' already exists — skipping build, creating VM with "
+                f"machine type from request."
+            )
+            write_status(bucket_name, request_data, "VM_CREATION", message, image_name=image_name)
+            return "Duplicate image — VM creation triggered", 200
+
+        # No VM needed — just report duplicate
         message = (
             f"Hi {requester_name}, an image with the exact same software combination "
             f"already exists: '{image_name}' (family: {image_family}). "

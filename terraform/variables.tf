@@ -188,3 +188,23 @@ variable "gmail_sender_email" {
   description = "Gmail address used to send build notification emails"
   default     = ""
 }
+
+# ── Shared VPC / VM Network ────────────────────────────────────────────────
+
+variable "vm_network" {
+  type        = string
+  description = "VPC network name for VM creation"
+  default     = "app-network"
+}
+
+variable "vm_subnet" {
+  type        = string
+  description = "Subnet name for VM creation"
+  default     = "app-subnet1"
+}
+
+variable "shared_vpc_host_project" {
+  type        = string
+  description = "Shared VPC host project ID (leave empty if not using Shared VPC)"
+  default     = ""
+}

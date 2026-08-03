@@ -1,8 +1,0 @@
-triggers:
-- name: windows-image-dev
-  project: big-mender-473219-r2
-  configFilePath: cloudbuild-win2022-customizer.yaml
-  eventType: push
-  includedGitRefs: ^dev$
-  serviceAccount: projects/big-mender-473219-r2/serviceAccounts/packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com
-  disabled: false

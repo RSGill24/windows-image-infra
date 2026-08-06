@@ -18,11 +18,6 @@ INSTALLATION_TARGET_DIR="${INSTALLATION_TARGET_DIR:-C:/Users/packer_user/install
 INSTALLATION_SOURCE_DIR="${INSTALLATION_SOURCE_DIR:-./ansible-playbook}"
 PACKER_TEMPLATE="${PACKER_TEMPLATE:-customize.pkr.hcl}"
 
-# ── Jira notification config ─────────────────────────────────────────────────
-JIRA_BASE_URL="${JIRA_BASE_URL:-}"
-JIRA_API_TOKEN_SECRET="${JIRA_API_TOKEN_SECRET:-jira-api-token}"
-JIRA_API_EMAIL="${JIRA_API_EMAIL:-}"
-
 # ── Email notification config (Gmail SMTP) ───────────────────────────────────
 GMAIL_SENDER_EMAIL="${GMAIL_SENDER_EMAIL:-}"
 GMAIL_APP_PASSWORD_SECRET="${GMAIL_APP_PASSWORD_SECRET:-gmail-app-password}"
@@ -110,44 +105,6 @@ write_status() {
   local status_path="gs://${GCS_STATUS_BUCKET}/status/${REQUEST_ID}.json"
   echo "${status_json}" | gsutil -q cp - "${status_path}"
   echo "[STATUS] ${status} → ${status_path}"
-}
-
-# ── Helper: post comment on Jira ticket ──────────────────────────────────────
-notify_jira() {
-  local comment_body="$1"
-
-  if [ -z "${JIRA_BASE_URL}" ] || [ -z "${JIRA_API_EMAIL}" ] || [ -z "${JIRA_TICKET_ID:-}" ]; then
-    echo "[JIRA] Skipping notification — JIRA_BASE_URL, JIRA_API_EMAIL, or JIRA_TICKET_ID not set"
-    return 0
-  fi
-
-  # Fetch Jira API token from Secret Manager
-  local api_token
-  api_token=$(gcloud secrets versions access latest --secret="${JIRA_API_TOKEN_SECRET}" --project="${PROJECT_ID}" 2>/dev/null || true)
-  if [ -z "${api_token}" ]; then
-    echo "[JIRA] WARNING: Could not fetch API token from secret '${JIRA_API_TOKEN_SECRET}'"
-    return 0
-  fi
-
-  local auth
-  auth=$(printf '%s:%s' "${JIRA_API_EMAIL}" "${api_token}" | base64 | tr -d '\n')
-
-  local payload
-  payload=$(jq -n --arg body "${comment_body}" '{body: $body}')
-
-  local http_code
-  http_code=$(curl -s -o /dev/null -w '%{http_code}' \
-    -X POST \
-    -H "Authorization: Basic ${auth}" \
-    -H "Content-Type: application/json" \
-    -d "${payload}" \
-    "${JIRA_BASE_URL}/rest/api/2/issue/${JIRA_TICKET_ID}/comment" 2>/dev/null || echo "000")
-
-  if [ "${http_code}" = "201" ] || [ "${http_code}" = "200" ]; then
-    echo "[JIRA] Comment posted on ${JIRA_TICKET_ID}"
-  else
-    echo "[JIRA] WARNING: Failed to post comment on ${JIRA_TICKET_ID} (HTTP ${http_code})"
-  fi
 }
 
 # ── Helper: send email via Gmail SMTP ────────────────────────────────────────
@@ -252,7 +209,7 @@ if [ -n "${REQUEST_JSON_GCS}" ]; then
   REQUESTER_NAME=$(jq -r '.requester.name // "unknown"' "${REQUEST_JSON_LOCAL}")
   REQUESTER_EMAIL=$(jq -r '.requester.email // "unknown"' "${REQUEST_JSON_LOCAL}")
   REQUESTER_TEAM=$(jq -r '.requester.team // "unknown"' "${REQUEST_JSON_LOCAL}")
-  JIRA_TICKET_ID=$(jq -r '.jira_metadata.ticket_id // empty' "${REQUEST_JSON_LOCAL}")
+  TICKET_ID=$(jq -r '.jira_metadata.ticket_id // empty' "${REQUEST_JSON_LOCAL}")
   REQUESTED_AT=$(jq -r '.requested_at // empty' "${REQUEST_JSON_LOCAL}")
   if [ -z "${REQUESTED_AT}" ]; then
     REQUESTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -683,7 +640,7 @@ Workstation User Credentials:
 Please change your password after first login."
 fi
 
-JIRA_COMMENT="Your workstation image is ready!
+EMAIL_BODY="Your workstation image is ready!
 
 Image Name: ${BUILT_IMAGE_NAME}
 Image Family: ${IMAGE_FAMILY}
@@ -698,5 +655,5 @@ You can connect to your VM via IAP Remote Desktop once it's running."
 # ── Email notification to requester ───────────────────────────────────────────
 if [ -n "${REQUESTER_EMAIL}" ] && [ "${REQUESTER_EMAIL}" != "unknown" ]; then
   EMAIL_SUBJECT="[Image Builder] Your image ${BUILT_IMAGE_NAME} is ready"
-  send_email "${REQUESTER_EMAIL}" "${EMAIL_SUBJECT}" "${JIRA_COMMENT}" || echo "[WARN] Email notification failed, build is still successful"
+  send_email "${REQUESTER_EMAIL}" "${EMAIL_SUBJECT}" "${EMAIL_BODY}" || echo "[WARN] Email notification failed, build is still successful"
 fi

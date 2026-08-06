@@ -86,9 +86,4 @@ ENV INSTALL_EXCEL="false"
 ENV REQUEST_JSON_GCS=""
 ENV GCS_STATUS_BUCKET=""
 
-# ── Jira notification config ─────────────────────────────────────────────────
-ENV JIRA_BASE_URL=""
-ENV JIRA_API_EMAIL=""
-ENV JIRA_API_TOKEN_SECRET="jira-api-token"
-
 ENTRYPOINT ["./docker-entrypoint.sh"]

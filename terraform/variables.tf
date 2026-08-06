@@ -155,32 +155,6 @@ variable "install_excel" {
   description = "Install Microsoft Excel via Office Deployment Tool"
 }
 
-# ── Jira Integration ─────────────────────────────────────────────────────────
-
-variable "jira_raw_bucket_name" {
-  type        = string
-  description = "GCS bucket for raw Jira webhook payloads"
-  default     = "nmfs-winde-jira-raw-dev"
-}
-
-variable "jira_webhook_secret_name" {
-  type        = string
-  description = "Secret Manager secret name for Jira webhook authentication"
-  default     = "jira-webhook-secret"
-}
-
-variable "jira_base_url" {
-  type        = string
-  description = "Jira Cloud base URL (e.g. https://yoursite.atlassian.net)"
-  default     = ""
-}
-
-variable "jira_api_email" {
-  type        = string
-  description = "Email address for Jira API authentication"
-  default     = ""
-}
-
 # ── Email Notification (Gmail SMTP) ─────────────────────────────────────────
 
 variable "gmail_sender_email" {

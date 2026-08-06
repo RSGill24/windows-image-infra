@@ -1,12 +1,8 @@
-project_id               = "big-mender-473219-r2"
+project_id               = "your-project-id"
 region                   = "us-east4"
-jira_raw_bucket_name     = "nmfs-winde-jira-raw-dev"
-jira_webhook_secret_name = "jira-webhook-secret"
-jira_base_url            = "https://sedatacloud.atlassian.net"
-jira_api_email           = "nileshp@sedatacloud.com"
-gmail_sender_email       = "bobysoni9636@gmail.com"
-vm_network               = "app-network"
-vm_subnet                = "app-subnet1"
+gmail_sender_email       = "notifications@yourdomain.com"
+vm_network               = "your-vpc-network"
+vm_subnet                = "your-subnet"
 shared_vpc_host_project  = ""
 
 install_chrome       = false

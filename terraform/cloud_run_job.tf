@@ -101,19 +101,6 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
           name  = "GCS_STATUS_BUCKET"
           value = "${var.project_id}-image-builder-requests"
         }
-        # ── Jira notification config ────────────────────────────────────────
-        env {
-          name  = "JIRA_BASE_URL"
-          value = var.jira_base_url
-        }
-        env {
-          name  = "JIRA_API_EMAIL"
-          value = var.jira_api_email
-        }
-        env {
-          name  = "JIRA_API_TOKEN_SECRET"
-          value = "jira-api-token"
-        }
         # ── Email notification config (Gmail SMTP) ─────────────────────────
         env {
           name  = "GMAIL_SENDER_EMAIL"

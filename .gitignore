@@ -1,10 +1,6 @@
 .terraform/
-.claude
+.claude/
 *.tfstate
 *.tfstate.backup
-.terraform.lock.hcl
-CLIENT_EFFORT_DOCUMENT.html
-CLIENT_EFFORT_DOCUMENT.md
-CLIENT_EFFORT_DOCUMENT.pdf
+*.zip
 .DS_Store
-cloudbuild-docker.yaml

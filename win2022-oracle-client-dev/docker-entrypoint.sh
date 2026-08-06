@@ -593,7 +593,7 @@ if [ "$(to_bool "${CREATE_VM}")" = "true" ] && [ -n "${BUILT_IMAGE_NAME}" ]; the
   WS_USERNAME=$(echo "${REQUESTER_NAME:-user}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z ]//g' | sed 's/  */ /g' | sed 's/ /_/g' | cut -c1-20)
   [ -z "${WS_USERNAME}" ] && WS_USERNAME="workstation_user"
 
-  # Generate random password (16 chars, meets Windows complexity)
+  # Generate random password (meets Windows complexity)
   WS_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | head -c12)
   WS_PASSWORD="${WS_PASSWORD}@1Aa"
 
@@ -604,7 +604,7 @@ if [ "$(to_bool "${CREATE_VM}")" = "true" ] && [ -n "${BUILT_IMAGE_NAME}" ]; the
 # Rename computer
 Rename-Computer -NewName 'YOURHOST' -Force
 
-# Create workstation user
+# Create workstation user (standard user for requester)
 $username = 'YOURUSER'
 $password = ConvertTo-SecureString 'YOURPASS' -AsPlainText -Force
 if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {

@@ -1,24 +1,32 @@
 FROM debian:bookworm-slim
 
-ARG PACKER_VERSION=1.9.4
+ARG PACKER_VERSION=1.16.0
 
 # ── System packages ────────────────────────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     wget \
-    software-properties-common \
     unzip \
     jq \
     ca-certificates \
     gnupg \
     apt-transport-https \
     python3 \
+    python3-pip \
     netcat-openbsd \
     iproute2 \
-    ansible \
     procps \
-    python3-winrm \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
+
+# ── Install ansible + pywinrm via pip (latest versions, fewer CVEs) ───────────
+RUN pip3 install --no-cache-dir --break-system-packages \
+    ansible-core>=2.17 \
+    pywinrm>=0.5.0 \
+    cryptography>=48.0.1 \
+    urllib3>=2.3.0 \
+    requests>=2.32.0 \
+    && ansible-galaxy collection install ansible.windows community.windows
 
 # ── Google Cloud SDK ──────────────────────────────────────────────────────────
 RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \

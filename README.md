@@ -1,97 +1,48 @@
 # Windows Image Builder - Automated GCP Infrastructure
 
-Automated Windows Server 2022 image builder triggered by Jira ticket creation.
+Automated Windows Server 2022 image builder with VM provisioning. Drop a JSON request in a GCS bucket and the pipeline builds a custom Windows image, creates a VM, sets up a workstation user, and notifies the requester via email.
 
 ## Architecture
 
 ```
-Jira "Workstation Request" ticket
+JSON request dropped in GCS bucket
   |
   v
-Jira Automation (webhook)
-  |
-  v
-Cloud Run Service: jira-ingest-api
-  |- Validates X-Jira-Secret header
-  |- Writes raw JSON to GCS (jira-raw bucket)
-  |- Transforms payload to image_config format
-  '- Writes to request bucket -> triggers pipeline
-        |
-        v
 Eventarc -> Cloud Function: process-request
-  |- Auto-detects requester from Cloud Audit Logs
+  |- Detects client JSON format, normalizes to pipeline format
   |- Computes software fingerprint (SHA256)
   |- Checks for duplicate images
-  |- DUPLICATE? -> Write status, skip build
-  '- NEW? -> Trigger Cloud Run Job
+  |- DUPLICATE + create_vm? -> Skip build, trigger VM-only creation
+  |- DUPLICATE + no VM?     -> Write status, skip
+  '- NEW?                   -> Trigger full build + VM creation
         |
         v
 Cloud Run Job: windows-image-builder
-  |- Packer builds Windows VM with selected software
+  |- Packer builds Windows VM with selected software (or skips if duplicate)
   |- Labels image with software fingerprint
-  |- Creates VM from image (if requested)
+  |- Creates VM from image (requested machine type + disk size)
+  |- Creates workstation user (firstname_lastname, Standard User + RDP)
+  |- Sends email notification with credentials
   '- Writes build status to GCS
-
-Eventarc -> Cloud Function: jira-processor
-  '- Loads raw Jira data into BigQuery (analytics)
 ```
 
 ## Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `jira-ingest-api` | Cloud Run Service | Receives Jira webhooks, transforms payload |
-| `process-request` | Cloud Function | Duplicate detection, triggers builds |
-| `jira-processor` | Cloud Function | Loads Jira data into BigQuery |
-| `windows-image-builder` | Cloud Run Job | Packer build + VM creation |
+| `process-request` | Cloud Function | Normalizes JSON, duplicate detection, triggers builds |
+| `windows-image-builder` | Cloud Run Job | Packer build + VM creation + user setup |
 | `image-builder-requests` | GCS Bucket | Request/status/audit storage |
-| `jira-raw` | GCS Bucket | Raw Jira webhook payloads |
-| `jira_raw` / `jira_curated` | BigQuery | Jira analytics datasets |
-
-## Image Naming
-
-- **Image name**: `nmfs-windows-2022-{software}-{timestamp}`
-  - Example: `nmfs-windows-2022-chrome-git-python-20260701123456`
-- **Image family**: `nmfs-windows-2022`
-- **VM name**: `{image-name}-vm`
-
-## Supported Software (22 packages)
-
-| Software | Key | Install Method |
-|----------|-----|----------------|
-| Google Chrome | `chrome` | Chocolatey |
-| Git + GitHub Desktop | `git` | Chocolatey |
-| Python | `python` | Chocolatey |
-| JupyterLab | `jupyterlab` | pip |
-| Miniconda | `conda` | Chocolatey |
-| Anaconda | `anaconda` | Chocolatey |
-| RStudio (OSS) | `rstudio` | Chocolatey |
-| RStudio Pro | `rstudio_pro` | GCS binary |
-| PyCharm Community | `pycharm_community` | Chocolatey |
-| Visual Studio Community | `visual_studio_community` | Chocolatey |
-| PowerShell 7+ | `powershell_core` | Chocolatey |
-| Positron IDE | `positron` | GCS binary |
-| ParaView | `paraview` | Chocolatey |
-| Echoview | `echoview` | GCS binary |
-| EchoSMs | `echosms` | GCS binary |
-| EchoStack | `echostack` | GCS binary |
-| MATLAB | `matlab` | GCS binary |
-| NVIDIA GPU Drivers | `gpu_drivers` | GCS binary |
-| Oracle Client | `oracle_client` | GCS binary |
-| AA-SI aalibrary | `aalibrary` | GCS binary |
-| GCP Utilities | `gcp_utilities` | gcloud SDK |
-| Microsoft Excel | `excel` | Office Deployment Tool |
 
 ---
 
-# Deployment Guide (Client Environment)
+# Deployment Guide
 
 ## Prerequisites
 
 ### 1. GCP Project Setup
 
 ```bash
-# Set your project
 export PROJECT_ID="your-project-id"
 export REGION="us-east4"
 
@@ -109,40 +60,41 @@ gcloud services enable \
   eventarc.googleapis.com \
   storage.googleapis.com \
   secretmanager.googleapis.com \
-  bigquery.googleapis.com \
   artifactregistry.googleapis.com \
   logging.googleapis.com \
   iam.googleapis.com \
   --project=$PROJECT_ID
 ```
 
-### 3. VPC Network (must pre-exist)
+### 3. VPC Network
 
-The Packer builder requires:
-- **Network**: `app-network`
-- **Subnet**: `app-subnet1` (in the target region)
-- **Firewall rule**: Allow WinRM (TCP 5986) from IAP range `35.235.240.0/20`
+The pipeline needs a VPC network with:
+- A subnet in the target region
+- Firewall rule allowing WinRM (TCP 5986) from IAP range
+- Cloud NAT for external access (email notifications, software downloads)
 
 ```bash
 # Create firewall rule for Packer WinRM via IAP
 gcloud compute firewall-rules create allow-winrm-iap \
-  --network=app-network \
+  --network=your-network \
   --allow=tcp:5986 \
   --source-ranges=35.235.240.0/20 \
   --target-tags=winrm \
   --project=$PROJECT_ID
 ```
 
-### 4. Phase 1 Base Image
+**For Shared VPC:** Set `shared_vpc_host_project` in `terraform.tfvars` (see Configuration section).
 
-A hardened Windows Server 2022 base image must exist in the project under family `nmfs-windows-2022`. This is the source image Packer customizes.
+### 4. Base Image
+
+A Windows Server 2022 base image must exist in your project under family `nmfs-windows-2022`.
 
 ```bash
 # Verify base image exists
 gcloud compute images list --project=$PROJECT_ID --filter="family=nmfs-windows-2022"
 ```
 
-### 5. Artifact Registry (Docker repo)
+### 5. Artifact Registry
 
 ```bash
 gcloud artifacts repositories create packer-images \
@@ -151,19 +103,17 @@ gcloud artifacts repositories create packer-images \
   --project=$PROJECT_ID
 ```
 
-### 6. Binary Software Bucket (for GCS-based installs)
+### 6. Software Binaries Bucket
 
-Software like Oracle Client, MATLAB, Echoview, GPU drivers are installed from a GCS bucket. Create and upload binaries:
+Software installed from GCS (Oracle Client, MATLAB, ParaView, etc.) needs binaries uploaded:
 
 ```bash
-# Bucket name used in ansible playbooks
 gsutil mb -l $REGION gs://org-sec-agents-bucket
 
-# Upload binaries to appropriate paths:
+# Upload binaries:
 # gs://org-sec-agents-bucket/oracle-client/instantclient-basic-windows.zip
+# gs://org-sec-agents-bucket/ParaView-6.2.0-RC1-Windows-Python3.12-msvc2017-AMD64.msi
 # gs://org-sec-agents-bucket/matlab/matlab_installer.exe
-# gs://org-sec-agents-bucket/echoview/Echoview_setup.exe
-# gs://org-sec-agents-bucket/gpu-drivers/NVIDIA-vGPU-GRID.exe
 # etc.
 ```
 
@@ -171,22 +121,15 @@ gsutil mb -l $REGION gs://org-sec-agents-bucket
 
 ## Service Account Setup
 
-### Create Service Account
-
 ```bash
+# Create service account
 gcloud iam service-accounts create packer-win-sa \
   --display-name="Packer Windows Image Builder SA" \
   --project=$PROJECT_ID
-```
 
-### Assign IAM Roles
-
-The service account needs these roles:
-
-```bash
 SA_EMAIL="packer-win-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# Core roles
+# Assign roles
 ROLES=(
   "roles/storage.admin"
   "roles/secretmanager.secretAccessor"
@@ -199,8 +142,6 @@ ROLES=(
   "roles/run.developer"
   "roles/run.invoker"
   "roles/eventarc.eventReceiver"
-  "roles/bigquery.dataEditor"
-  "roles/bigquery.jobUser"
   "roles/cloudfunctions.invoker"
 )
 
@@ -210,20 +151,14 @@ for ROLE in "${ROLES[@]}"; do
     --role="${ROLE}" \
     --condition=None
 done
-```
 
-### Grant Eventarc Service Agent permissions
-
-```bash
-# Get project number
+# Eventarc service agent permissions
 PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
 
-# Eventarc service agent needs to invoke Cloud Run
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-eventarc.iam.gserviceaccount.com" \
   --role="roles/eventarc.serviceAgent"
 
-# Cloud Storage service agent needs to publish Eventarc events
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:service-${PROJECT_NUMBER}@gs-project-accounts.iam.gserviceaccount.com" \
   --role="roles/pubsub.publisher"
@@ -233,306 +168,166 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 
 ## Secret Manager Setup
 
-### 1. WinRM Password (required for Packer)
-
 ```bash
-# Generate a strong password
+# 1. WinRM Password (required for Packer)
 WINRM_PW=$(openssl rand -base64 24)
-
-gcloud secrets create packer-winrm-password \
-  --project=$PROJECT_ID
-
+gcloud secrets create packer-winrm-password --project=$PROJECT_ID
 echo -n "$WINRM_PW" | gcloud secrets versions add packer-winrm-password \
   --data-file=- --project=$PROJECT_ID
-```
 
-### 2. Jira Webhook Secret
-
-```bash
-# Generate a webhook secret
-JIRA_SECRET=$(openssl rand -hex 32)
-
-gcloud secrets create jira-webhook-secret \
-  --project=$PROJECT_ID
-
-echo -n "$JIRA_SECRET" | gcloud secrets versions add jira-webhook-secret \
+# 2. Gmail App Password (optional — for email notifications)
+gcloud secrets create gmail-app-password --project=$PROJECT_ID
+echo -n "YOUR-GMAIL-APP-PASSWORD" | gcloud secrets versions add gmail-app-password \
   --data-file=- --project=$PROJECT_ID
-
-# Save this value - you'll need it for Jira Automation configuration
-echo "Jira webhook secret: $JIRA_SECRET"
 ```
 
 ---
 
 ## Configuration
 
-### 1. Update terraform.tfvars
-
 Edit `terraform/terraform.tfvars`:
 
 ```hcl
-project_id               = "YOUR-PROJECT-ID"
-region                   = "us-east4"
-jira_raw_bucket_name     = "YOUR-PROJECT-ID-jira-raw"
-jira_webhook_secret_name = "jira-webhook-secret"
-```
+project_id               = "your-project-id"
+region                    = "us-east4"
 
-### 2. Update provider.tf
+# Network
+vm_network               = "your-vpc-network"
+vm_subnet                = "your-subnet"
+shared_vpc_host_project  = ""                    # Set if using Shared VPC
 
-Edit `terraform/provider.tf` - verify project and region match your tfvars.
+# Email notifications (optional)
+gmail_sender_email       = "notifications@yourdomain.com"
 
-### 3. Update cloudbuild-jira-ingest.yaml
-
-Update substitutions:
-
-```yaml
-substitutions:
-  _PROJECT_ID:  "YOUR-PROJECT-ID"
-  _REGION:      "us-east4"
-  _AR_REPO:     "packer-images"
-  _IMAGE_NAME:  "jira-ingest-api"
+# All install_* flags default to false — controlled by JSON requests
 ```
 
 ---
 
 ## Deployment Steps
 
-### Step 1: Authenticate
-
 ```bash
-gcloud auth login
-gcloud auth application-default login
-gcloud config set project $PROJECT_ID
-```
-
-### Step 2: Build Docker Images
-
-#### jira-ingest-api (webhook receiver):
-
-```bash
+# 1. Clone the repo
+git clone <repo-url>
 cd windows-image-infra
 
-gcloud builds submit \
-  --config=cloudbuild-jira-ingest.yaml \
-  --project=$PROJECT_ID \
-  --region=$REGION
-```
+# 2. Update terraform/terraform.tfvars with your values
 
-#### windows-packer-builder (Packer build image):
+# 3. Build Docker image
+gcloud builds submit --config=cloudbuild-docker.yaml . --project=$PROJECT_ID
 
-```bash
-cat <<'CLOUDBUILD' | gcloud builds submit --config=/dev/stdin --project=$PROJECT_ID .
-steps:
-- name: 'gcr.io/cloud-builders/docker'
-  args:
-  - 'build'
-  - '--no-cache'
-  - '-t'
-  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/packer-images/windows-packer-builder:latest'
-  - '-f'
-  - 'win2022-oracle-client-dev/packer/scripts/Dockerfile'
-  - '.'
-substitutions:
-  _PROJECT_ID: 'YOUR-PROJECT-ID'
-  _REGION: 'us-east4'
-images:
-- '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/packer-images/windows-packer-builder:latest'
-options:
-  logging: CLOUD_LOGGING_ONLY
-CLOUDBUILD
-```
-
-### Step 3: Deploy Terraform
-
-```bash
+# 4. Deploy infrastructure
 cd terraform
-
 terraform init
 terraform plan
 terraform apply
 ```
 
-**If resources already exist** (409 errors), import them:
-
-```bash
-# Example import commands (adjust names to your project):
-terraform import google_storage_bucket.image_builder_requests $PROJECT_ID-image-builder-requests
-terraform import google_storage_bucket.jira_raw YOUR-JIRA-RAW-BUCKET-NAME
-terraform import google_cloud_run_v2_job.windows_image_builder projects/$PROJECT_ID/locations/$REGION/jobs/windows-image-builder
-terraform import google_secret_manager_secret.jira_webhook_secret projects/$PROJECT_ID/secrets/jira-webhook-secret
-
-# Then re-apply
-terraform apply
-```
-
-### Step 4: Update Cloud Run Service
-
-```bash
-gcloud run services update jira-ingest-api \
-  --image=$REGION-docker.pkg.dev/$PROJECT_ID/packer-images/jira-ingest-api:latest \
-  --region=$REGION \
-  --project=$PROJECT_ID
-```
-
-### Step 5: Update Cloud Run Job
-
-```bash
-DIGEST=$(gcloud artifacts docker images describe \
-  $REGION-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest \
-  --project=$PROJECT_ID --format="value(image_summary.digest)")
-
-gcloud run jobs update windows-image-builder \
-  --image="$REGION-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder@${DIGEST}" \
-  --region=$REGION \
-  --project=$PROJECT_ID
-```
-
-### Step 6: Grant Cloud Run Invoker Permissions
-
-```bash
-SA_EMAIL="packer-win-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-
-# process-request CF (triggered by Eventarc)
-gcloud run services add-iam-policy-binding image-builder-process-request \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/run.invoker" \
-  --region=$REGION --project=$PROJECT_ID
-
-# jira-processor CF (triggered by Eventarc)
-gcloud run services add-iam-policy-binding jira-processor \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/run.invoker" \
-  --region=$REGION --project=$PROJECT_ID
-```
-
-### Step 7: Get Webhook URL
-
-```bash
-gcloud run services describe jira-ingest-api \
-  --region=$REGION --project=$PROJECT_ID \
-  --format="value(status.url)"
-```
-
-Output: `https://jira-ingest-api-XXXXXXXXX-XX.a.run.app`
-
-Your webhook URL is: `https://jira-ingest-api-XXXXXXXXX-XX.a.run.app/webhook/jira`
-
 ---
 
-## Jira Cloud Configuration
+## JSON Request Format
 
-### 1. Create Custom Fields
-
-Go to **Jira Settings > Fields** (global, not project-level) and create:
-
-| Field Name | Field Type | Options |
-|------------|-----------|---------|
-| Software Selection | Checkboxes | Chrome, Git, Python, JupyterLab, Conda, Anaconda, RStudio, RStudio Pro, PyCharm Community, Visual Studio Community, PowerShell Core, Positron, ParaView, Echoview, EchoSMs, EchoStack, MATLAB, GPU Drivers, Oracle Client, AA Library, GCP Utilities, Excel |
-| First Name | Short text | - |
-| Group Name | Short text | - |
-| Approver Name | Short text | - |
-
-### 2. Create Work Type
-
-1. Go to **Project Settings > Work types**
-2. Add **"Workstation Request"** work type
-3. Add it to the **Default work type scheme**
-
-### 3. Add Fields to Work Type Layout
-
-1. Go to **Project Settings > Work types > Workstation Request**
-2. In the right "Fields" panel, search and drag in:
-   - Software Selection
-   - First Name
-   - Group Name
-   - Approver Name
-3. Click **Save changes**
-
-> If fields don't appear in search, go to **Project Settings > Fields** first and click **Add field** to add your global fields to the space.
-
-### 4. Create Automation Rule
-
-1. Go to **Project Settings > Automation**
-2. Create new rule:
-   - **Trigger**: Work item created
-   - **Condition**: Issue type = Workstation Request
-   - **Action**: Send web request
-
-Configure the web request:
-
-| Setting | Value |
-|---------|-------|
-| URL | `https://YOUR-CLOUD-RUN-URL/webhook/jira` |
-| Method | POST |
-| Body | Custom data (see below) |
-| Headers | `X-Jira-Secret: YOUR-JIRA-WEBHOOK-SECRET` |
-
-**Request Body:**
+Drop a JSON file into `gs://{project-id}-image-builder-requests/requests/`:
 
 ```json
 {
-  "event": "jira_workstation_request",
-  "eventType": "issue_created",
-  "sourceSystem": "jira",
-  "ticket_id": "{{issue.key}}",
-  "issueKey": "{{issue.key}}",
-  "projectKey": "{{issue.project.key}}",
-  "status": "{{issue.status.name}}",
-  "summary": "{{issue.summary}}",
-  "created": "{{issue.created}}",
-  "updated": "{{issue.updated}}",
-  "reporter_email": "{{issue.reporter.emailAddress}}",
-  "reporter_display_name": "{{issue.reporter.displayName}}",
-  "first_name": "{{issue.First Name}}",
-  "group_name": "{{issue.Group Name}}",
-  "approvers": "{{issue.Approver Name}}",
-  "software_selections": "{{issue.Software Selection}}"
+  "submitter_name": "Drew Beling",
+  "submitter_email": "drew.beling@noaa.gov",
+  "ticket_number": "CLOUD-586",
+  "request_type": "Cloud VM Provisioning",
+  "status": "Waiting for support",
+  "created": "2026-07-29T18:39:04.000+0000",
+  "summary": "Demo for Rajinder",
+  "fmc": "OCIO",
+  "workstation_size": "Large - (16 – 32 vCPU | RAM: 64 – 128 GB | Storage: 500GB – 1TB)",
+  "software_packages": "FireFox, Oracle Drivers",
+  "additional_unlisted_software": "Git and gcloud SDK and VS Code"
 }
 ```
 
-> Replace `{{issue.First Name}}` etc. with actual smart values from your Jira fields.
+### Required Fields
 
-### 5. Enable the Rule
+| Field | Description | Example |
+|---|---|---|
+| `submitter_name` | Full name (VM user created as `firstname_lastname`) | `"Drew Beling"` |
+| `submitter_email` | Email for build notifications | `"drew.beling@noaa.gov"` |
+| `ticket_number` | Ticket/request ID | `"CLOUD-586"` |
+| `software_packages` | Comma-separated software list | `"Chrome, Oracle Drivers, Git"` |
 
-Toggle the rule **ON** and save.
+### Optional Fields
+
+| Field | Description | Default |
+|---|---|---|
+| `workstation_size` | VM size (just include Small/Medium/Large/XLarge in string) | Medium |
+| `fmc` | Team/org name | `"unknown"` |
+| `request_type` | Request category | `""` |
+| `status` | Ticket status | `""` |
+| `summary` | Request description | `""` |
+| `created` | Timestamp | Current time |
+| `additional_unlisted_software` | Logged only, not auto-installed | `""` |
 
 ---
 
-## Testing
+## Workstation Size Mapping
 
-### End-to-End Test
+Your existing format works as-is (e.g., `"Large - (16 – 32 vCPU | RAM: 64 – 128 GB | Storage: 500GB – 1TB)"`). The system extracts the size keyword automatically.
 
-1. Create a **Workstation Request** ticket in Jira
-2. Fill in: Summary, First Name, Group Name, Approver Name, Software Selection (pick 2-3)
-3. Submit
+| Size keyword | Machine Type | Disk Size |
+|---|---|---|
+| Small | `e2-standard-4` (4 vCPU, 16GB RAM) | 250GB |
+| Medium | `e2-standard-8` (8 vCPU, 32GB RAM) | 250GB |
+| Large | `e2-standard-16` (16 vCPU, 64GB RAM) | 500GB |
+| XLarge | `e2-standard-32` (32 vCPU, 128GB RAM) | 1TB |
 
-### Verify Pipeline
+---
 
-```bash
-# Check Jira Automation audit log (in Jira UI)
-# Should show: "Successfully published web request"
+## Supported Software (22 packages)
 
-# Check raw payload stored
-gcloud storage ls "gs://YOUR-JIRA-RAW-BUCKET/jira/raw/" --project=$PROJECT_ID --recursive
+| Software Name in JSON | Internal Key | Install Method |
+|---|---|---|
+| Chrome, Google Chrome, FireFox | `chrome` | Chocolatey |
+| Git, GitHub Desktop | `git` | Chocolatey |
+| Python | `python` | Chocolatey |
+| JupyterLab, Jupyter | `jupyterlab` | pip |
+| Conda, Miniconda | `conda` | Chocolatey |
+| Anaconda | `anaconda` | Chocolatey |
+| RStudio | `rstudio` | Chocolatey |
+| RStudio Pro | `rstudio_pro` | GCS binary |
+| PyCharm, PyCharm Community | `pycharm_community` | Chocolatey |
+| Visual Studio, Visual Studio Community, VS Code | `visual_studio_community` | Chocolatey |
+| PowerShell, PowerShell Core | `powershell_core` | Chocolatey |
+| Positron | `positron` | GCS binary |
+| ParaView | `paraview` | GCS (MSI) |
+| Echoview | `echoview` | GCS binary |
+| EchoSMs | `echosms` | GCS binary |
+| EchoStack | `echostack` | GCS binary |
+| MATLAB | `matlab` | GCS binary |
+| GPU Drivers, NVIDIA Drivers | `gpu_drivers` | GCS binary |
+| Oracle Client, Oracle Drivers, Oracle | `oracle_client` | GCS binary |
+| aalibrary, AA Library | `aalibrary` | GCS binary |
+| GCP Utilities, gcloud SDK, gcloud | `gcp_utilities` | gcloud SDK |
+| Excel, Microsoft Excel | `excel` | Office Deployment Tool |
 
-# Check request file created
-gcloud storage ls "gs://${PROJECT_ID}-image-builder-requests/requests/" --project=$PROJECT_ID
+---
 
-# Check Cloud Run job execution
-gcloud run jobs executions list --job=windows-image-builder \
-  --project=$PROJECT_ID --region=$REGION --limit=3
+## What Happens Automatically
 
-# Check build status
-gcloud storage cat "gs://${PROJECT_ID}-image-builder-requests/status/REQUEST-ID.json" \
-  --project=$PROJECT_ID
-
-# Check built images
-gcloud compute images list --project=$PROJECT_ID --filter="family=nmfs-windows-2022"
-
-# Check Cloud Run logs
-gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="windows-image-builder"' \
-  --project=$PROJECT_ID --limit=30 --format="table(timestamp,textPayload)" --freshness=1h
-```
+1. **JSON dropped in bucket** -- Cloud Function triggers
+2. **Client JSON normalized** -- flat format converted to pipeline format
+3. **Software fingerprint check** -- if same software combo image already exists:
+   - `create_vm=true`: skips image build, creates VM from existing image
+   - No VM needed: returns duplicate status, no build
+4. **New software combo** -- Packer builds custom Windows image (~20-40 min)
+5. **VM created** with:
+   - Requested machine type and disk size
+   - Workstation user (`firstname_lastname`) as Standard User
+   - User added to Remote Desktop Users group
+   - Windows hostname set to VM name (truncated to 15 chars)
+   - Service account attached
+   - Network/subnet from config (supports Shared VPC)
+6. **Email notification** sent to `submitter_email` with:
+   - Image name, VM name, project, zone
+   - Workstation user credentials (username + password)
 
 ---
 
@@ -540,25 +335,11 @@ gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name=
 
 ```
 gs://{PROJECT_ID}-image-builder-requests/
-  requests/          # Input: JSON request files (trigger Eventarc)
-  processed/         # Enriched JSON passed to Cloud Run job
-  audit/             # Permanent audit trail (who, what, when)
+  requests/          # Input: drop JSON files here (triggers pipeline)
+  processed/         # Enriched JSON passed to Cloud Run Job
+  audit/             # Permanent audit trail
   status/            # Build status per request ID
-
-gs://{JIRA_RAW_BUCKET}/
-  jira/raw/
-    project_key={KEY}/
-      date={YYYY-MM-DD}/
-        issue-{KEY}-{N}.json   # Raw Jira webhook payloads
 ```
-
-## BigQuery Datasets
-
-| Dataset | Table | Purpose |
-|---------|-------|---------|
-| `jira_raw` | `issue_events` | Raw event log (append-only, partitioned by day) |
-| `jira_curated` | `issue_current` | Current state of each Jira issue (upsert) |
-| `jira_curated` | `issue_history` | Status change history (append-only) |
 
 ---
 
@@ -566,40 +347,64 @@ gs://{JIRA_RAW_BUCKET}/
 
 The system prevents rebuilding identical images:
 
-1. **Software fingerprint** = SHA256 of sorted enabled software keys (first 16 chars)
-2. `process-request` CF checks existing GCE images for matching `software-fingerprint` label
-3. If match found: writes DUPLICATE status, skips build
-4. If new: triggers Cloud Run job which labels the built image with the fingerprint
+1. Software fingerprint = SHA256 of sorted enabled software keys
+2. Cloud Function checks existing GCE images for matching `software-fingerprint` label
+3. If match found + VM requested: skips build, creates VM from existing image
+4. If match found + no VM: writes DUPLICATE status, done
+5. If new combo: triggers full Packer build, labels image with fingerprint
+
+---
+
+## Testing
+
+```bash
+# Upload a test request
+cat <<'EOF' > /tmp/test-request.json
+{
+  "submitter_name": "Test User",
+  "submitter_email": "test@example.com",
+  "ticket_number": "TEST-001",
+  "request_type": "Cloud VM Provisioning",
+  "workstation_size": "Medium",
+  "software_packages": "Chrome, Git"
+}
+EOF
+
+gsutil cp /tmp/test-request.json \
+  gs://${PROJECT_ID}-image-builder-requests/requests/test-$(date +%s).json
+
+# Check Cloud Function logs
+gcloud functions logs read image-builder-process-request \
+  --project=$PROJECT_ID --region=$REGION --limit=20
+
+# Check Cloud Run Job execution
+gcloud run jobs executions list --job=windows-image-builder \
+  --project=$PROJECT_ID --region=$REGION --limit=3
+
+# Check Cloud Run Job logs
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="windows-image-builder"' \
+  --project=$PROJECT_ID --limit=30 --format="table(timestamp,textPayload)" --freshness=1h
+
+# Check built images
+gcloud compute images list --project=$PROJECT_ID \
+  --filter="labels.built-by=image-builder"
+
+# Check build status
+gsutil cat gs://${PROJECT_ID}-image-builder-requests/status/REQUEST-ID.json
+```
 
 ---
 
 ## Troubleshooting
 
-### Jira webhook returns 401
-- Verify `X-Jira-Secret` header value matches the secret in Secret Manager
-- Check: `gcloud secrets versions access latest --secret=jira-webhook-secret --project=$PROJECT_ID`
-
-### Jira webhook returns 400
-- Check Cloud Run logs: `gcloud logging read 'resource.labels.service_name="jira-ingest-api"' --project=$PROJECT_ID --limit=10`
-- Common cause: Software Selection field name mismatch in webhook body
-
-### Eventarc trigger not firing
-- Verify trigger exists: `gcloud eventarc triggers list --project=$PROJECT_ID --location=$REGION`
-- Check service account has `roles/run.invoker` on target service
-- Check `roles/eventarc.eventReceiver` on service account
-
-### Cloud Run job fails with permission denied
-- `run.jobs.run` denied: Grant `roles/run.developer` to service account
-- `compute.*` denied: Grant `roles/compute.admin` to service account
-
-### Packer build fails - WinRM timeout
-- Verify firewall rule allows TCP 5986 from `35.235.240.0/20` with tag `winrm`
-- Verify IAP API is enabled
-- Check base image exists in family `nmfs-windows-2022`
-
-### Image already exists error
-- Packer image names must be unique. The timestamp in the name prevents this.
-- If it happens, delete the old image: `gcloud compute images delete IMAGE-NAME --project=$PROJECT_ID`
+| Issue | Fix |
+|---|---|
+| Packer WinRM timeout | Verify firewall allows TCP 5986 from `35.235.240.0/20` |
+| Zone stockout error | Change zone in `cloud_run_job.tf` (e.g., `-b` to `-c`) |
+| Email not sending | Ensure Cloud NAT exists on VPC for outbound SMTP access |
+| Base image not found | Create Windows Server 2022 image with family `nmfs-windows-2022` |
+| VM name conflict | VM names include request ID for uniqueness, should not repeat |
+| Permission denied | Check service account roles (see Service Account Setup) |
 
 ---
 
@@ -608,47 +413,25 @@ The system prevents rebuilding identical images:
 ```
 windows-image-infra/
 ├── README.md                              # This file
-├── cloudbuild-jira-ingest.yaml            # Cloud Build: jira-ingest-api Docker image
-├── sample-request.json                    # Example request JSON
-├── jira-ingest-api/                       # Cloud Run Service: webhook receiver
-│   ├── Dockerfile
-│   ├── main.py                            # FastAPI app (POST /webhook/jira)
-│   ├── transform.py                       # Jira payload -> image_config converter
-│   └── requirements.txt
+├── cloudbuild-docker.yaml                 # Cloud Build: Packer builder Docker image
+├── cloudbuild-win2022-customizer.yaml     # Cloud Build: Windows customizer
+├── .gcloudignore                          # Files excluded from Cloud Build upload
 ├── terraform/                             # Infrastructure as Code
-│   ├── provider.tf                        # Google provider config
+│   ├── provider.tf
 │   ├── variables.tf                       # All configurable variables
-│   ├── terraform.tfvars                   # Environment-specific values
-│   ├── cloud_run_job.tf                   # Cloud Run Job: windows-image-builder
-│   ├── eventarc.tf                        # GCS bucket, Eventarc trigger, process-request CF
-│   ├── jira.tf                            # Jira integration (BigQuery, raw bucket, IAM)
+│   ├── terraform.tfvars                   # Your environment values
+│   ├── cloud_run_job.tf                   # Cloud Run Job + Scheduler
+│   ├── eventarc.tf                        # GCS bucket, Eventarc trigger, Cloud Function
 │   └── functions/
-│       ├── process-request/               # CF: duplicate detection + build trigger
-│       │   ├── main.py
-│       │   └── requirements.txt
-│       └── jira-processor/                # CF: Jira data -> BigQuery
+│       └── process-request/               # Cloud Function: normalize, dedup, trigger
 │           ├── main.py
 │           └── requirements.txt
 └── win2022-oracle-client-dev/             # Packer Windows image builder
-    ├── docker-entrypoint.sh               # Main build orchestration script
+    ├── docker-entrypoint.sh               # Build orchestration (build + VM + user setup)
     └── packer/
-        ├── customize.pkr.hcl              # Packer template (HCL)
-        ├── scripts/Dockerfile             # Builder container image
+        ├── customize.pkr.hcl              # Packer template
+        ├── scripts/Dockerfile             # Builder container
         └── ansible-playbook/              # Software installation playbooks
             ├── main.yml
-            └── roles/                     # 22 software installation roles
+            └── install_*_tasks.yml        # Per-software install tasks
 ```
-SSM trigger test - Tue Jul  7 12:27:53 IST 2026
-SSM trigger test 3 - Tue Jul  7 12:29:38 IST 2026
-SSM trigger test after fix - Tue Jul  7 12:33:51 IST 2026
-SSM trigger test final - Tue Jul  7 12:36:18 IST 2026
-SSM trigger IAM test - Tue Jul  7 12:39:24 IST 2026
-SSM trigger repo service account test - Tue Jul  7 12:41:19 IST 2026
-SSM trigger event type test - Tue Jul  7 12:57:02 IST 2026
-test Tue Jul  7 14:47:04 IST 2026
-
-SSM trigger test - Tue Jul  7 15:18:22 IST 2026
-test Tue Jul  7 15:19:35 IST 2026
-test Tue Jul  7 15:19:40 IST 2026
-SSM trigger token permission fix - Tue Jul  7 15:22:17 IST 2026
-SSM token permission test - Tue Jul  7 15:25:03 IST 2026

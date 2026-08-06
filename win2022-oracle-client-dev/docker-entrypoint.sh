@@ -444,6 +444,8 @@ PACKER_VARS=(
   -var "install_echostack=${INSTALL_ECHOSTACK}"
   -var "install_gcp_utilities=${INSTALL_GCP_UTILITIES}"
   -var "install_excel=${INSTALL_EXCEL}"
+  -var "vm_network=${VM_NETWORK:-app-network}"
+  -var "vm_subnet=${VM_SUBNET:-app-subnet1}"
 )
 
 # ── Validate ─────────────────────────────────────────────────────────────────

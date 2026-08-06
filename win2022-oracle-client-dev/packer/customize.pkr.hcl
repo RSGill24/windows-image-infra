@@ -34,6 +34,8 @@ variable "machine_type"            { type = string }
 variable "zone"                    { type = string }
 variable "installation_source_dir" { type = string }
 variable "installation_target_dir" { type = string }
+variable "vm_network"              { type = string; default = "app-network" }
+variable "vm_subnet"               { type = string; default = "app-subnet1" }
 
 # ── Component-selection flags ─────────────────────────────────────────────────
 # Passed from the entrypoint/Cloud Run env vars → packer -var → ansible -e
@@ -194,8 +196,8 @@ source "googlecompute" "customize_windows" {
   enable_integrity_monitoring = true
   enable_vtpm                 = true
 
-  network    = "app-network"
-  subnetwork = "app-subnet1"
+  network    = var.vm_network
+  subnetwork = var.vm_subnet
 
   disk_size = 250
   disk_type = "pd-ssd"

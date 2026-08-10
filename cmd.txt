@@ -1,3 +1,34 @@
+The problem is clear from the terminal: you added the HashiCorp repo (the tee /etc/apt/sources.list.d/hashicorp.list command) but never ran sudo apt update afterward. So apt's package cache still doesn't know the terraform package exists — that's why every install attempt says "Unable to locate package terraform."
+
+Run this:
+
+bash
+sudo apt update
+sudo apt install -y terraform
+
+If apt update throws a GPG or repo error, a couple of things to check:
+
+Codename issue — the repo line used `lsb_release -cs` which should resolve to something like noble (which it did, per your line 2). Verify your Cloud Shell's Ubuntu version actually has a matching HashiCorp release for noble. Run:
+bash
+   lsb_release -cs
+   cat /etc/apt/sources.list.d/hashicorp.list
+Keyring path — confirm the gpg file actually landed correctly:
+bash
+   ls -l /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+If it's empty or missing, redo the wget/gpg step.
+
+If apt update shows a NO_PUBKEY or signature error for the hashicorp repo specifically, redo:
+bash
+   wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+But 9 times out of 10 this is just the missing apt update — try that first.
+
+
+--------------------------------------------------------------------------------------------------------------------------------------
+
+
+
 wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
 
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list

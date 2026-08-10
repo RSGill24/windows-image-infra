@@ -50,6 +50,23 @@ resource "google_storage_bucket" "image_builder_requests" {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Artifact Registry: Docker image repository
+# ══════════════════════════════════════════════════════════════════════════════
+
+resource "google_artifact_registry_repository" "packer_images" {
+  location      = var.region
+  project       = var.project_id
+  repository_id = "packer-images"
+  format        = "DOCKER"
+  description   = "Docker images for Windows Packer builder"
+
+  labels = {
+    env     = "dev"
+    managed = "terraform"
+  }
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Cloud Function 1: process-request (pre-processor)
 #
 # Triggered by Eventarc on GCS object.finalize in /requests/

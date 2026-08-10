@@ -1,6 +1,6 @@
 substitutions:
-  _PROJECT_ID:               "big-mender-473219-r2"
-  _SOURCE_IMAGE_PROJECT_ID:  "big-mender-473219-r2"
+  _PROJECT_ID:               "${PROJECT_ID}"
+  _SOURCE_IMAGE_PROJECT_ID:  "${PROJECT_ID}"
   _SOURCE_IMAGE_FAMILY:      "nmfs-windows-2022"
   _ZONE:                     "us-east4-b"
   _IMAGE_FAMILY:             "nmfs-windows-2022"

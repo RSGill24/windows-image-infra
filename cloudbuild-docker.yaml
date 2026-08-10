@@ -3,9 +3,9 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'us-east4-docker.pkg.dev/big-mender-473219-r2/packer-images/windows-packer-builder:latest'
+      - 'us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest'
       - '-f'
       - 'win2022-oracle-client-dev/packer/scripts/Dockerfile'
       - '.'
 images:
-  - 'us-east4-docker.pkg.dev/big-mender-473219-r2/packer-images/windows-packer-builder:latest'
+  - 'us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest'

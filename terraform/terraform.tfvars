@@ -1,5 +1,6 @@
 project_id               = "your-project-id"
 region                   = "us-east4"
+request_bucket_name      = ""                              # Set existing bucket name (e.g. "jira-automation-bucket") or leave empty to auto-create
 gmail_sender_email       = "notifications@yourdomain.com"
 vm_network               = "your-vpc-network"
 vm_subnet                = "your-subnet"

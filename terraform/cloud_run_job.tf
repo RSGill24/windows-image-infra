@@ -99,7 +99,7 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
         }
         env {
           name  = "GCS_STATUS_BUCKET"
-          value = "${var.project_id}-image-builder-requests"
+          value = local.request_bucket_name
         }
         # ── Email notification config (Gmail SMTP) ─────────────────────────
         env {

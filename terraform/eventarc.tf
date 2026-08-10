@@ -14,10 +14,19 @@
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GCS Bucket: requests + audit + status metadata
+#
+# If request_bucket_name is set, use the existing bucket (e.g. client's
+# jira-automation-bucket). Otherwise, create a new one.
 # ══════════════════════════════════════════════════════════════════════════════
 
+locals {
+  request_bucket_name = var.request_bucket_name != "" ? var.request_bucket_name : "${var.project_id}-image-builder-requests"
+  create_request_bucket = var.request_bucket_name == ""
+}
+
 resource "google_storage_bucket" "image_builder_requests" {
-  name                        = "${var.project_id}-image-builder-requests"
+  count                       = local.create_request_bucket ? 1 : 0
+  name                        = local.request_bucket_name
   location                    = var.region
   project                     = var.project_id
   uniform_bucket_level_access = true
@@ -102,7 +111,7 @@ resource "google_cloudfunctions2_function" "process_request" {
     environment_variables = {
       PROJECT_ID       = var.project_id
       REGION           = var.region
-      BUCKET_NAME      = google_storage_bucket.image_builder_requests.name
+      BUCKET_NAME      = local.request_bucket_name
       BUILDER_JOB_NAME = google_cloud_run_v2_job.windows_image_builder.name
     }
   }
@@ -129,7 +138,7 @@ resource "google_eventarc_trigger" "image_builder_trigger" {
 
   matching_criteria {
     attribute = "bucket"
-    value     = google_storage_bucket.image_builder_requests.name
+    value     = local.request_bucket_name
   }
 
   destination {
@@ -154,17 +163,17 @@ resource "google_eventarc_trigger" "image_builder_trigger" {
 ################################################################################
 
 output "request_bucket" {
-  value       = google_storage_bucket.image_builder_requests.name
+  value       = local.request_bucket_name
   description = "Upload request JSON files to gs://<this-bucket>/requests/"
 }
 
 output "audit_path" {
-  value       = "gs://${google_storage_bucket.image_builder_requests.name}/audit/"
+  value       = "gs://${local.request_bucket_name}/audit/"
   description = "Audit trail of all requests (who, what, when, action taken)"
 }
 
 output "status_path" {
-  value       = "gs://${google_storage_bucket.image_builder_requests.name}/status/"
+  value       = "gs://${local.request_bucket_name}/status/"
   description = "Build status metadata per request ID"
 }
 

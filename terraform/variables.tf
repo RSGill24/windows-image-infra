@@ -155,6 +155,14 @@ variable "install_excel" {
   description = "Install Microsoft Excel via Office Deployment Tool"
 }
 
+# ── Request Bucket ──────────────────────────────────────────────────────────
+
+variable "request_bucket_name" {
+  type        = string
+  description = "Existing GCS bucket name where JSON requests are dropped (e.g. jira-automation-bucket)"
+  default     = ""
+}
+
 # ── Email Notification (Gmail SMTP) ─────────────────────────────────────────
 
 variable "gmail_sender_email" {

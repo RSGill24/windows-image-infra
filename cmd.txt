@@ -1,48 +1,9 @@
-1.
-nano gceagent-assignment.yaml
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
 
-2.
-instanceFilter:
-  all: true
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
 
-rollout:
-  disruptionBudget:
-    fixed: 10
-  minWaitDuration: 30s
+sudo apt update
 
-osPolicies:
-- id: enable-gceagent
-  mode: ENFORCEMENT
+sudo apt install terraform
 
-  resourceGroups:
-  - resources:
-    - id: start-gceagent
-      exec:
-        validate:
-          interpreter: POWERSHELL
-          script: |
-            $svc = Get-Service GCEAgent -ErrorAction SilentlyContinue
-            if ($svc -and $svc.Status -eq "Running") {
-              exit 100
-            }
-            exit 101
-
-        enforce:
-          interpreter: POWERSHELL
-          script: |
-            Set-Service GCEAgent -StartupType Automatic
-            Start-Service GCEAgent
-
-Save it:
-Ctrl + O
-Enter
-Ctrl + X
-
-
-3.
-gcloud compute os-config os-policy-assignments create enable-gceagent \
-    --location=us-central1-a \
-    --file=gceagent-assignment.yaml
-
-
-
+terraform version

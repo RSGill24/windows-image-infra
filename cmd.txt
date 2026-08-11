@@ -1,3 +1,11 @@
+gcloud builds submit
+  --config=./my-app/cloudbuild.yaml \
+  --project=my-gcp-project \
+
+
+
+
+
 wget https://releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_linux_amd64.zip
 
 

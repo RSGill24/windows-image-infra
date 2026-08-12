@@ -1,6 +1,19 @@
 gcloud config set auth/impersonate_service_account images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com && terraform apply
 
 
-cloudfunctions.developer
-eventarc.admin
-iam.serviceAccountUser
+SA (images-build-sa1) pe add karo:
+  - roles/cloudfunctions.developer
+  - roles/eventarc.admin                      
+  - roles/eventarc.eventReceiver          
+  - roles/iam.serviceAccountUser              
+  - roles/compute.admin                                                                                                   
+  - roles/storage.admin
+  - roles/secretmanager.secretAccessor                                                                                    
+  - roles/artifactregistry.writer                                                                                       
+  - roles/cloudbuild.builds.builder                                                                                       
+  - roles/run.developer                                                                                                 
+                                              
+  User (rajinder.gill@noaa.gov) pe add karo:
+  - roles/cloudfunctions.developer
+  - roles/eventarc.admin                                                                                                  
+  - roles/iam.serviceAccountUser

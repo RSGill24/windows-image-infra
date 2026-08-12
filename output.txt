@@ -39,3 +39,9 @@ variable "vm_subnet" {
 }
 ENDFIX
 echo "Fixed!" && cd ../..
+
+
+
+
+gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1 --member="user:rajinder.gill@noaa.gov" --role="roles/cloudfunctions.developer"
+

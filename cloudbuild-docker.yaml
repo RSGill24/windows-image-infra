@@ -3,15 +3,15 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest'
+      - 'us-east4-docker.pkg.dev/$PROJECT_ID/image-builders/windows-packer-builder:latest'
       - '-f'
       - 'win2022-oracle-client-dev/packer/scripts/Dockerfile'
       - '.'
 images:
-  - 'us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest'
+  - 'us-east4-docker.pkg.dev/$PROJECT_ID/image-builders/windows-packer-builder:latest'
 
 # Replace with your service account email
-serviceAccount: 'projects/your-project-id/serviceAccounts/your-sa-name@your-project-id.iam.gserviceaccount.com'
+serviceAccount: 'projects/ggn-nmfs-winde-dev-1/serviceAccounts/images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'
 
 options:
   logging: CLOUD_LOGGING_ONLY

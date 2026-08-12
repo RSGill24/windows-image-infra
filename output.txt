@@ -1,1 +1,25 @@
 gcloud builds submit --config=cloudbuild-docker.yaml . --project=ggn-nmfs-winde-dev-1
+
+
+#!/bin/bash
+cat > cloudbuild-docker.yaml << 'EOF'
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-east4-docker.pkg.dev/$PROJECT_ID/image-builders/windows-packer-builder:latest'
+      - '-f'
+      - 'win2022-oracle-client-dev/packer/scripts/Dockerfile'
+      - '.'
+images:
+  - 'us-east4-docker.pkg.dev/$PROJECT_ID/image-builders/windows-packer-builder:latest'
+
+serviceAccount: 'projects/ggn-nmfs-winde-dev-1/serviceAccounts/images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+EOF
+
+echo "cloudbuild-docker.yaml created successfully"
+cat cloudbuild-docker.yaml

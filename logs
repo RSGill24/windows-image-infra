@@ -1,3 +1,11 @@
+Also a couple of things:
+
+1. The Cloud Functions API is technically deprecated. Unless you plan on deploying or currently deploy your functions using the legacy API, I believe GCP now recommends using the Cloud Run API for function deployments.
+2. We usually don't assign "admin" roles to service accounts, as it violates one of the NIST 800-53 compliance rules. I know that certain CI/CD pipelines might need to modify things such as resource IAM, so exceptions can be made for certain scenarios.
+3. We also don't assign roles/serviceAccountUser on the project-level for the same reason as above. We usually don't make any exceptions for this case: people that need to "use" a service account need to be granted permissions on each individual service account.
+4. We created a role for Drew to deploy serverless functions within winde-dev. Would you like to inherit those roles instead?
+
+
 rajinder.gill@noaa.gov
 Rajinder Gill - NOAA Affiliate	
 Agent Platform Viewer

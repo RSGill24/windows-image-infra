@@ -10,7 +10,7 @@ steps:
       - '-t'
       - 'us-east4-docker.pkg.dev/$PROJECT_ID/image-builders/windows-packer-builder:latest'
       - '-f'
-      - 'win2022-oracle-client-dev/packer/scripts/Dockerfile'
+      - 'win2022-software-jira-install-dev/packer/scripts/Dockerfile'
       - '.'
 images:
   - 'us-east4-docker.pkg.dev/$PROJECT_ID/image-builders/windows-packer-builder:latest'

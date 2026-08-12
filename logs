@@ -7,7 +7,7 @@ Also a couple of things:
 
 Reply:- 
 1. cloud Functions v2 is NOT deprecated — it runs on Cloud Run internally. Only v1 is legacy.
-2. Only exception is compute.admin which Packer needs to create/delete VMs during image build. For Eventarc we'll use eventarc.eventReceiver (not admin), and for Storage we'll use storage.objectAdmin (not 
+2. For Eventarc we'll use eventarc.eventReceiver (not admin), and for Storage we'll use storage.objectAdmin (not 
    admin).
 3. we'll grant serviceAccountUser at individual SA level, not project level
 

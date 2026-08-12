@@ -23,3 +23,19 @@ EOF
 
 echo "cloudbuild-docker.yaml created successfully"
 cat cloudbuild-docker.yaml
+
+
+
+cd win2022-oracle-client-dev/packer && sed -i '/variable "vm_network".*{.*type.*=.*string.*default/d' customize.pkr.hcl && sed -i '/variable "vm_subnet".*{.*type.*=.*string.*default/d' customize.pkr.hcl && cat >> customize.pkr.hcl << 'ENDFIX'
+
+variable "vm_network" {
+  type    = string
+  default = "app-network"
+}
+
+variable "vm_subnet" {
+  type    = string
+  default = "app-subnet1"
+}
+ENDFIX
+echo "Fixed!" && cd ../..

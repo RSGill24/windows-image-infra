@@ -26,7 +26,7 @@ cat cloudbuild-docker.yaml
 
 
 
-cd win2022-oracle-client-dev/packer && sed -i '/variable "vm_network".*{.*type.*=.*string.*default/d' customize.pkr.hcl && sed -i '/variable "vm_subnet".*{.*type.*=.*string.*default/d' customize.pkr.hcl && cat >> customize.pkr.hcl << 'ENDFIX'
+cd win2022-software-jira-install-dev/packer && sed -i '/variable "vm_network".*{.*type.*=.*string.*default/d' customize.pkr.hcl && sed -i '/variable "vm_subnet".*{.*type.*=.*string.*default/d' customize.pkr.hcl && cat >> customize.pkr.hcl << 'ENDFIX'
 
 variable "vm_network" {
   type    = string

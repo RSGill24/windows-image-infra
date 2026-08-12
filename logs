@@ -53,3 +53,47 @@ Storage Admin
 Storage Bucket Viewer (Beta)
 Tech Support Editor
 Workflows Viewer
+
+
+Principal 
+images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+ggn-nmfs-winde-dev-1
+Assign roles
+Roles are composed of sets of permissions and determine what the principal can do with this resource. Learn more 
+
+Role
+Artifact Registry Writer
+Access to read and write repository items.
+IAM condition (optional) 
+
+Role
+Cloud Run Invoker
+Can invoke Cloud Run services, instances and execute Cloud Run jobs.
+IAM condition (optional) 
+
+Role
+IAP-secured Tunnel User
+Access Tunnel resources which use Identity-Aware Proxy
+IAM condition (optional) 
+
+Role
+Logs Writer
+Access to write logs.
+IAM condition (optional) 
+
+Role
+Monitoring Metric Writer
+Write-only access to metrics. This provides exactly the permissions needed by the Stackdriver agent and other systems that send metrics.
+IAM condition (optional) 
+
+Role
+nmfs.winde.image.builder.role
+A Custom Role for packer image builders
+IAM condition (optional) 
+
+Role
+OS VulnerabilityReport Viewer
+Viewer of OS VulnerabilityReports
+IAM condition (optional) 
+
+

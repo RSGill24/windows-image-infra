@@ -16,3 +16,6 @@ google_cloud_scheduler_job.windows_image_builder_schedule: Creation complete aft
 │   on eventarc.tf line 104, in resource "google_cloudfunctions2_function" "process_request":
 │  104: resource "google_cloudfunctions2_function" "process_request" {
 │ 
+
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform$ gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1 --member="user:rajinder.gill@noaa.gov" --role="roles/cloudfunctions.developer"
+ERROR: (gcloud.projects.add-iam-policy-binding) [rajinder.gill@noaa.gov] does not have permission to access projects instance [ggn-nmfs-winde-dev-1:setIamPolicy] (or it may not exist): Policy update access denied. This command is authenticated as rajinder.gill@noaa.gov which is the active account specified by the [core/account] property.

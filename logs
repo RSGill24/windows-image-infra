@@ -1,21 +1,55 @@
-google_artifact_registry_repository.image-builders: Modifying... [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/repositories/image-builders]
-google_cloud_run_v2_job.windows_image_builder: Destroying... [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira]
-google_artifact_registry_repository.image-builders: Modifications complete after 1s [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/repositories/image-builders]
-google_cloud_run_v2_job.windows_image_builder: Still destroying... [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira, 00m10s elapsed]
-google_cloud_run_v2_job.windows_image_builder: Destruction complete after 11s
-google_cloud_run_v2_job.windows_image_builder: Creating...
-google_cloud_run_v2_job.windows_image_builder: Still creating... [00m10s elapsed]
-google_cloud_run_v2_job.windows_image_builder: Creation complete after 11s [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira]
-google_cloud_scheduler_job.windows_image_builder_schedule: Creating...
-google_cloudfunctions2_function.process_request: Creating...
-google_cloud_scheduler_job.windows_image_builder_schedule: Creation complete after 7s [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-schedule]
-╷
-│ Error: Error creating function: googleapi: Error 403: Permission 'cloudfunctions.functions.create' denied on 'projects/ggn-nmfs-winde-dev-1/locations/us-east4/functions/image-builder-process-request'
-│ 
-│   with google_cloudfunctions2_function.process_request,
-│   on eventarc.tf line 104, in resource "google_cloudfunctions2_function" "process_request":
-│  104: resource "google_cloudfunctions2_function" "process_request" {
-│ 
-
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform$ gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1 --member="user:rajinder.gill@noaa.gov" --role="roles/cloudfunctions.developer"
-ERROR: (gcloud.projects.add-iam-policy-binding) [rajinder.gill@noaa.gov] does not have permission to access projects instance [ggn-nmfs-winde-dev-1:setIamPolicy] (or it may not exist): Policy update access denied. This command is authenticated as rajinder.gill@noaa.gov which is the active account specified by the [core/account] property.
+rajinder.gill@noaa.gov
+Rajinder Gill - NOAA Affiliate	
+Agent Platform Viewer
+Artifact Registry Administrator
+Artifact Registry Reader
+BigQuery Admin
+BigQuery Job User
+BigQuery Metadata Viewer
+Bigtable Viewer
+Browser
+Certificate Manager Viewer
+Cloud Asset Viewer
+Cloud Build Admin
+Cloud Build Viewer
+Cloud Functions Viewer
+Cloud KMS Viewer
+Cloud Run Admin
+Cloud Run Viewer
+Cloud Scheduler Admin
+Cloud Scheduler Viewer
+Cloud SQL Instance User
+Cloud Tasks Viewer (Beta)
+Compute Admin
+Compute Recommender Viewer
+Compute Viewer
+Container Analysis Occurrences Viewer
+Dataflow Viewer
+Dataproc Viewer
+Dialogflow API Reader
+DNS Reader
+Document AI Viewer (Beta)
+Eventarc Viewer
+IAM Workload Identity Pool Admin (Beta)
+IAP-secured Tunnel User
+Kubernetes Engine Viewer
+Logs Configuration Writer
+Logs Viewer
+Monitoring Viewer
+nmfs.winde.monitoring.role
+Notebooks Viewer
+OS Config Admin
+OS Config Viewer
+Pub/Sub Viewer
+Secret Manager Admin
+Secret Manager Viewer
+Security Center Admin Viewer
+Security Reviewer
+Serverless VPC Access Viewer
+Service Account Admin
+Service Usage Consumer
+Service Usage Viewer
+Storage Admin
+Storage Bucket Viewer (Beta)
+Tech Support Editor
+Workflows Viewer

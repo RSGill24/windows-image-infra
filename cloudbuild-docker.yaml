@@ -9,3 +9,8 @@ steps:
       - '.'
 images:
   - 'us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest'
+
+serviceAccount: 'projects/$PROJECT_ID/serviceAccounts/your-sa-name@$PROJECT_ID.iam.gserviceaccount.com'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

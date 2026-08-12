@@ -1,1 +1,6 @@
 gcloud config set auth/impersonate_service_account images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com && terraform apply
+
+
+cloudfunctions.developer
+eventarc.admin
+iam.serviceAccountUser

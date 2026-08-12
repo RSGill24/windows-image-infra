@@ -5,6 +5,12 @@ Also a couple of things:
 3. We also don't assign roles/serviceAccountUser on the project-level for the same reason as above. We usually don't make any exceptions for this case: people that need to "use" a service account need to be granted permissions on each individual service account.
 4. We created a role for Drew to deploy serverless functions within winde-dev. Would you like to inherit those roles instead?
 
+Reply:- 
+1. cloud Functions v2 is NOT deprecated — it runs on Cloud Run internally. Only v1 is legacy.
+2. we won't assign any admin roles to SA. Only exception is compute.admin which Packer needs to             
+  create/delete VMs during image build.
+3. we'll grant serviceAccountUser at individual SA level, not project level
+
 
 rajinder.gill@noaa.gov
 Rajinder Gill - NOAA Affiliate	

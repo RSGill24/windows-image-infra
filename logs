@@ -1,239 +1,88 @@
-TIMESTAMP: 2026-08-13T19:54:03.082670Z
-TEXT_PAYLOAD: 
-
-TIMESTAMP: 2026-08-13T19:53:58.736880Z
-TEXT_PAYLOAD: 2026/08/13 19:53:58.735800 [ktd watcher] KTD agent process failed: exit status 1
-
-TIMESTAMP: 2026-08-13T19:53:58.736553Z
-TEXT_PAYLOAD: 2026/08/13 19:53:58.735416 [ktd watcher] markExited recorded error: exit status 1
-
-TIMESTAMP: 2026-08-13T19:53:58.730227Z
-TEXT_PAYLOAD: F0813 19:53:58.728712       1 watcher.go:273] Fatal error: caught signal: terminated
-
-TIMESTAMP: 2026-08-13T19:53:58.729791Z
-TEXT_PAYLOAD: W0813 19:53:58.728210       1 watcher.go:703] One watcher thread went down, stopping: caught signal: terminated
-
-TIMESTAMP: 2026-08-13T19:53:58.729778Z
-TEXT_PAYLOAD: W0813 19:53:58.728174      68 saferun.go:47] goroutine signal.reload exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:58.729407Z
-TEXT_PAYLOAD: 2026/08/13 19:53:58 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
-
-TIMESTAMP: 2026-08-13T19:53:58.729398Z
-TEXT_PAYLOAD: I0813 19:53:58.728068      68 watcher.go:651] Reloading Cloud Run config.
-
-TIMESTAMP: 2026-08-13T19:53:58.203663Z
-TEXT_PAYLOAD: W0813 19:53:58.202388      66 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.816392Z
-TEXT_PAYLOAD: W0813 19:53:57.815150      64 saferun.go:47] goroutine ktd.ebpf.krsi.eventloop exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.784972Z
-TEXT_PAYLOAD: W0813 19:53:57.783072      50 saferun.go:47] goroutine ktd.Run exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.784966Z
-TEXT_PAYLOAD: I0813 19:53:57.782986      50 krsieventreader.go:301] update probe enablement status (exec: false; mmap: false; exit: false; fork: false)
-
-TIMESTAMP: 2026-08-13T19:53:57.784643Z
-TEXT_PAYLOAD: I0813 19:53:57.782962      50 ktdclient.go:966] Disabling Collectors
-
-TIMESTAMP: 2026-08-13T19:53:57.784634Z
-TEXT_PAYLOAD: W0813 19:53:57.782904      50 ktdclient.go:337] ktdclient connection closed unexpectedly: ktdclient receive response failed: rpc error: code = Canceled desc = context canceled
-
-TIMESTAMP: 2026-08-13T19:53:57.784280Z
-TEXT_PAYLOAD: W0813 19:53:57.782645      63 saferun.go:47] goroutine ktd.ebpf.krsi.flushloop exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.784277Z
-TEXT_PAYLOAD: W0813 19:53:57.782616      69 saferun.go:47] goroutine signal.chld exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.784274Z
-TEXT_PAYLOAD: W0813 19:53:57.782607      60 saferun.go:47] goroutine se.Run exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.784271Z
-TEXT_PAYLOAD: W0813 19:53:57.782592      61 saferun.go:47] goroutine pe.Run exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.784267Z
-TEXT_PAYLOAD: W0813 19:53:57.782513      62 saferun.go:47] goroutine fHasher.Run exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.784263Z
-TEXT_PAYLOAD: W0813 19:53:57.782470      65 saferun.go:47] goroutine ktd.ebpf.krsi.counters exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.784252Z
-TEXT_PAYLOAD: W0813 19:53:57.782468      67 saferun.go:47] goroutine ktd.Configured exited because context is cancelled.
-
-TIMESTAMP: 2026-08-13T19:53:57.783750Z
-TEXT_PAYLOAD: E0813 19:53:57.782404      27 saferun.go:45] goroutine signal.exit exited with error: caught signal: terminated.
-
-TIMESTAMP: 2026-08-13T19:53:57.782542Z
-TEXT_PAYLOAD: Container called exit(0).
-
-TIMESTAMP: 2026-08-13T19:53:57.716682Z
-TEXT_PAYLOAD: [EMAIL] WARNING: Could not fetch app password from secret 'gmail-app-password'
-
-TIMESTAMP: 2026-08-13T19:53:56.780090Z
-TEXT_PAYLOAD: ══════════════════════════════════════════════════════════════
-
-TIMESTAMP: 2026-08-13T19:53:56.780084Z
-TEXT_PAYLOAD:   Requester  : Rajinder Gill <rajinder.gill@noaa.gov>
-
-TIMESTAMP: 2026-08-13T19:53:56.780078Z
-TEXT_PAYLOAD:   Request ID : req-20260813194258-879e5d
-
-TIMESTAMP: 2026-08-13T19:53:56.780073Z
-TEXT_PAYLOAD:   VM         : FAILED
-
-TIMESTAMP: 2026-08-13T19:53:56.780067Z
-TEXT_PAYLOAD:   Image      : nmfs-windows-2022-git-20260813194258
-
-TIMESTAMP: 2026-08-13T19:53:56.780062Z
-TEXT_PAYLOAD:   BUILD COMPLETE
-
-TIMESTAMP: 2026-08-13T19:53:56.780058Z
-TEXT_PAYLOAD: ══════════════════════════════════════════════════════════════
-
-TIMESTAMP: 2026-08-13T19:53:56.780041Z
-TEXT_PAYLOAD: [STATUS] COMPLETED → gs://jira-automation-bucket/status/req-20260813194258-879e5d.json
-
-TIMESTAMP: 2026-08-13T19:53:54.669037Z
-TEXT_PAYLOAD: [WARN] VM creation failed — image is still available: nmfs-windows-2022-git-20260813194258
-
-TIMESTAMP: 2026-08-13T19:53:54.174572Z
-TEXT_PAYLOAD:  - Invalid value for field 'resource.networkInterfaces[0].subnetwork': 'https://compute.googleapis.com/compute/v1/projects/nmfs-winde-dev-2-subnet/regions/us-east4/subnetworks/local-subnet'. The project 'nmfs-winde-dev-2-subnet' was not found.
-
-TIMESTAMP: 2026-08-13T19:53:54.174558Z
-TEXT_PAYLOAD: ERROR: (gcloud.compute.instances.create) Could not fetch resource:
-
-TIMESTAMP: 2026-08-13T19:53:52.005305Z
-TEXT_PAYLOAD: [VM] Workstation user: rajinder_gill
-
-TIMESTAMP: 2026-08-13T19:53:51.967223Z
-TEXT_PAYLOAD: [VM] Creating VM from image: nmfs-windows-2022-git-20260813194258
-
-TIMESTAMP: 2026-08-13T19:53:48.498485Z
-TEXT_PAYLOAD: [WARN] Failed to add labels to image
-
-TIMESTAMP: 2026-08-13T19:53:48.269584Z
-TEXT_PAYLOAD: ERROR: (gcloud.compute.images.add-labels) HTTPError 403: Required 'compute.images.setLabels' permission for 'projects/ggn-nmfs-winde-dev-1/global/images/nmfs-windows-2022-git-20260813194258'. This command is authenticated as images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com which is the active account specified by the [core/account] property
-
-TIMESTAMP: 2026-08-13T19:53:46.851383Z
-TEXT_PAYLOAD: [LABEL] Adding software-fingerprint=9a881b9b9f238494 to nmfs-windows-2022-git-20260813194258
-
-TIMESTAMP: 2026-08-13T19:53:46.851363Z
-TEXT_PAYLOAD: Built image: nmfs-windows-2022-git-20260813194258
-
-TIMESTAMP: 2026-08-13T19:53:43.688097Z
-TEXT_PAYLOAD: --> googlecompute.customize_windows: A disk image was created in the 'ggn-nmfs-winde-dev-1' project: nmfs-windows-2022-git-20260813194258
-
-TIMESTAMP: 2026-08-13T19:53:43.687309Z
-TEXT_PAYLOAD: ==> Builds finished. The artifacts of successful builds are:
-
-TIMESTAMP: 2026-08-13T19:53:43.687205Z
-TEXT_PAYLOAD: ==> Wait completed after 9 minutes 58 seconds
-
-TIMESTAMP: 2026-08-13T19:53:43.687128Z
-TEXT_PAYLOAD: Build 'googlecompute.customize_windows' finished after 9 minutes 58 seconds.
-
-TIMESTAMP: 2026-08-13T19:53:43.686624Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: SSH public key for OSLogin has been deleted!
-
-TIMESTAMP: 2026-08-13T19:53:42.794737Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: Deleting SSH public key for OSLogin...
-
-TIMESTAMP: 2026-08-13T19:53:42.793984Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: Disk has been deleted!
-
-TIMESTAMP: 2026-08-13T19:53:40.345747Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: Deleting disk...
-
-TIMESTAMP: 2026-08-13T19:50:41.961309Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: Creating image...
-
-TIMESTAMP: 2026-08-13T19:50:41.961212Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: Instance has been deleted!
-
-TIMESTAMP: 2026-08-13T19:50:09.689377Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: Deleting instance...
-
-TIMESTAMP: 2026-08-13T19:50:09.572310Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:
-
-TIMESTAMP: 2026-08-13T19:50:09.572001Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: winrm_target               : ok=15   changed=2    unreachable=0    failed=0    skipped=22   rescued=0    ignored=0
-
-TIMESTAMP: 2026-08-13T19:50:09.571435Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: PLAY RECAP *********************************************************************
-
-TIMESTAMP: 2026-08-13T19:50:09.570927Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:
-
-TIMESTAMP: 2026-08-13T19:50:09.570519Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: }
-
-TIMESTAMP: 2026-08-13T19:50:09.569974Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "skip_reason": "Conditional result was False"
-
-TIMESTAMP: 2026-08-13T19:50:09.569566Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "false_condition": "install_excel | bool",
-
-TIMESTAMP: 2026-08-13T19:50:09.568911Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "changed": false,
-
-TIMESTAMP: 2026-08-13T19:50:09.568562Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: skipping: [winrm_target] => {
-
-TIMESTAMP: 2026-08-13T19:50:09.541066Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: task path: /workspace/ansible-playbook/main.yml:134
-
-TIMESTAMP: 2026-08-13T19:50:09.540759Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: TASK [Install Microsoft Excel] *************************************************
-
-TIMESTAMP: 2026-08-13T19:50:09.540029Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:
-
-TIMESTAMP: 2026-08-13T19:50:09.538759Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: }
-
-TIMESTAMP: 2026-08-13T19:50:09.538400Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "skip_reason": "Conditional result was False"
-
-TIMESTAMP: 2026-08-13T19:50:09.538024Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "false_condition": "install_gcp_utilities | bool",
-
-TIMESTAMP: 2026-08-13T19:50:09.537436Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "changed": false,
-
-TIMESTAMP: 2026-08-13T19:50:09.536803Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: skipping: [winrm_target] => {
-
-TIMESTAMP: 2026-08-13T19:50:09.510797Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: task path: /workspace/ansible-playbook/main.yml:130
-
-TIMESTAMP: 2026-08-13T19:50:09.510417Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: TASK [Install GCP Cloud Utilities] *********************************************
-
-TIMESTAMP: 2026-08-13T19:50:09.509819Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:
-
-TIMESTAMP: 2026-08-13T19:50:09.509201Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: }
-
-TIMESTAMP: 2026-08-13T19:50:09.508745Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "skip_reason": "Conditional result was False"
-
-TIMESTAMP: 2026-08-13T19:50:09.508252Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "false_condition": "install_echostack | bool",
-
-TIMESTAMP: 2026-08-13T19:50:09.507647Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:     "changed": false,
-
-TIMESTAMP: 2026-08-13T19:50:09.507111Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: skipping: [winrm_target] => {
-
-TIMESTAMP: 2026-08-13T19:50:09.482921Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: task path: /workspace/ansible-playbook/main.yml:126
-
-TIMESTAMP: 2026-08-13T19:50:09.482449Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows: TASK [Install EchoStack] *******************************************************
-
-TIMESTAMP: 2026-08-13T19:50:09.481885Z
-TEXT_PAYLOAD: ==> googlecompute.customize_windows:
+DEFAULT 2026-08-13T20:51:00.517864Z [VM] Creating VM from image: nmfs-windows-2022-git-20260813203908
+  {
+    "textPayload": "[VM] Creating VM from image: nmfs-windows-2022-git-20260813203908",
+    "insertId": "6a7e2e340007e6e870fc97eb",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "location": "us-east4",
+        "job_name": "windows-image-builder-jira",
+        "project_id": "ggn-nmfs-winde-dev-1"
+      }
+    },
+    "timestamp": "2026-08-13T20:51:00.517864Z",
+    "labels": {
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-5ftsn",
+      "run.googleapis.com/task_attempt": "0",
+      "instanceId": "001548f729897abe86b46585b56d50d0b657ff5374e2478e849769ae3f2d3bf05fbd2fa3e1d1c8a5bf08316c7fbd42188ea0cdba9c6912c69c86905c323850597a85f74f0773bca653972f0082abe33068cae126b7934679fe",
+      "run.googleapis.com/task_index": "0"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-08-13T20:51:00.777391295Z"
+  }
+DEFAULT 2026-08-13T20:51:00.569670Z [VM] Workstation user: chris_angjeli
+  {
+    "textPayload": "[VM] Workstation user: chris_angjeli",
+    "insertId": "6a7e2e340008b1469e456ee3",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "location": "us-east4",
+        "project_id": "ggn-nmfs-winde-dev-1",
+        "job_name": "windows-image-builder-jira"
+      }
+    },
+    "timestamp": "2026-08-13T20:51:00.569670Z",
+    "labels": {
+      "run.googleapis.com/task_index": "0",
+      "instanceId": "001548f729897abe86b46585b56d50d0b657ff5374e2478e849769ae3f2d3bf05fbd2fa3e1d1c8a5bf08316c7fbd42188ea0cdba9c6912c69c86905c323850597a85f74f0773bca653972f0082abe33068cae126b7934679fe",
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-5ftsn",
+      "run.googleapis.com/task_attempt": "0"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-08-13T20:51:00.777391295Z"
+  }
+DEFAULT 2026-08-13T20:51:02.977912Z ERROR: (gcloud.compute.instances.create) Could not fetch resource:
+  {
+    "textPayload": "ERROR: (gcloud.compute.instances.create) Could not fetch resource:",
+    "insertId": "6a7e2e36000eebf8ec3e599b",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "job_name": "windows-image-builder-jira",
+        "project_id": "ggn-nmfs-winde-dev-1",
+        "location": "us-east4"
+      }
+    },
+    "timestamp": "2026-08-13T20:51:02.977912Z",
+    "labels": {
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-5ftsn",
+      "run.googleapis.com/task_index": "0",
+      "instanceId": "001548f729897abe86b46585b56d50d0b657ff5374e2478e849769ae3f2d3bf05fbd2fa3e1d1c8a5bf08316c7fbd42188ea0cdba9c6912c69c86905c323850597a85f74f0773bca653972f0082abe33068cae126b7934679fe"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-13T20:51:03.045109806Z"
+  }
+DEFAULT 2026-08-13T20:51:02.977930Z - Invalid value for field 'resource.networkInterfaces[0].subnetwork': 'https://compute.googleapis.com/compute/v1/projects/nmfs-winde-dev-2-subnet/regions/us-east4/subnetworks/local-subnet'. The project 'nmfs-winde-dev-2-subnet' was not found.
+  {
+    "textPayload": " - Invalid value for field 'resource.networkInterfaces[0].subnetwork': 'https://compute.googleapis.com/compute/v1/projects/nmfs-winde-dev-2-subnet/regions/us-east4/subnetworks/local-subnet'. The project 'nmfs-winde-dev-2-subnet' was not found.",
+    "insertId": "6a7e2e36000eec0a0c7d8433",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "location": "us-east4",
+        "project_id": "ggn-nmfs-winde-dev-1",
+        "job_name": "windows-image-builder-jira"
+      }
+    },
+    "timestamp": "2026-08-13T20:51:02.977930Z",
+    "labels": {
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-5ftsn",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "instanceId": "001548f729897abe86b46585b56d50d0b657ff5374e2478e849769ae3f2d3bf05fbd2fa3e1d1c8a5bf08316c7fbd42188ea0cdba9c6912c69c86905c323850597a85f74f0773bca653972f0082abe33068cae126b7934679fe"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-13T20:51:03.045109806Z"
+  }

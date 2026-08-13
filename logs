@@ -1,1 +1,29 @@
-gcloud builds log 7f2e5aca-9120-4e7d-baa9-5cfd52bbdcab --region=us-east4 --project=ggn-nmfs-winde-dev-1 2>&1 | tail -30
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_RUNTIME to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_LABEL_BUILDER_VERSION to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_LABEL_BUILDER_IMAGE to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_LABEL_RUN_IMAGE to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_LABEL_SOURCE to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_USE_SERVERLESS_RUNTIMES_TARBALLS to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_RUNTIME_IMAGE_REGION to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_RUNTIME_VERSION to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable X_GOOGLE_SKIP_RUNTIME_LAUNCH to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_BUILD_ENV to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_BUILD_UNIVERSE to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_TPC_TARBALL_PROJECT to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_TPC_HOSTNAME to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_FUNCTION_TARGET to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_FUNCTION_SIGNATURE_TYPE to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable X_GOOGLE_TARGET_PLATFORM to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_LABEL_BUILD_ID to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_LABEL_BASE_IMAGE to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable GOOGLE_LABEL_FUNCTION_TARGET to buildpacks
+Step #1 - "pre-buildpack": Passing build environment variable X_GOOGLE_SET_NODE_HEAP_SIZE to buildpacks
+Step #1 - "pre-buildpack": Checking if image us-east4-docker.pkg.dev/ggn-nmfs-winde-dev-1/gcf-artifacts/ggn--nmfs--winde--dev--1__us--east4__image--builder--process--request/cache:latest exists
+Step #1 - "pre-buildpack": WARNING: Failed to reuse previous cache image; will not affect current build: GET https://us-east4-docker.pkg.dev/v2/token?scope=repository%3Aggn-nmfs-winde-dev-1%2Fgcf-artifacts%2Fggn--nmfs--winde--dev--1__us--east4__image--builder--process--request%2Fcache%3Apull&service=: DENIED: Permission 'artifactregistry.repositories.downloadArtifacts' denied on resource '//artifactregistry.googleapis.com/projects/ggn-nmfs-winde-dev-1/locations/us-east4/repositories/gcf-artifacts' (or it may not exist). Remediate access with this Troubleshooter URL or share it with your administrator - https://console.cloud.google.com/iam-admin/troubleshooter/summary;errorId=CiQwMTlmZmJjYy1kMjVkLTdkY2MtOGMzNC1hMzlhYWFhODlkZmUSS3Byb2plY3RzL2dnbi1ubWZzLXdpbmRlLWRldi0xL2xvY2F0aW9ucy91cy1lYXN0NC9yZXBvc2l0b3JpZXMvZ2NmLWFydGlmYWN0cw%!D(MISSING)%!D(MISSING) .
+Finished Step #1 - "pre-buildpack"
+Starting Step #2 - "build"
+Step #2 - "build": Already have image (with digest): us-east4-docker.pkg.dev/serverless-runtimes/google-22-full/builder/python:python_20260805_RC00
+Step #2 - "build": ERROR: failed to create image cache: accessing cache image "us-east4-docker.pkg.dev/ggn-nmfs-winde-dev-1/gcf-artifacts/ggn--nmfs--winde--dev--1__us--east4__image--builder--process--request/cache:latest": connect to repo store "us-east4-docker.pkg.dev/ggn-nmfs-winde-dev-1/gcf-artifacts/ggn--nmfs--winde--dev--1__us--east4__image--builder--process--request/cache:latest": GET https://us-east4-docker.pkg.dev/v2/token?scope=repository%3Aggn-nmfs-winde-dev-1%2Fgcf-artifacts%2Fggn--nmfs--winde--dev--1__us--east4__image--builder--process--request%2Fcache%3Apull&service=: DENIED: Permission 'artifactregistry.repositories.downloadArtifacts' denied on resource '//artifactregistry.googleapis.com/projects/ggn-nmfs-winde-dev-1/locations/us-east4/repositories/gcf-artifacts' (or it may not exist). Remediate access with this Troubleshooter URL or share it with your administrator - https://console.cloud.google.com/iam-admin/troubleshooter/summary;errorId=CiQwMTlmZmJjYy1kNmFkLTdmY2YtOWEzNi1lNzMwNWVlY2FmNjUSS3Byb2plY3RzL2dnbi1ubWZzLXdpbmRlLWRldi0xL2xvY2F0aW9ucy91cy1lYXN0NC9yZXBvc2l0b3JpZXMvZ2NmLWFydGlmYWN0cw%!D(MISSING)%!D(MISSING) .
+Finished Step #2 - "build"
+ERROR
+ERROR: build step 2 "us-east4-docker.pkg.dev/serverless-runtimes/google-22-full/builder/python:python_20260805_RC00" failed: step exited with non-zero status: 1

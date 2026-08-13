@@ -14,3 +14,8 @@ gcloud iam roles describe nmfs.winde.image.builder.role \
 gcloud iam roles update nmfs.winde.image.builder.role \
   --project=ggn-nmfs-winde-dev-1 \
   --add-permissions="compute.images.useReadOnly,compute.images.setLabels"
+
+gcloud projects get-iam-policy ggn-nmfs-winde-dev-1 \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:serviceAccount:vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
+  --format="table(bindings.role)"

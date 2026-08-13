@@ -9,3 +9,8 @@ gcloud iam roles describe nmfs.winde.image.builder.role \
   --project=ggn-nmfs-winde-dev-1 \
   --format="value(includedPermissions)" | \
   grep -E "compute.images.useReadOnly|compute.images.setLabels"
+
+
+gcloud iam roles update nmfs.winde.image.builder.role \
+  --project=ggn-nmfs-winde-dev-1 \
+  --add-permissions="compute.images.useReadOnly,compute.images.setLabels"

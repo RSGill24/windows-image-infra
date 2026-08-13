@@ -1,4 +1,4 @@
 gcloud projects get-iam-policy ggn-nmfs-winde-dev-1 \
   --flatten="bindings[].members" \
-  --filter="bindings.members:packer-win-sa@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
+  --filter="bindings.members:vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
   --format="table(bindings.role)"

@@ -1,4 +1,11 @@
-gcloud projects get-iam-policy ggn-nmfs-winde-dev-1 \
-  --flatten="bindings[].members" \
-  --filter="bindings.members:serviceAccount:images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
-  --format="table(bindings.role)"
+gcloud iam roles describe nmfs.winde.image.builder.role \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="yaml(title,name,includedPermissions)"
+
+compute.images.useReadOnly
+compute.images.setLabels
+
+gcloud iam roles describe nmfs.winde.image.builder.role \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="value(includedPermissions)" | \
+  grep -E "compute.images.useReadOnly|compute.images.setLabels"

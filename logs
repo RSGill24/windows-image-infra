@@ -1,6 +1,12 @@
-I've granted the image_builder the following roles: cloudbuild.builds.editor, run.developer, cloudfunctions.developer, secretmanager.secretAccessor, eventarc.eventReceiver, and cloudbuild.builds.editor. We have a minimal custom role already assigned to the service account that grants packer enough compute and storage permissions to perform builds within nmfs-trusted-images, but if you need any additional permissions we can add them later.
+I've granted the image_builder the following roles: cloudbuild.builds.editor, run.developer, cloudfunctions.developer, secretmanager.secretAccessor, 
+eventarc.eventReceiver, and cloudbuild.builds.editor. We have a minimal custom role already assigned to the service account 
+that grants packer enough compute and storage permissions to perform builds within nmfs-trusted-images, 
+but if you need any additional permissions we can add them later.
 
-I've granted you the cloudfunctions.developer, run.sourceDeveloper, iap.admin, artifactregistry.writer, and run.invoker roles. Drew deployed his functions via command line, and created a vm-prov-webhook-builder service account used for building the function and a vm-prov-webhook-runner runtime service account. Ed also relaxed the ingress requirement of the run services to allow traffic from all sources, but all services must be invoked by an authenticated identity.
+I've granted you the cloudfunctions.developer, run.sourceDeveloper, iap.admin, artifactregistry.writer, and run.invoker roles. 
+Drew deployed his functions via command line, and created a vm-prov-webhook-builder service account used for building the function 
+and a vm-prov-webhook-runner runtime service account. Ed also relaxed the ingress requirement of the run services to allow traffic from all sources, 
+but all services must be invoked by an authenticated identity.
 
 Yes, you can grant serviceAccountUser at the individual SA level.
 

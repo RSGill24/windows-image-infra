@@ -1,1 +1,1 @@
- gcloud run jobs executions logs windows-image-builder-jira-wvj2w --project=ggn-nmfs-winde-dev-1 --region=us-east4
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=windows-image-builder-jira AND timestamp>=\"2026-08-13T18:55:00Z\"" --project=ggn-nmfs-winde-dev-1 --limit=30 --format="table(timestamp,textPayload)"

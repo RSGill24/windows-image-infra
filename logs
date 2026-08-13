@@ -1,180 +1,22 @@
-mage-builder-process-request --region=us-east4 --project=ggn-nmfs-winde-dev-1 --limit=30
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: A7Ri7Myekz0B
-TIME_UTC: 2026-08-13 18:25:31.381
-LOG: [SKIP] Already processed (recursive trigger blocked): CLOUD-587.json
 
-LEVEL: I
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:30.973
-LOG: 
 
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:25.264
-LOG: 2026/08/13 18:25:25 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
+cat > /tmp/CLOUD-588.json << 'EOF'
+{
+  "submitter_name": "Drew Beling",
+  "submitter_email": "drew.beling@noaa.gov",
+  "ticket_number": "CLOUD-588",
+  "request_type": "Cloud VM Provisioning",
+  "status": "Waiting for support",
+  "created": "2026-08-13T18:30:00.000+0000",
+  "additional_unlisted_software": "Git and gcloud SDK",
+  "summary": "Test trigger",
+  "workstation_size": "Large - (16 – 32 vCPU | RAM: 64 – 128 GB | Storage: 500GB – 1TB)",
+  "software_packages": "FireFox, Oracle Drivers",
+  "fmc": "OCIO"
+}
+EOF
 
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:25.264
-LOG: I0813 18:25:25.262391      64 watcher.go:651] Reloading Cloud Run config.
+gsutil cp /tmp/CLOUD-588.json gs://jira-automation-bucket/
 
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: cHszBsvXA7hN
-TIME_UTC: 2026-08-13 18:25:24.497
-LOG: [SKIP] Already processed (recursive trigger blocked): CLOUD-587.json
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:24.263
-LOG: I0813 18:25:24.261594      67 taskiterreader.go:227] EOF enumerating tasks
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:24.257
-LOG: I0813 18:25:24.255153       1 watcher.go:699] Ready and listening
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:24.256
-LOG: I0813 18:25:24.254924       1 watcher.go:691] Updating Container Info...
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:24.220
-LOG: 2026/08/13 18:25:24 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:24.219
-LOG: I0813 18:25:24.217450      72 watcher.go:651] Reloading Cloud Run config.
-
-LEVEL: I
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:23.967
-LOG: 
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:23.745
-LOG: I0813 18:25:23.743115      52 ktdclient.go:625] KTD Client successfully connected to KTD service
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:23.745
-LOG: I0813 18:25:23.743001      52 krsieventreader.go:301] update probe enablement status (exec: true; mmap: true; exit: true; fork: true)
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:23.578
-LOG: I0813 18:25:23.575991       1 watcherconfigurer.go:111] KRSI is enabled on X86_64.
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:23.225
-LOG: I0813 18:25:23.224066      59 taskiterreader.go:227] EOF enumerating tasks
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:23.219
-LOG: I0813 18:25:23.217301       1 watcher.go:699] Ready and listening
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:23.218
-LOG: I0813 18:25:23.216490       1 watcher.go:691] Updating Container Info...
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:22.922
-LOG: I0813 18:25:22.920861      41 ktdclient.go:625] KTD Client successfully connected to KTD service
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:22.922
-LOG: I0813 18:25:22.920746      41 krsieventreader.go:301] update probe enablement status (exec: true; mmap: true; exit: true; fork: true)
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:22.654
-LOG: I0813 18:25:22.652677       1 watcherconfigurer.go:111] KRSI is enabled on X86_64.
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: BB9shOTYybXh
-TIME_UTC: 2026-08-13 18:25:19.211
-LOG: [SKIP] Already processed (recursive trigger blocked): CLOUD-587.json
-
-LEVEL: I
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:18.934
-LOG: Default STARTUP TCP probe succeeded after 1 attempt for container "worker" on port 8080.
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: FNbbNzgj9d6s
-TIME_UTC: 2026-08-13 18:25:16.058
-LOG: [SKIP] Ignoring internal file: audit/req-20260813182507-80daa1_2026-08-13T18-25-08.241265+00-00.json
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: jEX60A14aGRZ
-TIME_UTC: 2026-08-13 18:25:16.046
-LOG: [SKIP] Ignoring internal file: processed/CLOUD-587.json
-
-LEVEL: I
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:16.011
-LOG: Default STARTUP TCP probe succeeded after 1 attempt for container "worker" on port 8080.
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:11.856
-LOG: I0813 18:25:11.855561       1 watcherconfigurer.go:29] Loading KRSI
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:11.856
-LOG: I0813 18:25:11.855535       1 watcherconfigurer.go:98] KRSI is enabled
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:11.856
-LOG: I0813 18:25:11.855280       1 watcher.go:285] Using ktd token path from CONTAINER_WATCHER_TOKEN_PATH: /tmp/container-watcher/secrets/token
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:11.856
-LOG: I0813 18:25:11.855251       1 watcher.go:280] Using ktd ready file path from CONTAINER_WATCHER_READY_FILE_PATH: /tmp/container-watcher/ready
-
-LEVEL: 
-NAME: image-builder-process-request
-EXECUTION_ID: 
-TIME_UTC: 2026-08-13 18:25:11.761
-LOG: I0813 18:25:11.759559       1 watcher.go:391] Initializing ktdclient with target endpoint: us-east4-containerthreatdetection.googleapis.com:443
+echo "Uploaded! Check logs in 30 seconds:"
+echo "gcloud functions logs read image-builder-process-request --region=us-east4 --project=ggn-nmfs-winde-dev-1 --limit=20"

@@ -1,1 +1,4 @@
-terraform init 2>&1
+
+╷
+│ Error: Failed to load the backend state file: invalid syntax: unexpected end of JSON input
+│ terraform init 2>&1

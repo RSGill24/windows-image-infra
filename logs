@@ -1,1 +1,2 @@
-cd ~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform && rm -rf .terraform.lock.hcl .terraform/terraform.tfstate && terraform init && terraform apply
+rm -rf .terraform && terraform init
+

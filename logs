@@ -1,4 +1,1 @@
-gcloud compute images add-iam-policy-binding nmfs-windows-2022-software-1783192338 \
-  --project=ggn-nmfs-winde-dev-1 \
-  --member="serviceAccount:images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
-  --role="roles/compute.imageUser"
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=windows-image-builder-jira AND timestamp>=\"2026-08-13T19:26:00Z\"" --project=ggn-nmfs-winde-dev-1 --limit=50 --format="table(timestamp,textPayload)"

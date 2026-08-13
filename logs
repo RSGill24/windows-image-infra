@@ -1,1 +1,149 @@
-gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=windows-image-builder-jira AND timestamp>=\"2026-08-13T19:00:00Z\"" --project=ggn-nmfs-winde-dev-1 --limit=50 --format="table(timestamp,textPayload)"
+TIMESTAMP: 2026-08-13T19:26:29.939470Z
+TEXT_PAYLOAD: 
+
+TIMESTAMP: 2026-08-13T19:26:22.567039Z
+TEXT_PAYLOAD: 2026/08/13 19:26:22.565631 [ktd watcher] KTD agent process failed: exit status 1
+
+TIMESTAMP: 2026-08-13T19:26:22.566768Z
+TEXT_PAYLOAD: 2026/08/13 19:26:22.565390 [ktd watcher] markExited recorded error: exit status 1
+
+TIMESTAMP: 2026-08-13T19:26:22.558929Z
+TEXT_PAYLOAD: F0813 19:26:22.557423       1 watcher.go:273] Fatal error: caught signal: terminated
+
+TIMESTAMP: 2026-08-13T19:26:22.558925Z
+TEXT_PAYLOAD: W0813 19:26:22.557109       1 watcher.go:703] One watcher thread went down, stopping: caught signal: terminated
+
+TIMESTAMP: 2026-08-13T19:26:22.558921Z
+TEXT_PAYLOAD: W0813 19:26:22.557082      68 saferun.go:47] goroutine signal.reload exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:22.558694Z
+TEXT_PAYLOAD: 2026/08/13 19:26:22 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
+
+TIMESTAMP: 2026-08-13T19:26:22.558683Z
+TEXT_PAYLOAD: I0813 19:26:22.556872      68 watcher.go:651] Reloading Cloud Run config.
+
+TIMESTAMP: 2026-08-13T19:26:22.032413Z
+TEXT_PAYLOAD: W0813 19:26:22.030843      66 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.646189Z
+TEXT_PAYLOAD: W0813 19:26:21.644602      48 saferun.go:47] goroutine ktd.ebpf.krsi.eventloop exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.616974Z
+TEXT_PAYLOAD: W0813 19:26:21.614610      36 saferun.go:47] goroutine ktd.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.616969Z
+TEXT_PAYLOAD: I0813 19:26:21.614557      36 krsieventreader.go:301] update probe enablement status (exec: false; mmap: false; exit: false; fork: false)
+
+TIMESTAMP: 2026-08-13T19:26:21.616965Z
+TEXT_PAYLOAD: I0813 19:26:21.614541      36 ktdclient.go:966] Disabling Collectors
+
+TIMESTAMP: 2026-08-13T19:26:21.616958Z
+TEXT_PAYLOAD: W0813 19:26:21.614523      36 ktdclient.go:337] ktdclient connection closed unexpectedly: ktdclient receive response failed: rpc error: code = Canceled desc = context canceled
+
+TIMESTAMP: 2026-08-13T19:26:21.616381Z
+TEXT_PAYLOAD: W0813 19:26:21.614254      69 saferun.go:47] goroutine signal.chld exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.616378Z
+TEXT_PAYLOAD: W0813 19:26:21.614251      47 saferun.go:47] goroutine ktd.ebpf.krsi.flushloop exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.616375Z
+TEXT_PAYLOAD: W0813 19:26:21.614198      46 saferun.go:47] goroutine fHasher.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.616373Z
+TEXT_PAYLOAD: W0813 19:26:21.614166      44 saferun.go:47] goroutine se.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.616370Z
+TEXT_PAYLOAD: W0813 19:26:21.614159      45 saferun.go:47] goroutine pe.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.616367Z
+TEXT_PAYLOAD: W0813 19:26:21.614123      67 saferun.go:47] goroutine ktd.Configured exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.616360Z
+TEXT_PAYLOAD: W0813 19:26:21.614122      49 saferun.go:47] goroutine ktd.ebpf.krsi.counters exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:26:21.615560Z
+TEXT_PAYLOAD: E0813 19:26:21.614073      29 saferun.go:45] goroutine signal.exit exited with error: caught signal: terminated.
+
+TIMESTAMP: 2026-08-13T19:26:21.614034Z
+TEXT_PAYLOAD: Container called exit(1).
+
+TIMESTAMP: 2026-08-13T19:26:21.546598Z
+TEXT_PAYLOAD: [STATUS] FAILED → gs://jira-automation-bucket/status/req-20260813192457-99fcf2.json
+
+TIMESTAMP: 2026-08-13T19:26:19.399986Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 /root/.config/packer/plugins/github.com/hashicorp/googlecompute/packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64: plugin process exited
+
+TIMESTAMP: 2026-08-13T19:26:19.399982Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 /usr/local/bin/packer: plugin process exited
+
+TIMESTAMP: 2026-08-13T19:26:19.399978Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 /usr/local/bin/packer: plugin process exited
+
+TIMESTAMP: 2026-08-13T19:26:19.399974Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 waiting for all plugin processes to complete...
+
+TIMESTAMP: 2026-08-13T19:26:19.399970Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 [INFO] (telemetry) Finalizing.
+
+TIMESTAMP: 2026-08-13T19:26:19.399966Z
+TEXT_PAYLOAD: ==> Builds finished but no artifacts were created.
+
+TIMESTAMP: 2026-08-13T19:26:19.399962Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 ui: 
+
+TIMESTAMP: 2026-08-13T19:26:19.399958Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 ui error: --> googlecompute.customize_windows: Error creating instance: googleapi: Error 403: Required 'compute.images.useReadOnly' permission for 'projects/ggn-nmfs-winde-dev-1/global/images/nmfs-windows-2022-software-1783192338', forbidden
+
+TIMESTAMP: 2026-08-13T19:26:19.399951Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 machine readable: googlecompute.customize_windows,error []string{"Error creating instance: googleapi: Error 403: Required 'compute.images.useReadOnly' permission for 'projects/ggn-nmfs-winde-dev-1/global/images/nmfs-windows-2022-software-1783192338', forbidden"}
+
+TIMESTAMP: 2026-08-13T19:26:19.399943Z
+TEXT_PAYLOAD: ==> Some builds didn't complete successfully and had errors:
+
+TIMESTAMP: 2026-08-13T19:26:19.399939Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 ui error: 
+
+TIMESTAMP: 2026-08-13T19:26:19.399935Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 machine readable: error-count []string{"1"}
+
+TIMESTAMP: 2026-08-13T19:26:19.399931Z
+TEXT_PAYLOAD: ==> Wait completed after 3 seconds 382 milliseconds
+
+TIMESTAMP: 2026-08-13T19:26:19.399927Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 ui: 
+
+TIMESTAMP: 2026-08-13T19:26:19.399923Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 ui error: Build 'googlecompute.customize_windows' errored after 3 seconds 382 milliseconds: Error creating instance: googleapi: Error 403: Required 'compute.images.useReadOnly' permission for 'projects/ggn-nmfs-winde-dev-1/global/images/nmfs-windows-2022-software-1783192338', forbidden
+
+TIMESTAMP: 2026-08-13T19:26:19.399904Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 [INFO] (telemetry) ending googlecompute.customize_windows
+
+TIMESTAMP: 2026-08-13T19:26:19.399899Z
+TEXT_PAYLOAD: 2026/08/13 19:26:19 ui: ==> googlecompute.customize_windows: SSH public key for OSLogin has been deleted!
+
+TIMESTAMP: 2026-08-13T19:26:19.399889Z
+TEXT_PAYLOAD: 2026/08/13 19:26:18 ui: ==> googlecompute.customize_windows: Deleting SSH public key for OSLogin...
+
+TIMESTAMP: 2026-08-13T19:26:19.399885Z
+TEXT_PAYLOAD: 2026/08/13 19:26:18 ui error: ==> googlecompute.customize_windows: Error creating instance: googleapi: Error 403: Required 'compute.images.useReadOnly' permission for 'projects/ggn-nmfs-winde-dev-1/global/images/nmfs-windows-2022-software-1783192338', forbidden
+
+TIMESTAMP: 2026-08-13T19:26:19.399876Z
+TEXT_PAYLOAD: 2026/08/13 19:26:18 ui: ==> googlecompute.customize_windows: Requesting Shielded VM instance creation...
+
+TIMESTAMP: 2026-08-13T19:26:19.399872Z
+TEXT_PAYLOAD: 2026/08/13 19:26:18 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/13 19:26:18 [DEBUG] using google-managed encryption key for boot disk
+
+TIMESTAMP: 2026-08-13T19:26:19.399868Z
+TEXT_PAYLOAD: 2026/08/13 19:26:18 ui: ==> googlecompute.customize_windows: Loading machine type: e2-standard-16
+
+TIMESTAMP: 2026-08-13T19:26:19.399863Z
+TEXT_PAYLOAD: 2026/08/13 19:26:17 ui: ==> googlecompute.customize_windows: Loading zone: us-east4-c
+
+TIMESTAMP: 2026-08-13T19:26:19.399860Z
+TEXT_PAYLOAD: 2026/08/13 19:26:17 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/13 19:26:17 [DEBUG] Adding metadata during instance creation...
+
+TIMESTAMP: 2026-08-13T19:26:19.399856Z
+TEXT_PAYLOAD: 2026/08/13 19:26:17 ui: ==> googlecompute.customize_windows: Creating instance...
+
+TIMESTAMP: 2026-08-13T19:26:19.399852Z
+TEXT_PAYLOAD: 2026/08/13 19:26:17 ui: ==> googlecompute.customize_windows: Using image: nmfs-windows-2022-software-1783192338

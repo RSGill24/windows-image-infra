@@ -1,5 +1,1 @@
-gcloud iam service-accounts add-iam-policy-binding \
-  vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com \
-  --project=ggn-nmfs-winde-dev-1 \
-  --member="serviceAccount:images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
-  --role="roles/iam.serviceAccountUser"
+gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=windows-image-builder-jira AND timestamp>=\"2026-08-13T19:35:00Z\"" --project=ggn-nmfs-winde-dev-1 --limit=80 --format="table(timestamp,textPayload)"

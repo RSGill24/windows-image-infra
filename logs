@@ -2,3 +2,10 @@ gcloud run jobs update windows-image-builder-jira \
   --region=us-east4 \
   --project=ggn-nmfs-winde-dev-1 \
   --service-account=images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+
+
+
+
+gcloud iam roles describe nmfs.winde.image.builder.role \
+  --project=ggn-nmfs-winde-dev-1 \
+  --format="table(includedPermissions)"

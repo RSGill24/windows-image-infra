@@ -1,4 +1,4 @@
-2026-08-13 14:42:40.762 EDT
+2026-08-13 14:45:51.661 EDT
 Exception on / [POST]
 Traceback (most recent call last):
   File "/layers/google.python.pip/pip/lib/python3.12/site-packages/google/api_core/grpc_helpers.py", line 55, in error_remapped_callable
@@ -39,12 +39,12 @@ Traceback (most recent call last):
   File "/layers/google.python.pip/pip/lib/python3.12/site-packages/flask/app.py"… [message truncated due to size]
 {
 errorGroups: [1]
-insertId: "6a7e1020000ba1aa35ae63ad"
+insertId: "6a7e10df000a161a1b13f216"
 labels: {9}
 logName: "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstderr"
-receiveTimestamp: "2026-08-13T18:42:40.768242147Z"
+receiveTimestamp: "2026-08-13T18:45:51.664835139Z"
 resource: {2}
-spanId: "2251466283244823494"
+spanId: "2872039988420659069"
 textPayload: "Exception on / [POST]
 Traceback (most recent call last):
   File "/layers/google.python.pip/pip/lib/python3.12/site-packages/google/api_core/grpc_helpers.py", line 55, in error_remapped_callable
@@ -110,9 +110,9 @@ Traceback (most recent call last):
   File "/layers/google.python.pip/pip/lib/python3.12/site-packages/google/api_core/grpc_helpers.py", line 57, in error_remapped_callable
     raise exceptions.from_grpc_error(exc) from exc
 google.api_core.exceptions.PermissionDenied: 403 Permission 'run.jobs.runWithOverrides' denied on resource 'projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira'"
-timestamp: "2026-08-13T18:42:40.762282Z"
+timestamp: "2026-08-13T18:45:51.661018Z"
 }
-2026-08-13 14:42:52.350 EDT
+2026-08-13 14:46:05.294 EDT
 
 POST
 
@@ -120,100 +120,11 @@ POST
 
 130 B
 
-545 ms
+439 ms
 
 APIs-Google; (+https://developers.google.com/webmasters/APIs-Google.html)
 https://image-builder-process-request-tqls7v2pea-uk.a.run.app/?__GCP_CloudEventsMode=GCS_NOTIFICATION
-2026-08-13 14:42:52.903 EDT
-[SKIP] Already processed (recursive trigger blocked): CLOUD-588.json
-2026-08-13 14:42:59.078 EDT
-
-Cloud Run
-
-GetInternalService
-
-image-builder-process-request
-
-service-194243189684@gcf-…
-audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
-2026-08-13 14:42:59.103 EDT
-
-Cloud Run
-
-GetInternalService
-
-image-builder-process-request
-
-service-194243189684@gcf-…
-audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
-2026-08-13 14:43:00.448 EDT
-
-Cloud Run
-
-GetService
-
-image-builder-process-request
-
-rajinder.gill@noaa.gov
-audit_log, method: "google.cloud.run.v1.Services.GetService", principal_email: "rajinder.gill@noaa.gov"
-2026-08-13 14:43:00.637 EDT
-
-Cloud Run
-
-GetInternalService
-
-image-builder-process-request
-
-service-194243189684@gcf-…
-audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
-2026-08-13 14:43:00.653 EDT
-
-Cloud Run
-
-GetInternalService
-
-image-builder-process-request
-
-service-194243189684@gcf-…
-audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
-2026-08-13 14:43:00.655 EDT
-
-Cloud Run
-
-GetInternalService
-
-image-builder-process-request
-
-service-194243189684@gcf-…
-audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
-2026-08-13 14:43:01.046 EDT
-
-Cloud Run
-
-GetInternalService
-
-image-builder-process-request
-
-service-194243189684@gcf-…
-audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
-2026-08-13 14:43:01.048 EDT
-
-Cloud Run
-
-GetInternalService
-
-image-builder-process-request
-
-service-194243189684@gcf-…
-audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
-2026-08-13 14:43:01.053 EDT
-
-Cloud Run
-
-GetInternalService
-
-image-builder-process-request
-
-service-194243189684@gcf-…
-audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+2026-08-13 14:46:05.721 EDT
+[SKIP] Already processed (recursive trigger blocked): CLOUD-589.json
 No newer entries found matching the current filter.
+

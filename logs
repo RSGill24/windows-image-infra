@@ -1,5 +1,4 @@
-gcloud secrets add-iam-policy-binding packer-winrm-password \
-  --project=ggn-nmfs-winde-dev-1 \
-  --member="serviceAccount:packer-win-sa@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
-
+gcloud projects get-iam-policy ggn-nmfs-winde-dev-1 \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:packer-win-sa@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
+  --format="table(bindings.role)"

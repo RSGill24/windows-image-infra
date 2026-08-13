@@ -1,1 +1,90 @@
-gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=windows-image-builder-jira AND timestamp>=\"2026-08-13T18:55:00Z\"" --project=ggn-nmfs-winde-dev-1 --limit=30 --format="table(timestamp,textPayload)"
+n-nmfs-winde-dev-1 --limit=30 --format="table(timestamp,textPayload)"
+TIMESTAMP: 2026-08-13T18:56:09.218349Z
+TEXT_PAYLOAD: 
+
+TIMESTAMP: 2026-08-13T18:56:04.352367Z
+TEXT_PAYLOAD: 2026/08/13 18:56:04.350115 [ktd watcher] KTD agent process failed: exit status 1
+
+TIMESTAMP: 2026-08-13T18:56:04.351999Z
+TEXT_PAYLOAD: 2026/08/13 18:56:04.349761 [ktd watcher] markExited recorded error: exit status 1
+
+TIMESTAMP: 2026-08-13T18:56:04.342996Z
+TEXT_PAYLOAD: F0813 18:56:04.340055       1 watcher.go:273] Fatal error: caught signal: terminated
+
+TIMESTAMP: 2026-08-13T18:56:04.342993Z
+TEXT_PAYLOAD: W0813 18:56:04.339623       1 watcher.go:703] One watcher thread went down, stopping: caught signal: terminated
+
+TIMESTAMP: 2026-08-13T18:56:04.342990Z
+TEXT_PAYLOAD: W0813 18:56:04.339600      77 saferun.go:47] goroutine signal.reload exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:04.342982Z
+TEXT_PAYLOAD: 2026/08/13 18:56:04 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
+
+TIMESTAMP: 2026-08-13T18:56:04.342974Z
+TEXT_PAYLOAD: I0813 18:56:04.339481      77 watcher.go:651] Reloading Cloud Run config.
+
+TIMESTAMP: 2026-08-13T18:56:03.811272Z
+TEXT_PAYLOAD: W0813 18:56:03.808777      75 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.429385Z
+TEXT_PAYLOAD: W0813 18:56:03.426313      73 saferun.go:47] goroutine ktd.ebpf.krsi.eventloop exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.393078Z
+TEXT_PAYLOAD: W0813 18:56:03.390613      41 saferun.go:47] goroutine ktd.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.393075Z
+TEXT_PAYLOAD: I0813 18:56:03.390559      41 krsieventreader.go:301] update probe enablement status (exec: false; mmap: false; exit: false; fork: false)
+
+TIMESTAMP: 2026-08-13T18:56:03.393072Z
+TEXT_PAYLOAD: I0813 18:56:03.390541      41 ktdclient.go:966] Disabling Collectors
+
+TIMESTAMP: 2026-08-13T18:56:03.393068Z
+TEXT_PAYLOAD: W0813 18:56:03.390523      41 ktdclient.go:337] ktdclient connection closed unexpectedly: ktdclient receive response failed: rpc error: code = Canceled desc = context canceled
+
+TIMESTAMP: 2026-08-13T18:56:03.392773Z
+TEXT_PAYLOAD: W0813 18:56:03.390021      72 saferun.go:47] goroutine ktd.ebpf.krsi.flushloop exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.392770Z
+TEXT_PAYLOAD: W0813 18:56:03.390001      78 saferun.go:47] goroutine signal.chld exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.392767Z
+TEXT_PAYLOAD: W0813 18:56:03.389994      69 saferun.go:47] goroutine se.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.392763Z
+TEXT_PAYLOAD: W0813 18:56:03.389975      70 saferun.go:47] goroutine pe.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.392760Z
+TEXT_PAYLOAD: W0813 18:56:03.389879      71 saferun.go:47] goroutine fHasher.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.392756Z
+TEXT_PAYLOAD: W0813 18:56:03.389814      76 saferun.go:47] goroutine ktd.Configured exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.392751Z
+TEXT_PAYLOAD: W0813 18:56:03.389808      74 saferun.go:47] goroutine ktd.ebpf.krsi.counters exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T18:56:03.392107Z
+TEXT_PAYLOAD: E0813 18:56:03.389177      34 saferun.go:45] goroutine signal.exit exited with error: caught signal: terminated.
+
+TIMESTAMP: 2026-08-13T18:56:03.390239Z
+TEXT_PAYLOAD: Container called exit(1).
+
+TIMESTAMP: 2026-08-13T18:56:03.141756Z
+TEXT_PAYLOAD:   reason: IAM_PERMISSION_DENIED
+
+TIMESTAMP: 2026-08-13T18:56:03.141752Z
+TEXT_PAYLOAD:     troubleshooter_url: https://console.cloud.google.com/iam-admin/troubleshooter/summary;errorId=CiQwMTlmZmM3Yi0zZDhhLTcwZGYtOWI2MS1hNGQyNTBhMDU4MjASAA%3D%3D
+
+TIMESTAMP: 2026-08-13T18:56:03.141747Z
+TEXT_PAYLOAD:     permission: secretmanager.versions.access
+
+TIMESTAMP: 2026-08-13T18:56:03.141743Z
+TEXT_PAYLOAD:     error_info_id: CiQwMTlmZmM3Yi0zZDhhLTcwZGYtOWI2MS1hNGQyNTBhMDU4MjASAA==
+
+TIMESTAMP: 2026-08-13T18:56:03.141738Z
+TEXT_PAYLOAD:   metadata:
+
+TIMESTAMP: 2026-08-13T18:56:03.141733Z
+TEXT_PAYLOAD:   domain: iam.googleapis.com
+
+TIMESTAMP: 2026-08-13T18:56:03.141729Z
+TEXT_PAYLOAD: - '@type': type.googleapis.com/google.rpc.ErrorInfo

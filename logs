@@ -1,1 +1,1 @@
-gcloud iam service-accounts add-iam-policy-binding vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com --member="user:rajinder.gill@noaa.gov" --role="roles/iam.serviceAccountUser" --project=ggn-nmfs-winde-dev-1
+cd ~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform && rm -rf .terraform.lock.hcl .terraform/terraform.tfstate && terraform init && terraform apply

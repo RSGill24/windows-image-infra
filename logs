@@ -1,5 +1,219 @@
-gcloud run jobs add-iam-policy-binding windows-image-builder-jira \
-  --region=us-east4 \
-  --project=ggn-nmfs-winde-dev-1 \
-  --member="serviceAccount:packer-win-sa@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
-  --role="roles/run.invoker"
+2026-08-13 14:42:40.762 EDT
+Exception on / [POST]
+Traceback (most recent call last):
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/google/api_core/grpc_helpers.py", line 55, in error_remapped_callable
+    return callable_(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_interceptor.py", line 276, in __call__
+    response, ignored_call = self._with_call(
+                             ^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_interceptor.py", line 331, in _with_call
+    return call.result(), call
+           ^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_channel.py", line 447, in result
+    raise self
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_interceptor.py", line 314, in continuation
+    response, call = self._thunk(new_method).with_call(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_channel.py", line 1182, in with_call
+    return _end_unary_response_blocking(state, call, True, None)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_channel.py", line 999, in _end_unary_response_blocking
+    raise _InactiveRpcError(state)  # pytype: disable=not-instantiable
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+grpc._channel._InactiveRpcError: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.PERMISSION_DENIED
+	details = "Permission 'run.jobs.runWithOverrides' denied on resource 'projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira'"
+	debug_error_string = "PERMISSION_DENIED:Permission 'run.jobs.runWithOverrides' denied on resource 'projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira'"
+>
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/flask/app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/flask/app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/flask/app.py"… [message truncated due to size]
+{
+errorGroups: [1]
+insertId: "6a7e1020000ba1aa35ae63ad"
+labels: {9}
+logName: "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstderr"
+receiveTimestamp: "2026-08-13T18:42:40.768242147Z"
+resource: {2}
+spanId: "2251466283244823494"
+textPayload: "Exception on / [POST]
+Traceback (most recent call last):
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/google/api_core/grpc_helpers.py", line 55, in error_remapped_callable
+    return callable_(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_interceptor.py", line 276, in __call__
+    response, ignored_call = self._with_call(
+                             ^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_interceptor.py", line 331, in _with_call
+    return call.result(), call
+           ^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_channel.py", line 447, in result
+    raise self
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_interceptor.py", line 314, in continuation
+    response, call = self._thunk(new_method).with_call(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_channel.py", line 1182, in with_call
+    return _end_unary_response_blocking(state, call, True, None)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/grpc/_channel.py", line 999, in _end_unary_response_blocking
+    raise _InactiveRpcError(state)  # pytype: disable=not-instantiable
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+grpc._channel._InactiveRpcError: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.PERMISSION_DENIED
+	details = "Permission 'run.jobs.runWithOverrides' denied on resource 'projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira'"
+	debug_error_string = "PERMISSION_DENIED:Permission 'run.jobs.runWithOverrides' denied on resource 'projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira'"
+>
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/flask/app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/flask/app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/flask/app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/flask/app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/functions_framework/execution_id.py", line 157, in wrapper
+    result = view_function(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/functions_framework/__init__.py", line 188, in view_func
+    function(event)
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/functions_framework/__init__.py", line 81, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/main.py", line 571, in process_request
+    trigger_cloud_run_job(request_json_gcs)
+  File "/workspace/main.py", line 393, in trigger_cloud_run_job
+    operation = client.run_job(request=request)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/google/cloud/run_v2/services/jobs/client.py", line 1657, in run_job
+    response = rpc(
+               ^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/google/api_core/gapic_v1/method.py", line 189, in __call__
+    return wrapped_func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/layers/google.python.pip/pip/lib/python3.12/site-packages/google/api_core/grpc_helpers.py", line 57, in error_remapped_callable
+    raise exceptions.from_grpc_error(exc) from exc
+google.api_core.exceptions.PermissionDenied: 403 Permission 'run.jobs.runWithOverrides' denied on resource 'projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira'"
+timestamp: "2026-08-13T18:42:40.762282Z"
+}
+2026-08-13 14:42:52.350 EDT
+
+POST
+
+200
+
+130 B
+
+545 ms
+
+APIs-Google; (+https://developers.google.com/webmasters/APIs-Google.html)
+https://image-builder-process-request-tqls7v2pea-uk.a.run.app/?__GCP_CloudEventsMode=GCS_NOTIFICATION
+2026-08-13 14:42:52.903 EDT
+[SKIP] Already processed (recursive trigger blocked): CLOUD-588.json
+2026-08-13 14:42:59.078 EDT
+
+Cloud Run
+
+GetInternalService
+
+image-builder-process-request
+
+service-194243189684@gcf-…
+audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+2026-08-13 14:42:59.103 EDT
+
+Cloud Run
+
+GetInternalService
+
+image-builder-process-request
+
+service-194243189684@gcf-…
+audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+2026-08-13 14:43:00.448 EDT
+
+Cloud Run
+
+GetService
+
+image-builder-process-request
+
+rajinder.gill@noaa.gov
+audit_log, method: "google.cloud.run.v1.Services.GetService", principal_email: "rajinder.gill@noaa.gov"
+2026-08-13 14:43:00.637 EDT
+
+Cloud Run
+
+GetInternalService
+
+image-builder-process-request
+
+service-194243189684@gcf-…
+audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+2026-08-13 14:43:00.653 EDT
+
+Cloud Run
+
+GetInternalService
+
+image-builder-process-request
+
+service-194243189684@gcf-…
+audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+2026-08-13 14:43:00.655 EDT
+
+Cloud Run
+
+GetInternalService
+
+image-builder-process-request
+
+service-194243189684@gcf-…
+audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+2026-08-13 14:43:01.046 EDT
+
+Cloud Run
+
+GetInternalService
+
+image-builder-process-request
+
+service-194243189684@gcf-…
+audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+2026-08-13 14:43:01.048 EDT
+
+Cloud Run
+
+GetInternalService
+
+image-builder-process-request
+
+service-194243189684@gcf-…
+audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+2026-08-13 14:43:01.053 EDT
+
+Cloud Run
+
+GetInternalService
+
+image-builder-process-request
+
+service-194243189684@gcf-…
+audit_log, method: "google.cloud.serverless.internal.InternalServices.GetInternalService", principal_email: "service-194243189684@gcf-admin-robot.iam.gserviceaccount.com"
+No newer entries found matching the current filter.

@@ -1,3 +1,4 @@
 please grant artifactregistry.writer to SA vm-prov-webhook-runner on the gcf-artifacts repository.
 
 You are encountering IAM permission errors because you are trying to modify project-level IAM. I'm not sure how to add Artifact Registry IAM via the console, but you can use this gcloud command to add the role to your service account: https://docs.cloud.google.com/sdk/gcloud/reference/artifacts/repositories/add-iam-policy-binding.
+gcloud artifacts repositories add-iam-policy-binding (REPOSITORY : --location=LOCATION) --member=PRINCIPAL --role=ROLE [--condition=[KEY=VALUE,…]     | --condition-from-file=PATH_TO_FILE] [GCLOUD_WIDE_FLAG …]

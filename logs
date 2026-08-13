@@ -1,8 +1,7 @@
-
-google_cloud_run_v2_job.windows_image_builder: Modifying... [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira]
-╷
-│ Error: Error updating Job "projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira": googleapi: Error 403: Permission 'iam.serviceaccounts.actAs' denied on service account vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com (or it may not exist).
-│ 
-│   with google_cloud_run_v2_job.windows_image_builder,
-│   on cloud_run_job.tf line 8, in resource "google_cloud_run_v2_job" "windows_image_builder":
-│    8: resource "google_cloud_run_v2_job" "windows_image_builder" {
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform$ gcloud iam service-accounts add-iam-policy-binding vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com --member="user:rajinder.gill@noaa.gov" --role="roles/iam.serviceAccountUser"
+ERROR: (gcloud.iam.service-accounts.add-iam-policy-binding) Error parsing [service_account].
+The [serviceAccount] resource is not properly specified.
+Failed to find attribute [project]. The attribute can be set in the following ways: 
+- provide the argument `service_account` on the command line with a fully specified name
+- provide the argument `--project` on the command line
+- set the property `core/project`

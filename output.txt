@@ -19,5 +19,4 @@ SA :
   - roles/iam.serviceAccountUser
 
 
-cd terraform && sed -i 's/images-build-sa1/vm-prov-webhook-runner/g' cloud_run_job.tf eventarc.tf && echo "Updated SA to vm-prov-webhook-runner in cloud_run_job.tf and eventarc.tf" && grep -n "vm-prov-webhook-runner" cloud_run_job.tf eventarc.tf && cd ..
-
+gcloud iam service-accounts add-iam-policy-binding vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com --member="user:rajinder.gill@noaa.gov" --role="roles/iam.serviceAccountUser"

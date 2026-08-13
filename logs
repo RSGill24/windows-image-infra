@@ -1,1 +1,149 @@
-gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=windows-image-builder-jira AND timestamp>=\"2026-08-13T19:26:00Z\"" --project=ggn-nmfs-winde-dev-1 --limit=50 --format="table(timestamp,textPayload)"
+TIMESTAMP: 2026-08-13T19:35:59.258582Z
+TEXT_PAYLOAD: 
+
+TIMESTAMP: 2026-08-13T19:35:48.256610Z
+TEXT_PAYLOAD: 2026/08/13 19:35:48.254996 [ktd watcher] KTD agent process failed: exit status 1
+
+TIMESTAMP: 2026-08-13T19:35:48.256099Z
+TEXT_PAYLOAD: 2026/08/13 19:35:48.254582 [ktd watcher] markExited recorded error: exit status 1
+
+TIMESTAMP: 2026-08-13T19:35:48.245874Z
+TEXT_PAYLOAD: F0813 19:35:48.243875       1 watcher.go:273] Fatal error: caught signal: terminated
+
+TIMESTAMP: 2026-08-13T19:35:48.245866Z
+TEXT_PAYLOAD: W0813 19:35:48.243492       1 watcher.go:703] One watcher thread went down, stopping: caught signal: terminated
+
+TIMESTAMP: 2026-08-13T19:35:48.245468Z
+TEXT_PAYLOAD: W0813 19:35:48.243471      68 saferun.go:47] goroutine signal.reload exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:48.245464Z
+TEXT_PAYLOAD: 2026/08/13 19:35:48 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
+
+TIMESTAMP: 2026-08-13T19:35:48.245451Z
+TEXT_PAYLOAD: I0813 19:35:48.243346      68 watcher.go:651] Reloading Cloud Run config.
+
+TIMESTAMP: 2026-08-13T19:35:47.717485Z
+TEXT_PAYLOAD: W0813 19:35:47.715689      66 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.332205Z
+TEXT_PAYLOAD: W0813 19:35:47.330111      60 saferun.go:47] goroutine ktd.ebpf.krsi.eventloop exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.298235Z
+TEXT_PAYLOAD: W0813 19:35:47.296098      43 saferun.go:47] goroutine ktd.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.298232Z
+TEXT_PAYLOAD: I0813 19:35:47.296042      43 krsieventreader.go:301] update probe enablement status (exec: false; mmap: false; exit: false; fork: false)
+
+TIMESTAMP: 2026-08-13T19:35:47.298229Z
+TEXT_PAYLOAD: I0813 19:35:47.296022      43 ktdclient.go:966] Disabling Collectors
+
+TIMESTAMP: 2026-08-13T19:35:47.298225Z
+TEXT_PAYLOAD: W0813 19:35:47.295972      43 ktdclient.go:337] ktdclient connection closed unexpectedly: ktdclient receive response failed: rpc error: code = Canceled desc = context canceled
+
+TIMESTAMP: 2026-08-13T19:35:47.297811Z
+TEXT_PAYLOAD: W0813 19:35:47.295682      61 saferun.go:47] goroutine ktd.ebpf.krsi.counters exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.297808Z
+TEXT_PAYLOAD: W0813 19:35:47.295689      59 saferun.go:47] goroutine ktd.ebpf.krsi.flushloop exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.297805Z
+TEXT_PAYLOAD: W0813 19:35:47.295567      58 saferun.go:47] goroutine fHasher.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.297802Z
+TEXT_PAYLOAD: W0813 19:35:47.295566      67 saferun.go:47] goroutine ktd.Configured exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.297798Z
+TEXT_PAYLOAD: W0813 19:35:47.295539      56 saferun.go:47] goroutine se.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.297791Z
+TEXT_PAYLOAD: W0813 19:35:47.295532      57 saferun.go:47] goroutine pe.Run exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.297499Z
+TEXT_PAYLOAD: W0813 19:35:47.295504      69 saferun.go:47] goroutine signal.chld exited because context is cancelled.
+
+TIMESTAMP: 2026-08-13T19:35:47.297485Z
+TEXT_PAYLOAD: E0813 19:35:47.295436      34 saferun.go:45] goroutine signal.exit exited with error: caught signal: terminated.
+
+TIMESTAMP: 2026-08-13T19:35:47.296341Z
+TEXT_PAYLOAD: Container called exit(1).
+
+TIMESTAMP: 2026-08-13T19:35:47.232521Z
+TEXT_PAYLOAD: [STATUS] FAILED → gs://jira-automation-bucket/status/req-20260813193357-5e343e.json
+
+TIMESTAMP: 2026-08-13T19:35:45.013273Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 /usr/local/bin/packer: plugin process exited
+
+TIMESTAMP: 2026-08-13T19:35:45.013270Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 /root/.config/packer/plugins/github.com/hashicorp/googlecompute/packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64: plugin process exited
+
+TIMESTAMP: 2026-08-13T19:35:45.013265Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 /usr/local/bin/packer: plugin process exited
+
+TIMESTAMP: 2026-08-13T19:35:45.013261Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 waiting for all plugin processes to complete...
+
+TIMESTAMP: 2026-08-13T19:35:45.013257Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 [INFO] (telemetry) Finalizing.
+
+TIMESTAMP: 2026-08-13T19:35:45.013254Z
+TEXT_PAYLOAD: ==> Builds finished but no artifacts were created.
+
+TIMESTAMP: 2026-08-13T19:35:45.013250Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 ui: 
+
+TIMESTAMP: 2026-08-13T19:35:45.013246Z
+TEXT_PAYLOAD: * The user does not have access to service account 'vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'.  User: 'images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'. Ask a project owner to grant you the iam.serviceAccountUser role on the service account.
+
+TIMESTAMP: 2026-08-13T19:35:45.013240Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 ui error: --> googlecompute.customize_windows: Error creating instance: 1 error(s) occurred:
+
+TIMESTAMP: 2026-08-13T19:35:45.013235Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 machine readable: googlecompute.customize_windows,error []string{"Error creating instance: 1 error(s) occurred:\n\n* The user does not have access to service account 'vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'.  User: 'images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'. Ask a project owner to grant you the iam.serviceAccountUser role on the service account."}
+
+TIMESTAMP: 2026-08-13T19:35:45.013225Z
+TEXT_PAYLOAD: ==> Some builds didn't complete successfully and had errors:
+
+TIMESTAMP: 2026-08-13T19:35:45.013221Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 ui error: 
+
+TIMESTAMP: 2026-08-13T19:35:45.013218Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 machine readable: error-count []string{"1"}
+
+TIMESTAMP: 2026-08-13T19:35:45.013213Z
+TEXT_PAYLOAD: ==> Wait completed after 13 seconds 530 milliseconds
+
+TIMESTAMP: 2026-08-13T19:35:45.013209Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 ui: 
+
+TIMESTAMP: 2026-08-13T19:35:45.013206Z
+TEXT_PAYLOAD: * The user does not have access to service account 'vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'.  User: 'images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'. Ask a project owner to grant you the iam.serviceAccountUser role on the service account.
+
+TIMESTAMP: 2026-08-13T19:35:45.013199Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 ui error: Build 'googlecompute.customize_windows' errored after 13 seconds 530 milliseconds: Error creating instance: 1 error(s) occurred:
+
+TIMESTAMP: 2026-08-13T19:35:45.013192Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 [INFO] (telemetry) ending googlecompute.customize_windows
+
+TIMESTAMP: 2026-08-13T19:35:45.013188Z
+TEXT_PAYLOAD: 2026/08/13 19:35:44 ui: ==> googlecompute.customize_windows: SSH public key for OSLogin has been deleted!
+
+TIMESTAMP: 2026-08-13T19:35:45.013184Z
+TEXT_PAYLOAD: 2026/08/13 19:35:43 ui: ==> googlecompute.customize_windows: Deleting SSH public key for OSLogin...
+
+TIMESTAMP: 2026-08-13T19:35:45.013180Z
+TEXT_PAYLOAD: ==> googlecompute.customize_windows: * The user does not have access to service account 'vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'.  User: 'images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com'. Ask a project owner to grant you the iam.serviceAccountUser role on the service account.
+
+TIMESTAMP: 2026-08-13T19:35:45.013174Z
+TEXT_PAYLOAD: ==> googlecompute.customize_windows: 
+
+TIMESTAMP: 2026-08-13T19:35:45.013170Z
+TEXT_PAYLOAD: 2026/08/13 19:35:43 ui error: ==> googlecompute.customize_windows: Error creating instance: 1 error(s) occurred:
+
+TIMESTAMP: 2026-08-13T19:35:45.013163Z
+TEXT_PAYLOAD: 2026/08/13 19:35:41 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/13 19:35:41 Retryable error: retrying for state DONE, got RUNNING
+
+TIMESTAMP: 2026-08-13T19:35:45.013160Z
+TEXT_PAYLOAD: 2026/08/13 19:35:39 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/13 19:35:39 Retryable error: retrying for state DONE, got RUNNING
+
+TIMESTAMP: 2026-08-13T19:35:45.013156Z
+TEXT_PAYLOAD: 2026/08/13 19:35:37 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/13 19:35:37 Retryable error: retrying for state DONE, got RUNNING

@@ -1,23 +1,4 @@
-ROLE: projects/ggn-nmfs-winde-dev-1/roles/nmfs.winde.image.builder.role
-
-ROLE: roles/artifactregistry.writer
-
-ROLE: roles/cloudbuild.builds.editor
-
-ROLE: roles/cloudfunctions.developer
-
-ROLE: roles/eventarc.eventReceiver
-
-ROLE: roles/iap.tunnelResourceAccessor
-
-ROLE: roles/logging.logWriter
-
-ROLE: roles/monitoring.metricWriter
-
-ROLE: roles/osconfig.vulnerabilityReportViewer
-
-ROLE: roles/run.developer
-
-ROLE: roles/run.invoker
-
-ROLE: roles/secretmanager.secretAccessor
+gcloud run jobs update windows-image-builder-jira \
+  --region=us-east4 \
+  --project=ggn-nmfs-winde-dev-1 \
+  --service-account=images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com

@@ -1,12 +1,1 @@
-google_cloudfunctions2_function.process_request: Creating...
-google_cloudfunctions2_function.process_request: Still creating... [00m10s elapsed]
-google_cloudfunctions2_function.process_request: Still creating... [00m20s elapsed]
-google_cloudfunctions2_function.process_request: Still creating... [00m30s elapsed]
-google_cloudfunctions2_function.process_request: Still creating... [00m40s elapsed]
-google_cloudfunctions2_function.process_request: Still creating... [00m50s elapsed]
-╷
-│ Error: Error waiting to create function: Error waiting for Creating function: Error code 13, message: Build failed with status: FAILURE and message: An unexpected error occurred. Refer to build logs: https://console.cloud.google.com/cloud-build/builds;region=us-east4/7f2e5aca-9120-4e7d-baa9-5cfd52bbdcab?project=194243189684. For more details see the logs at https://console.cloud.google.com/cloud-build/builds;region=us-east4/7f2e5aca-9120-4e7d-baa9-5cfd52bbdcab?project=194243189684.
-│ 
-│   with google_cloudfunctions2_function.process_request,
-│   on eventarc.tf line 104, in resource "google_cloudfunctions2_function" "process_request":
-│  104: resource "google_cloudfunctions2_function" "process_request" {
+gcloud builds log 7f2e5aca-9120-4e7d-baa9-5cfd52bbdcab --region=us-east4 --project=ggn-nmfs-winde-dev-1 2>&1 | tail -30

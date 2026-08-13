@@ -9,3 +9,4 @@ gcloud run jobs update windows-image-builder-jira \
 gcloud iam roles describe nmfs.winde.image.builder.role \
   --project=ggn-nmfs-winde-dev-1 \
   --format="table(includedPermissions)"
+INCLUDED_PERMISSIONS: ['compute.disks.create', 'compute.disks.delete', 'compute.disks.useReadOnly', 'compute.globalOperations.get', 'compute.images.create', 'compute.images.deprecate', 'compute.images.get', 'compute.images.getFromFamily', 'compute.images.list', 'compute.instances.create', 'compute.instances.delete', 'compute.instances.get', 'compute.instances.setMetadata', 'compute.instances.setServiceAccount', 'compute.instances.setTags', 'compute.machineTypes.get', 'compute.subnetworks.use', 'compute.zoneOperations.get', 'compute.zones.get', 'run.executions.get', 'run.jobs.list', 'run.jobs.run', 'run.locations.list', 'storage.objects.create', 'storage.objects.delete', 'storage.objects.get', 'storage.objects.list']

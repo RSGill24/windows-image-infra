@@ -1,4 +1,647 @@
-
-╷
-│ Error: Failed to load the backend state file: invalid syntax: unexpected end of JSON input
-│ terraform init 2>&1
+{
+  "version": 4,
+  "terraform_version": "1.15.8",
+  "serial": 7,
+  "lineage": "aa5245d6-ceac-c4a1-fdd5-4f4a148a163d",
+  "outputs": {
+    "audit_path": {
+      "value": "gs://jira-automation-bucket/audit/",
+      "type": "string"
+    },
+    "request_bucket": {
+      "value": "jira-automation-bucket",
+      "type": "string"
+    },
+    "status_path": {
+      "value": "gs://jira-automation-bucket/status/",
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "mode": "data",
+      "type": "archive_file",
+      "name": "process_request_zip",
+      "provider": "provider[\"registry.terraform.io/hashicorp/archive\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "exclude_symlink_directories": null,
+            "excludes": null,
+            "id": "76d57552538f2894598cf50064c95d764812f43d",
+            "output_base64sha256": "i8nMdAVECbguPOtsjAWlSNxilZavDvgI7OCzg6nEXQA=",
+            "output_base64sha512": "gpleK5tisMVLzLt3i02DzlE23/4hCrYWxG1/M/Y5iVhqRdChZbgvkTEm9v9YDtxXGvW6yjR6/MYS3Ls29zNHZg==",
+            "output_file_mode": null,
+            "output_md5": "00a010a0e47611a5303fda7abe49469e",
+            "output_path": "./functions/process-request.zip",
+            "output_sha": "76d57552538f2894598cf50064c95d764812f43d",
+            "output_sha256": "8bc9cc74054409b82e3ceb6c8c05a548dc629596af0ef808ece0b383a9c45d00",
+            "output_sha512": "82995e2b9b62b0c54bccbb778b4d83ce5136dffe210ab616c46d7f33f63989586a45d0a165b82f913126f6ff580edc571af5baca347afcc612dcbb36f7334766",
+            "output_size": 6737,
+            "source": [],
+            "source_content": null,
+            "source_content_filename": null,
+            "source_dir": "./functions/process-request",
+            "source_file": null,
+            "type": "zip"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "google_artifact_registry_repository",
+      "name": "image-builders",
+      "provider": "provider[\"registry.terraform.io/hashicorp/google\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "cleanup_policies": [],
+            "cleanup_policy_dry_run": false,
+            "create_time": "2026-06-05T15:47:41.796312Z",
+            "deletion_policy": "DELETE",
+            "description": "Docker images for Windows Packer builder",
+            "docker_config": [],
+            "effective_labels": {
+              "env": "dev",
+              "managed": "terraform"
+            },
+            "format": "DOCKER",
+            "id": "projects/ggn-nmfs-winde-dev-1/locations/us-east4/repositories/image-builders",
+            "kms_key_name": "",
+            "labels": {
+              "env": "dev",
+              "managed": "terraform"
+            },
+            "location": "us-east4",
+            "maven_config": [],
+            "mode": "STANDARD_REPOSITORY",
+            "name": "image-builders",
+            "project": "ggn-nmfs-winde-dev-1",
+            "registry_uri": "us-east4-docker.pkg.dev/ggn-nmfs-winde-dev-1/image-builders",
+            "remote_repository_config": [],
+            "repository_id": "image-builders",
+            "terraform_labels": {
+              "env": "dev",
+              "managed": "terraform"
+            },
+            "timeouts": null,
+            "update_time": "2026-08-12T15:36:26.376360Z",
+            "virtual_repository_config": [],
+            "vulnerability_scanning_config": [
+              {
+                "enablement_config": "INHERITED",
+                "enablement_state": "SCANNING_ACTIVE",
+                "enablement_state_reason": ""
+              }
+            ]
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 1,
+          "identity": {
+            "location": "us-east4",
+            "project": "ggn-nmfs-winde-dev-1",
+            "repository_id": "image-builders"
+          },
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiY3JlYXRlIjoxMjAwMDAwMDAwMDAwLCJkZWxldGUiOjEyMDAwMDAwMDAwMDAsInVwZGF0ZSI6MTIwMDAwMDAwMDAwMH19"
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "google_cloud_run_v2_job",
+      "name": "windows_image_builder",
+      "provider": "provider[\"registry.terraform.io/hashicorp/google\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "annotations": {},
+            "binary_authorization": [],
+            "client": "",
+            "client_version": "",
+            "conditions": [],
+            "create_time": "2026-08-12T15:36:37.089335Z",
+            "creator": "rajinder.gill@noaa.gov",
+            "delete_time": "",
+            "deletion_policy": "DELETE",
+            "deletion_protection": false,
+            "effective_annotations": {},
+            "effective_labels": {
+              "env": "dev",
+              "goog-terraform-provisioned": "true",
+              "managed": "terraform",
+              "os": "windows"
+            },
+            "etag": "\"CIWm8tMGENjJzCo/cHJvamVjdHMvZ2duLW5tZnMtd2luZGUtZGV2LTEvbG9jYXRpb25zL3VzLWVhc3Q0L2pvYnMvd2luZG93cy1pbWFnZS1idWlsZGVyLWppcmE\"",
+            "execution_count": 0,
+            "expire_time": "",
+            "generation": "1",
+            "id": "projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira",
+            "labels": {
+              "env": "dev",
+              "managed": "terraform",
+              "os": "windows"
+            },
+            "last_modifier": "rajinder.gill@noaa.gov",
+            "latest_created_execution": [],
+            "launch_stage": "GA",
+            "location": "us-east4",
+            "name": "windows-image-builder-jira",
+            "observed_generation": "1",
+            "project": "ggn-nmfs-winde-dev-1",
+            "reconciling": false,
+            "run_execution_token": "",
+            "start_execution_token": "",
+            "tags": null,
+            "template": [
+              {
+                "annotations": {},
+                "labels": {},
+                "parallelism": 0,
+                "task_count": 1,
+                "template": [
+                  {
+                    "containers": [
+                      {
+                        "args": [],
+                        "command": [],
+                        "depends_on": [],
+                        "env": [
+                          {
+                            "name": "GCS_STATUS_BUCKET",
+                            "value": "jira-automation-bucket",
+                            "value_source": []
+                          },
+                          {
+                            "name": "GMAIL_APP_PASSWORD_SECRET",
+                            "value": "gmail-app-password",
+                            "value_source": []
+                          },
+                          {
+                            "name": "GMAIL_SENDER_EMAIL",
+                            "value": "rajinder.gill@noaa.gov",
+                            "value_source": []
+                          },
+                          {
+                            "name": "IMAGE_FAMILY",
+                            "value": "pww-windows-2022-customized-dev",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALLATION_SOURCE_DIR",
+                            "value": "./ansible-playbook",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALLATION_TARGET_DIR",
+                            "value": "C:/Users/packer_user/installation/",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_AALIBRARY",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_ANACONDA",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_CHROME",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_CONDA",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_ECHOSMS",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_ECHOSTACK",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_ECHOVIEW",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_EXCEL",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_GCP_UTILITIES",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_GIT",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_GPU_DRIVERS",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_JUPYTERLAB",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_MATLAB",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_ORACLE",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_PARAVIEW",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_POSITRON",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_POWERSHELL_CORE",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_PYCHARM",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_PYTHON",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_RSTUDIO",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_RSTUDIO_PRO",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "INSTALL_VISUAL_STUDIO",
+                            "value": "false",
+                            "value_source": []
+                          },
+                          {
+                            "name": "MACHINE_TYPE",
+                            "value": "e2-standard-8",
+                            "value_source": []
+                          },
+                          {
+                            "name": "PACKER_TEMPLATE",
+                            "value": "customize.pkr.hcl",
+                            "value_source": []
+                          },
+                          {
+                            "name": "PROJECT_ID",
+                            "value": "ggn-nmfs-winde-dev-1",
+                            "value_source": []
+                          },
+                          {
+                            "name": "REQUEST_JSON_GCS",
+                            "value": "",
+                            "value_source": []
+                          },
+                          {
+                            "name": "SERVICE_ACCOUNT_EMAIL",
+                            "value": "vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com",
+                            "value_source": []
+                          },
+                          {
+                            "name": "SHARED_VPC_HOST_PROJECT",
+                            "value": "nmfs-winde-dev-2-subnet",
+                            "value_source": []
+                          },
+                          {
+                            "name": "SOURCE_IMAGE_FAMILY",
+                            "value": "nmfs-windows-2022",
+                            "value_source": []
+                          },
+                          {
+                            "name": "SOURCE_IMAGE_PROJECT_ID",
+                            "value": "ggn-nmfs-winde-dev-1",
+                            "value_source": []
+                          },
+                          {
+                            "name": "VM_NETWORK",
+                            "value": "local-network",
+                            "value_source": []
+                          },
+                          {
+                            "name": "VM_SUBNET",
+                            "value": "local-subnet",
+                            "value_source": []
+                          },
+                          {
+                            "name": "WINRM_SECRET",
+                            "value": "packer-winrm-password",
+                            "value_source": []
+                          },
+                          {
+                            "name": "ZONE",
+                            "value": "us-east4-c",
+                            "value_source": []
+                          }
+                        ],
+                        "image": "us-east4-docker.pkg.dev/ggn-nmfs-winde-dev-1/image-builders/windows-packer-builder:latest",
+                        "name": "windows-packer-builder",
+                        "ports": [],
+                        "resources": [
+                          {
+                            "limits": {
+                              "cpu": "2",
+                              "memory": "4Gi"
+                            }
+                          }
+                        ],
+                        "startup_probe": [],
+                        "volume_mounts": [],
+                        "working_dir": ""
+                      }
+                    ],
+                    "encryption_key": "",
+                    "execution_environment": "EXECUTION_ENVIRONMENT_GEN2",
+                    "gpu_zonal_redundancy_disabled": false,
+                    "max_retries": 1,
+                    "node_selector": [],
+                    "service_account": "vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com",
+                    "timeout": "7200s",
+                    "volumes": [],
+                    "vpc_access": [
+                      {
+                        "connector": "",
+                        "egress": "ALL_TRAFFIC",
+                        "network_interfaces": [
+                          {
+                            "network": "local-network",
+                            "subnetwork": "local-subnet",
+                            "tags": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "terminal_condition": [
+              {
+                "execution_reason": "",
+                "last_transition_time": "2026-08-12T15:36:37.552949Z",
+                "message": "",
+                "reason": "",
+                "revision_reason": "",
+                "severity": "",
+                "state": "CONDITION_SUCCEEDED",
+                "type": "Ready"
+              }
+            ],
+            "terraform_labels": {
+              "env": "dev",
+              "goog-terraform-provisioned": "true",
+              "managed": "terraform",
+              "os": "windows"
+            },
+            "timeouts": null,
+            "uid": "f153266a-7f68-4551-9606-e54ca69917d4",
+            "update_time": "2026-08-12T15:36:37.089335Z"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 1,
+          "identity": {
+            "location": "us-east4",
+            "name": "windows-image-builder-jira",
+            "project": "ggn-nmfs-winde-dev-1"
+          },
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiY3JlYXRlIjoxMjAwMDAwMDAwMDAwLCJkZWxldGUiOjEyMDAwMDAwMDAwMDAsInVwZGF0ZSI6MTIwMDAwMDAwMDAwMH19"
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "google_cloud_scheduler_job",
+      "name": "windows_image_builder_schedule",
+      "provider": "provider[\"registry.terraform.io/hashicorp/google\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "app_engine_http_target": [],
+            "attempt_deadline": "1800s",
+            "deletion_policy": "DELETE",
+            "description": "Scheduled build of the parameterized Windows image",
+            "http_target": [
+              {
+                "body": "eyJvdmVycmlkZXMiOnsiY29udGFpbmVyT3ZlcnJpZGVzIjpbeyJlbnYiOlt7Im5hbWUiOiJJTlNUQUxMX09SQUNMRSIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX1JTVFVESU8iLCJ2YWx1ZSI6ImZhbHNlIn0seyJuYW1lIjoiSU5TVEFMTF9DT05EQSIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX0NIUk9NRSIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX0dJVCIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX1BZVEhPTiIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX0pVUFlURVJMQUIiLCJ2YWx1ZSI6ImZhbHNlIn0seyJuYW1lIjoiSU5TVEFMTF9QT1dFUlNIRUxMX0NPUkUiLCJ2YWx1ZSI6ImZhbHNlIn0seyJuYW1lIjoiSU5TVEFMTF9QWUNIQVJNIiwidmFsdWUiOiJmYWxzZSJ9LHsibmFtZSI6IklOU1RBTExfVklTVUFMX1NUVURJTyIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX1BBUkFWSUVXIiwidmFsdWUiOiJmYWxzZSJ9LHsibmFtZSI6IklOU1RBTExfRUNIT1ZJRVciLCJ2YWx1ZSI6ImZhbHNlIn0seyJuYW1lIjoiSU5TVEFMTF9NQVRMQUIiLCJ2YWx1ZSI6ImZhbHNlIn0seyJuYW1lIjoiSU5TVEFMTF9SU1RVRElPX1BSTyIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX1BPU0lUUk9OIiwidmFsdWUiOiJmYWxzZSJ9LHsibmFtZSI6IklOU1RBTExfQU5BQ09OREEiLCJ2YWx1ZSI6ImZhbHNlIn0seyJuYW1lIjoiSU5TVEFMTF9HUFVfRFJJVkVSUyIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX0FBTElCUkFSWSIsInZhbHVlIjoiZmFsc2UifSx7Im5hbWUiOiJJTlNUQUxMX0VDSE9TTVMiLCJ2YWx1ZSI6ImZhbHNlIn0seyJuYW1lIjoiSU5TVEFMTF9FQ0hPU1RBQ0siLCJ2YWx1ZSI6ImZhbHNlIn0seyJuYW1lIjoiSU5TVEFMTF9HQ1BfVVRJTElUSUVTIiwidmFsdWUiOiJmYWxzZSJ9LHsibmFtZSI6IklOU1RBTExfRVhDRUwiLCJ2YWx1ZSI6ImZhbHNlIn1dLCJuYW1lIjoid2luZG93cy1wYWNrZXItYnVpbGRlciJ9XX19",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "http_method": "POST",
+                "oauth_token": [
+                  {
+                    "scope": "https://www.googleapis.com/auth/cloud-platform",
+                    "service_account_email": "images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com"
+                  }
+                ],
+                "oidc_token": [],
+                "uri": "https://us-east4-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/ggn-nmfs-winde-dev-1/jobs/windows-image-builder-jira:run"
+              }
+            ],
+            "id": "projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-schedule",
+            "name": "windows-image-builder-schedule",
+            "paused": false,
+            "project": "ggn-nmfs-winde-dev-1",
+            "pubsub_target": [],
+            "region": "us-east4",
+            "retry_config": [
+              {
+                "max_backoff_duration": "3600s",
+                "max_doublings": 5,
+                "max_retry_duration": "0s",
+                "min_backoff_duration": "5s",
+                "retry_count": 1
+              }
+            ],
+            "schedule": "0 2 * * 1",
+            "state": "ENABLED",
+            "time_zone": "UTC",
+            "timeouts": null
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 1,
+          "identity": {
+            "name": "windows-image-builder-schedule",
+            "project": "ggn-nmfs-winde-dev-1",
+            "region": "us-east4"
+          },
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiY3JlYXRlIjoxMjAwMDAwMDAwMDAwLCJkZWxldGUiOjEyMDAwMDAwMDAwMDAsInVwZGF0ZSI6MTIwMDAwMDAwMDAwMH19",
+          "dependencies": [
+            "google_cloud_run_v2_job.windows_image_builder"
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "function_source",
+      "provider": "provider[\"registry.terraform.io/hashicorp/google\"]",
+      "instances": [
+        {
+          "schema_version": 4,
+          "attributes": {
+            "autoclass": [],
+            "cors": [],
+            "custom_placement_config": [],
+            "default_event_based_hold": false,
+            "deletion_policy": "DELETE",
+            "effective_labels": {
+              "goog-terraform-provisioned": "true"
+            },
+            "enable_object_retention": false,
+            "encryption": [],
+            "force_destroy": true,
+            "hierarchical_namespace": [
+              {
+                "enabled": false
+              }
+            ],
+            "id": "ggn-nmfs-winde-dev-1-cf-image-builder-src",
+            "ip_filter": [],
+            "labels": {},
+            "lifecycle_rule": [],
+            "location": "US-EAST4",
+            "logging": [],
+            "name": "ggn-nmfs-winde-dev-1-cf-image-builder-src",
+            "project": "ggn-nmfs-winde-dev-1",
+            "project_number": 194243189684,
+            "public_access_prevention": "inherited",
+            "requester_pays": false,
+            "retention_policy": [],
+            "rpo": null,
+            "self_link": "https://www.googleapis.com/storage/v1/b/ggn-nmfs-winde-dev-1-cf-image-builder-src",
+            "soft_delete_policy": [
+              {
+                "effective_time": "2026-08-11T18:21:34.725Z",
+                "retention_duration_seconds": 604800
+              }
+            ],
+            "storage_class": "STANDARD",
+            "terraform_labels": {
+              "goog-terraform-provisioned": "true"
+            },
+            "time_created": "2026-08-11T18:21:34.725Z",
+            "timeouts": null,
+            "uniform_bucket_level_access": true,
+            "updated": "2026-08-11T18:21:34.725Z",
+            "url": "gs://ggn-nmfs-winde-dev-1-cf-image-builder-src",
+            "versioning": [],
+            "website": []
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 1,
+          "identity": {
+            "name": "ggn-nmfs-winde-dev-1-cf-image-builder-src",
+            "project": "ggn-nmfs-winde-dev-1"
+          },
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiY3JlYXRlIjo2MDAwMDAwMDAwMDAsInJlYWQiOjI0MDAwMDAwMDAwMCwidXBkYXRlIjoyNDAwMDAwMDAwMDB9LCJzY2hlbWFfdmVyc2lvbiI6IjQifQ=="
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "google_storage_bucket",
+      "name": "image_builder_requests",
+      "provider": "provider[\"registry.terraform.io/hashicorp/google\"]",
+      "instances": []
+    },
+    {
+      "mode": "managed",
+      "type": "google_storage_bucket_object",
+      "name": "process_request_source",
+      "provider": "provider[\"registry.terraform.io/hashicorp/google\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "bucket": "ggn-nmfs-winde-dev-1-cf-image-builder-src",
+            "cache_control": "",
+            "content": null,
+            "content_disposition": "",
+            "content_encoding": "",
+            "content_language": "",
+            "content_type": "application/zip",
+            "contexts": [],
+            "crc32c": "NiCA4g==",
+            "customer_encryption": [],
+            "deletion_policy": "DELETE",
+            "detect_md5hash": "AKAQoOR2EaUwP9p6vklGng==",
+            "event_based_hold": false,
+            "force_empty_content_type": null,
+            "generation": 1786472495013034,
+            "id": "ggn-nmfs-winde-dev-1-cf-image-builder-src-process-request-00a010a0e47611a5303fda7abe49469e.zip",
+            "kms_key_name": "",
+            "md5hash": "AKAQoOR2EaUwP9p6vklGng==",
+            "md5hexhash": "00a010a0e47611a5303fda7abe49469e",
+            "media_link": "https://storage.googleapis.com/download/storage/v1/b/ggn-nmfs-winde-dev-1-cf-image-builder-src/o/process-request-00a010a0e47611a5303fda7abe49469e.zip?generation=1786472495013034\u0026alt=media",
+            "metadata": {},
+            "name": "process-request-00a010a0e47611a5303fda7abe49469e.zip",
+            "output_name": "process-request-00a010a0e47611a5303fda7abe49469e.zip",
+            "retention": [],
+            "self_link": "https://www.googleapis.com/storage/v1/b/ggn-nmfs-winde-dev-1-cf-image-builder-src/o/process-request-00a010a0e47611a5303fda7abe49469e.zip",
+            "source": "./functions/process-request.zip",
+            "source_md5hash": "",
+            "storage_class": "STANDARD",
+            "temporary_hold": false,
+            "timeouts": null
+          },
+          "sensitive_attributes": [
+            [
+              {
+                "type": "get_attr",
+                "value": "content"
+              }
+            ]
+          ],
+          "identity_schema_version": 0,
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiY3JlYXRlIjoyNDAwMDAwMDAwMDAsImRlbGV0ZSI6MjQwMDAwMDAwMDAwLCJ1cGRhdGUiOjI0MDAwMDAwMDAwMH19",
+          "dependencies": [
+            "data.archive_file.process_request_zip",
+            "google_storage_bucket.function_source"
+          ]
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}

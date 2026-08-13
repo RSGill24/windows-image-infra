@@ -17,3 +17,7 @@ SA :
   - roles/cloudfunctions.developer
   - roles/eventarc.admin                                                                                                  
   - roles/iam.serviceAccountUser
+
+
+cd terraform && sed -i 's/images-build-sa1/vm-prov-webhook-runner/g' cloud_run_job.tf eventarc.tf && echo "Updated SA to vm-prov-webhook-runner in cloud_run_job.tf and eventarc.tf" && grep -n "vm-prov-webhook-runner" cloud_run_job.tf eventarc.tf && cd ..
+

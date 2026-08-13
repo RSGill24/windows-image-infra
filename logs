@@ -1,10 +1,4 @@
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform (ggn-nmfs-winde-dev-1)$ gcloud projects get-iam-policy ggn-nmfs-winde-dev-1   --flatten="bindings[].members"   --filter="bindings.members:vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com"   --format="table(bindings.role)"
-ROLE: roles/eventarc.eventReceiver
-
-ROLE: roles/logging.logWriter
-
-ROLE: roles/monitoring.metricWriter
-
-ROLE: roles/run.invoker
-
-ROLE: roles/storage.objectUser
+gcloud projects get-iam-policy ggn-nmfs-winde-dev-1 \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
+  --format="table(bindings.role)"

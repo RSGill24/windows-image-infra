@@ -1,13 +1,1 @@
-
-google_cloud_run_v2_job.windows_image_builder: Modifying... [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira]
-google_cloud_run_v2_job.windows_image_builder: Still modifying... [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira, 00m10s elapsed]
-google_cloud_run_v2_job.windows_image_builder: Modifications complete after 11s [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-jira]
-google_cloud_scheduler_job.windows_image_builder_schedule: Modifying... [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-schedule]
-google_cloudfunctions2_function.process_request: Creating...
-google_cloud_scheduler_job.windows_image_builder_schedule: Modifications complete after 1s [id=projects/ggn-nmfs-winde-dev-1/locations/us-east4/jobs/windows-image-builder-schedule]
-╷
-│ Error: Error creating function: googleapi: Error 403: Caller is missing permission 'iam.serviceaccounts.actAs' on service account projects/-/serviceAccounts/194243189684-compute@developer.gserviceaccount.com. Grant the role 'roles/iam.serviceAccountUser' to the caller on the service account projects/-/serviceAccounts/194243189684-compute@developer.gserviceaccount.com. You can do that by running 'gcloud iam service-accounts add-iam-policy-binding projects/-/serviceAccounts/194243189684-compute@developer.gserviceaccount.com --member MEMBER --role roles/iam.serviceAccountUser' where MEMBER has a prefix like 'user:' or 'serviceAccount:'. Details and instructions for the Cloud Console can be found at https://cloud.google.com/functions/docs/reference/iam/roles#additional-configuration.
-│ 
-│   with google_cloudfunctions2_function.process_request,
-│   on eventarc.tf line 104, in resource "google_cloudfunctions2_function" "process_request":
-│  104: resource "google_cloudfunctions2_function" "process_request" {
+sed -i '/entry_point.*=.*"process_request"/a\    service_account = "projects/ggn-nmfs-winde-dev-1/serviceAccounts/vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com"' eventarc.tf && echo 'Done' && grep -A2 entry_point eventarc.tf

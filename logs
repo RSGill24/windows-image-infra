@@ -1,4 +1,48 @@
-gcloud run jobs update windows-image-builder-jira \
-  --region=us-east4 \
-  --project=ggn-nmfs-winde-dev-1 \
-  --update-env-vars SOURCE_IMAGE_PROJECT_ID=nmfs-trusted-images-dev
+
+
+# 1. Add source_image_project_id variable to variables.tf
+python3 -c "
+f = 'variables.tf'
+with open(f) as fh:
+    code = fh.read()
+
+if 'source_image_project_id' not in code:
+    old = 'variable \"request_bucket_name\" {'
+    new = '''variable \"source_image_project_id\" {
+  type        = string
+  description = \"Project ID where base Windows image family exists\"
+  default     = \"\"
+}
+
+variable \"request_bucket_name\" {'''
+    code = code.replace(old, new)
+    with open(f, 'w') as fh:
+        fh.write(code)
+    print('variables.tf updated')
+else:
+    print('source_image_project_id already exists in variables.tf')
+"
+
+# 2. Update cloud_run_job.tf to use new variable
+python3 -c "
+f = 'cloud_run_job.tf'
+with open(f) as fh:
+    code = fh.read()
+
+old = '''          name  = \"SOURCE_IMAGE_PROJECT_ID\"
+          value = var.project_id'''
+new = '''          name  = \"SOURCE_IMAGE_PROJECT_ID\"
+          value = var.source_image_project_id != \"\" ? var.source_image_project_id : var.project_id'''
+
+code = code.replace(old, new)
+with open(f, 'w') as fh:
+    fh.write(code)
+print('cloud_run_job.tf updated')
+"
+
+# 3. Add to terraform.tfvars
+echo '' >> terraform.tfvars
+echo 'source_image_project_id = "nmfs-trusted-images-dev"' >> terraform.tfvars
+echo 'terraform.tfvars updated'
+
+echo "Done! Now run: terraform plan to verify, then terraform apply when ready"

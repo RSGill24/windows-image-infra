@@ -1,21 +1,178 @@
-gcloud iam roles describe nmfs.winde.image.builder.role \
-  --project=ggn-nmfs-winde-dev-1 \
-  --format="yaml(title,name,includedPermissions)"
 
-compute.images.useReadOnly
-compute.images.setLabels
-
-gcloud iam roles describe nmfs.winde.image.builder.role \
-  --project=ggn-nmfs-winde-dev-1 \
-  --format="value(includedPermissions)" | \
-  grep -E "compute.images.useReadOnly|compute.images.setLabels"
-
-
-gcloud iam roles update nmfs.winde.image.builder.role \
-  --project=ggn-nmfs-winde-dev-1 \
-  --add-permissions="compute.images.useReadOnly,compute.images.setLabels"
-
-gcloud projects get-iam-policy ggn-nmfs-winde-dev-1 \
-  --flatten="bindings[].members" \
-  --filter="bindings.members:serviceAccount:vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com" \
-  --format="table(bindings.role)"
+Task 0 logs
+Logs
+Severity
+Default
+Filter
+Severity
+Time
+Summary
+Streaming has paused
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [TRACE] validateValue: not active for install_powershell_core, so skipping
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [TRACE] validateValue: not active for install_echoview, so skipping
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [TRACE] validateValue: not active for install_excel, so skipping
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [TRACE] validateValue: not active for install_pycharm, so skipping
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [TRACE] Using protobuf for communication with plugins
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [INFO] Starting external plugin /root/.config/packer/plugins/github.com/hashicorp/googlecompute/packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 start builder --protobuf -packer-default-plugin-name-
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Starting plugin: /root/.config/packer/plugins/github.com/hashicorp/googlecompute/packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 []string{"/root/.config/packer/plugins/github.com/hashicorp/googlecompute/packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64", "start", "builder", "--protobuf", "-packer-default-plugin-name-"}
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Waiting for RPC address for: /root/.config/packer/plugins/github.com/hashicorp/googlecompute/packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 Plugin address: unix /tmp/packer-plugin1848645939
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Received unix RPC address for /root/.config/packer/plugins/github.com/hashicorp/googlecompute/packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64: addr is /tmp/packer-plugin1848645939
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 Waiting for connection...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 Serving a plugin connection...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 [TRACE] starting builder -packer-default-plugin-name-
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 [DEBUG] - common: sending ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [DEBUG] - common: receiving ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 [DEBUG] - common: sending ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [DEBUG] - common: receiving ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [INFO] Starting external plugin /usr/local/bin/packer execute --protobuf packer-provisioner-powershell
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Starting plugin: /usr/local/bin/packer []string{"/usr/local/bin/packer", "execute", "--protobuf", "packer-provisioner-powershell"}
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Waiting for RPC address for: /usr/local/bin/packer
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: [INFO] Packer version: 1.16.0 [go1.26.3 linux amd64]
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: [INFO] PACKER_CONFIG env var not set; checking the default config file path
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: [INFO] PACKER_CONFIG env var set; attempting to open config file: /root/.packerconfig
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: [WARN] Config file doesn't exist: /root/.packerconfig
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: [INFO] Setting cache directory: /root/.cache/packer
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: Plugin address: unix /tmp/packer-plugin1669259032
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: Waiting for connection...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Received unix RPC address for /usr/local/bin/packer: addr is /tmp/packer-plugin1669259032
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: Serving a plugin connection...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: [DEBUG] - common: sending ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [DEBUG] - common: receiving ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: Using inline default execute command powershell -executionpolicy bypass -file {{.Path}}
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: Using inline default elevated execute command powershell -executionpolicy bypass -file {{.Path}}
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-powershell plugin: [DEBUG] - common: sending ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [DEBUG] - common: receiving ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [INFO] Starting external plugin /usr/local/bin/packer execute --protobuf packer-provisioner-shell-local
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Starting plugin: /usr/local/bin/packer []string{"/usr/local/bin/packer", "execute", "--protobuf", "packer-provisioner-shell-local"}
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Waiting for RPC address for: /usr/local/bin/packer
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: [INFO] Packer version: 1.16.0 [go1.26.3 linux amd64]
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: [INFO] PACKER_CONFIG env var not set; checking the default config file path
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: [INFO] PACKER_CONFIG env var set; attempting to open config file: /root/.packerconfig
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: [WARN] Config file doesn't exist: /root/.packerconfig
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: [INFO] Setting cache directory: /root/.cache/packer
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: Plugin address: unix /tmp/packer-plugin2372167459
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Received unix RPC address for /usr/local/bin/packer: addr is /tmp/packer-plugin2372167459
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: Waiting for connection...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: Serving a plugin connection...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: [DEBUG] - common: sending ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [DEBUG] - common: receiving ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-provisioner-shell-local plugin: [DEBUG] - common: sending ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [DEBUG] - common: receiving ConfigSpec as protobuf
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 ui: [1;32mgooglecompute.customize_windows: output will be in this color.[0m
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 ui: 
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Build debug mode: false
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Force build: false
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 On error: 
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Waiting on builds to complete...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Starting build run: googlecompute.customize_windows
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 Running builder: googlecompute
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 [INFO] (telemetry) Starting builder googlecompute.customize_windows
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 [INFO] Requesting Google token via GCE API Default Client Token Source...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 [INFO] Instantiating GCE client...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 [INFO] Instantiating OS Login client...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 [INFO] Instantiating Oauth2 client...
+2026-08-14 10:13:18.847 EDT
+2026/08/14 14:13:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:15 [INFO] Instantiating storage client...
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:15 ui: [1;32m==> googlecompute.customize_windows: Checking image does not exist...[0m
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:15 ui: [1;32m==> googlecompute.customize_windows: Creating temporary RSA SSH key for instance...[0m
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:16 ui: [1;32m==> googlecompute.customize_windows: no persistent disk to create[0m
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:16 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:16 failed to get project metadata: googleapi: Error 403: Required 'compute.projects.get' permission for 'projects/ggn-nmfs-winde-dev-1', forbidden
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:16 ui: [1;32m==> googlecompute.customize_windows: Importing SSH public key for OSLogin...[0m
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:17 ui: [1;32m==> googlecompute.customize_windows: Obtaining SSH Username for OSLogin...[0m
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:17 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/08/14 14:13:17 [DEBUG] OSLogin step, setting ssh_username: sa_105596532170636938520
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:17 ui error: [1;31m==> googlecompute.customize_windows: Error getting source image for instance creation: Could not find image, nmfs-windows-2022, in projects, [ggn-nmfs-winde-dev-1]: 1 error(s) occurred:
+2026-08-14 10:13:18.848 EDT
+==> googlecompute.customize_windows: 
+2026-08-14 10:13:18.848 EDT
+==> googlecompute.customize_windows: * googleapi: Error 404: The resource 'projects/ggn-nmfs-winde-dev-1/global/images/family/nmfs-windows-2022' was not found, notFound[0m
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:17 ui: [1;32m==> googlecompute.customize_windows: Deleting SSH public key for OSLogin...[0m
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:18 ui: [1;32m==> googlecompute.customize_windows: SSH public key for OSLogin has been deleted![0m
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:18 [INFO] (telemetry) ending googlecompute.customize_windows
+2026-08-14 10:13:18.848 EDT
+2026/08/14 14:13:18 ui error: [1;31mBuild 'googlecompute.customize_windows' errored after 2 seconds 934 milliseconds: Error getting source image for instance creation: Could not find image, nmfs-windows-2022, in projects, [ggn-nmfs-winde-dev-1]: 1 error(s) occurred:
+2026-08-14 10:13:18.848 EDT
+* googleapi: Error 404: The resource 'projects/ggn-nmfs-winde-dev-1/global/images/family/nmfs-windows-2022' was not found, notFound[0m
+{
+insertId: "6a7f227e000cf222cf8a10f4"
+labels: {4}
+logName: "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstdout"
+receiveTimestamp: "2026-08-14T14:13:18.905453763Z"
+resource: {2}
+textPayload: "* googleapi: Error 404: The resource 'projects/ggn-nmfs-winde-dev-1/global/images/family/nmfs-windows-2022' was not found, notFound[0m"
+timestamp: "2026-08-14T14:13:18.848418Z"

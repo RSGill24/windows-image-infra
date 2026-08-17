@@ -79,11 +79,11 @@ LATEST_IMAGE=$(gcloud compute images list \
   --limit=1)
 
 if [ -n "${LATEST_IMAGE}" ]; then
-  # Only deprecates Phase 1 base images (nmfs-windows-2022-[timestamp])
+  # Only deprecates Phase 1 base images (nmfs-windows-2025-[timestamp])
   # Never touches oracle-client images
   OLD_IMAGES=$(gcloud compute images list \
     --project="${PROJECT_ID}" \
-    --filter="family=${IMAGE_FAMILY} AND name~'^nmfs-windows-2022-[0-9]' AND name!=${LATEST_IMAGE}" \
+    --filter="family=${IMAGE_FAMILY} AND name~'^nmfs-windows-2025-[0-9]' AND name!=${LATEST_IMAGE}" \
     --format="value(name)")
 
   while IFS= read -r IMAGE; do

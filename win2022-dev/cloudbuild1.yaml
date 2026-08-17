@@ -1,12 +1,12 @@
 substitutions:
   _PROJECT_ID: "big-mender-473219-r2"
   _SOURCE_IMAGE_PROJECT_ID: "windows-cloud"
-  _SOURCE_IMAGE_FAMILY: "windows-2022"
+  _SOURCE_IMAGE_FAMILY: "windows-2025"
   _ZONE: "us-east4-b"
   # NAMING CONVENTION: nmfs-[os]-[version]
-  _IMAGE_FAMILY: "nmfs-windows-2022"
+  _IMAGE_FAMILY: "nmfs-windows-2025"
   # NAMING CONVENTION: nmfs-[os/version] for source image variable
-  _SOURCE_IMAGE: "windows-2022"
+  _SOURCE_IMAGE: "windows-2025"
   _WINRM_SECRET: "packer-winrm-password"
   _PACKER_TEMPLATE: "harden_ww.pkr.hcl"
   _PACKER_VERSION: "1.9.4"

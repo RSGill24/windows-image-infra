@@ -144,7 +144,7 @@ build {
   # path. Do NOT use directory-mode upload (trailing slash on source) -- it
   # silently truncates large scripts over WinRM causing parse errors mid-build.
   #
-  # NOTE: WindowsServer-2022-MS-2.7.org.pamdata.xml is NOT uploaded here.
+  # NOTE: WindowsServer-2025-MS-2.7.org.pamdata.xml is NOT uploaded here.
   # install_dsc_deps.ps1 generates it dynamically on the VM from the
   # PowerSTIG module's bundled default XML then applies PAM overrides.
 

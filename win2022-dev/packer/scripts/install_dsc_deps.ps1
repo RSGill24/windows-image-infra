@@ -71,13 +71,13 @@ $stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
 Write-Host "--- Searching for org.default.xml in: $stigDataPath"
 
 $defaultOrgFile = Get-ChildItem -Path $stigDataPath `
-                    -Filter "WindowsServer-2022-MS-*.org.default.xml" `
+                    -Filter "WindowsServer-2025-MS-*.org.default.xml" `
                     -ErrorAction SilentlyContinue |
                   Sort-Object Name -Descending |
                   Select-Object -First 1
 
 if (-not $defaultOrgFile) {
-    Write-Error "No WindowsServer-2022-MS-*.org.default.xml found in $stigDataPath"
+    Write-Error "No WindowsServer-2025-MS-*.org.default.xml found in $stigDataPath"
     exit 1
 }
 Write-Host "Found org.default.xml: $($defaultOrgFile.FullName)"

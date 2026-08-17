@@ -30,7 +30,7 @@ variable "hardening_target_dir"    { type = string }
 variable "hardening_entry_script"  { type = string }
 
 # NAMING CONVENTION: nmfs-[os]-[version] for family, nmfs-[os/version]-[timestamp] for images
-source "googlecompute" "nmfs_windows_2022" {
+source "googlecompute" "nmfs_windows_2025" {
   project_id              = var.project_id
   use_iap                 = true
   use_internal_ip         = true
@@ -58,7 +58,7 @@ source "googlecompute" "nmfs_windows_2022" {
   tags       = ["winrm"]
 
   image_family = var.image_family
-  image_name   = "nmfs-windows-2022-{{timestamp}}"
+  image_name   = "nmfs-windows-2025-{{timestamp}}"
   machine_type = var.machine_type
 
   metadata = {
@@ -88,7 +88,7 @@ EOF
 }
 
 build {
-  sources = ["sources.googlecompute.nmfs_windows_2022"]
+  sources = ["sources.googlecompute.nmfs_windows_2025"]
 
   # Step 1: Confirm connection, ensure packer_user is in Administrators,
   # and prep elevated-provisioner prerequisites (seclogon + SeBatchLogonRight).

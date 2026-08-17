@@ -95,13 +95,13 @@ Write-Host "Found PowerSTIG module $pstigVersion at: $($module.ModuleBase)"
 # Detecting STIG XML and parse version
 # -----------------------------------------------------------------------
 $stigDataPath = Join-Path $module.ModuleBase "StigData\Processed"
-$stigXml = Get-ChildItem -Path $stigDataPath -Filter "WindowsServer-2022-MS-*.org.default.xml" |
+$stigXml = Get-ChildItem -Path $stigDataPath -Filter "WindowsServer-2025-MS-*.org.default.xml" |
            Sort-Object Name -Descending | Select-Object -First 1
 if (-not $stigXml) {
-    Write-Error "No WindowsServer-2022-MS-*.org.default.xml found in $stigDataPath"
+    Write-Error "No WindowsServer-2025-MS-*.org.default.xml found in $stigDataPath"
     exit 1
 }
-$stigVersionString = ($stigXml.Name -replace 'WindowsServer-2022-MS-', '' -replace '\.org\.default\.xml', '')
+$stigVersionString = ($stigXml.Name -replace 'WindowsServer-2025-MS-', '' -replace '\.org\.default\.xml', '')
 Write-Host "Detected STIG XML: $($stigXml.FullName)"
 Write-Host "Detected STIG version: $stigVersionString"
 
@@ -149,7 +149,7 @@ Configuration ApplyWindowsServerStig {
 
     Node 'localhost' {
         WindowsServer 'ConfigureServer' {
-            OsVersion   = '2022'
+            OsVersion   = '2025'
             OsRole      = 'MS'
             StigVersion = '$stigVersionString'
             OrgSettings = '$safeOrgSettings'

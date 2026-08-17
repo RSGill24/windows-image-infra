@@ -8,7 +8,7 @@ $ErrorCount = 0
 
 # -----------------------------------------------------------------------
 # V-254248: Windows Defender Antivirus
-# WinDefend is a PPL-protected service on Server 2022 — registry key is
+# WinDefend is a PPL-protected service on Server 2025 — registry key is
 # also access-controlled. WinDefend is already Running and set to
 # Automatic by default on this image; verified and logged only.
 # -----------------------------------------------------------------------

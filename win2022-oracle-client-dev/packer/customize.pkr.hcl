@@ -211,7 +211,7 @@ source "googlecompute" "customize_windows" {
   tags      = ["winrm"]
 
   image_family = var.image_family
-  image_name   = var.image_name != "" ? var.image_name : "nmfs-windows-2022-software-{{timestamp}}"
+  image_name   = var.image_name != "" ? var.image_name : "nmfs-windows-2025-software-{{timestamp}}"
   machine_type = var.machine_type
 
   image_storage_locations = ["us"]

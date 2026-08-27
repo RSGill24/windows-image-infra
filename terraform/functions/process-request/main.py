@@ -139,8 +139,8 @@ def normalize_client_json(data: dict) -> dict:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     sw_names = [k.replace("_", "") for k in enabled[:5]]
     sw_part = "-".join(sw_names) if sw_names else "custom"
-    image_name = f"nmfs-windows-2022-{sw_part}-{ts}"
-    image_family = f"nmfs-windows-2022-{sw_part}"
+    image_name = f"nmfs-windows-2025-{sw_part}-{ts}"
+    image_family = f"nmfs-windows-2025-{sw_part}"
 
     normalized = {
         "image_config": {

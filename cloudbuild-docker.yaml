@@ -11,7 +11,7 @@ images:
   - 'us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest'
 
 # Replace with your service account email
-serviceAccount: 'projects/your-project-id/serviceAccounts/your-sa-name@your-project-id.iam.gserviceaccount.com'
+serviceAccount: 'projects/big-mender-473219-r2/serviceAccounts/packer-win-sa@big-mender-473219-r2.iam.gserviceaccount.com'
 
 options:
   logging: CLOUD_LOGGING_ONLY

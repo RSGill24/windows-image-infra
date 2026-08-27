@@ -8,6 +8,6 @@
   "summary": "Demo for Rajinder",
   "fmc": "OCIO",
   "workstation_size": "Large - (16 – 32 vCPU | RAM: 64 – 128 GB | Storage: 500GB – 1TB)",
-  "software_packages": "FireFox, Oracle Drivers",
+  "software_packages": "Git, Oracle Drivers",
   "additional_unlisted_software": "Git and gcloud SDK and VS Code"
 }

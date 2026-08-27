@@ -157,6 +157,12 @@ variable "install_excel" {
 
 # ── Request Bucket ──────────────────────────────────────────────────────────
 
+variable "source_image_project_id" {
+  type        = string
+  description = "Project ID where base Windows image family exists (e.g. nmfs-trusted-images-dev)"
+  default     = ""
+}
+
 variable "request_bucket_name" {
   type        = string
   description = "Existing GCS bucket name where JSON requests are dropped (e.g. jira-automation-bucket)"

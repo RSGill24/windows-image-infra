@@ -2,7 +2,7 @@
 Cloud Function: process-request
 
 Pre-processor that sits between GCS upload and Cloud Run.
-Triggered by Eventarc when a JSON file lands in /requests/.
+Triggered by Eventarc when a JSON file lands in the bucket.
 
 User only provides software selection in JSON. The function automatically
 detects WHO uploaded the file via GCS Cloud Audit Logs.
@@ -406,9 +406,9 @@ def process_request(cloud_event):
     bucket_name = data["bucket"]
     object_name = data["name"]
 
-    # Only process files in the requests/ prefix
-    if not object_name.startswith("requests/"):
-        print(f"[SKIP] Ignoring non-request file: {object_name}")
+    # Skip internal folders (audit, status, processed) to avoid recursive triggers
+    if any(object_name.startswith(p) for p in ("audit/", "status/", "processed/")):
+        print(f"[SKIP] Ignoring internal file: {object_name}")
         return "Skipped", 200
 
     if not object_name.endswith(".json"):
@@ -475,7 +475,12 @@ def process_request(cloud_event):
     print(f"[FINGERPRINT] {fingerprint} ({', '.join(enabled_software)})")
 
     # ── 5. Check for existing image with same fingerprint ─────────────────
-    existing_image = find_existing_image(fingerprint)
+    try:
+        existing_image = find_existing_image(fingerprint)
+    except Exception as e:
+        print(f"[WARN] Duplicate check failed (likely missing compute.images.list permission): {e}")
+        print("[WARN] Skipping duplicate detection — proceeding with build")
+        existing_image = None
 
     if existing_image:
         image_name = existing_image["name"]
@@ -495,7 +500,7 @@ def process_request(cloud_event):
             request_data["image_config"]["skip_build"] = True
             request_data["_processed"] = True
 
-            processed_name = object_name.replace("requests/", "processed/")
+            processed_name = f"processed/{object_name.split('/')[-1]}"
             processed_blob = storage.Client().bucket(bucket_name).blob(processed_name)
             processed_blob.upload_from_string(
                 json.dumps(request_data, indent=2), content_type="application/json"
@@ -534,8 +539,8 @@ def process_request(cloud_event):
     # Mark as processed to prevent recursive triggers
     request_data["_processed"] = True
 
-    # Write enriched JSON to /processed/ (not /requests/) for Cloud Run to read
-    processed_name = object_name.replace("requests/", "processed/", 1)
+    # Write enriched JSON to /processed/ for Cloud Run to read
+    processed_name = f"processed/{object_name.split('/')[-1]}"
     enriched_blob = bucket.blob(processed_name)
     enriched_blob.upload_from_string(
         json.dumps(request_data, indent=2),

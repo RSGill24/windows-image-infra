@@ -107,8 +107,9 @@ resource "google_cloudfunctions2_function" "process_request" {
   project  = var.project_id
 
   build_config {
-    runtime     = "python312"
-    entry_point = "process_request"
+    runtime         = "python312"
+    entry_point     = "process_request"
+    service_account = "projects/${var.project_id}/serviceAccounts/packer-win-sa@${var.project_id}.iam.gserviceaccount.com"
 
     source {
       storage_source {

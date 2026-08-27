@@ -107,6 +107,83 @@ write_status() {
   echo "[STATUS] ${status} → ${status_path}"
 }
 
+# ── Helper: write completion JSON to jira-winde-bucket ──────────────────────
+write_jira_bucket() {
+  local status="$1"
+  local extra="${2:-}"
+  local now
+  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  local vm_status="not_requested"
+  if [ -n "${CREATED_VM_NAME:-}" ] && [ "${CREATED_VM_NAME}" != "FAILED" ]; then
+    vm_status="running"
+  elif [ "${CREATED_VM_NAME:-}" = "FAILED" ]; then
+    vm_status="failed"
+  fi
+
+  local jira_json
+  jira_json=$(jq -n \
+    --arg request_id "${REQUEST_ID:-}" \
+    --arg status "${status}" \
+    --arg requester_name "${REQUESTER_NAME:-unknown}" \
+    --arg requester_email "${REQUESTER_EMAIL:-unknown}" \
+    --arg requester_team "${REQUESTER_TEAM:-unknown}" \
+    --arg ticket_id "${TICKET_ID:-}" \
+    --arg requested_at "${REQUESTED_AT:-${now}}" \
+    --arg completed_at "${now}" \
+    --arg image_name "${BUILT_IMAGE_NAME:-pending}" \
+    --arg image_family "${IMAGE_FAMILY}" \
+    --arg project_id "${PROJECT_ID}" \
+    --arg zone "${ZONE}" \
+    --arg machine_type "${MACHINE_TYPE}" \
+    --arg vm_name "${CREATED_VM_NAME:-none}" \
+    --arg vm_status "${vm_status}" \
+    --arg vm_user "${WS_USERNAME:-}" \
+    --arg software_fingerprint "${SOFTWARE_FINGERPRINT:-}" \
+    --arg enabled_software "${ENABLED_SOFTWARE:-}" \
+    --arg message "${extra}" \
+    '{
+      request_id: $request_id,
+      status: $status,
+      requester: {
+        name: $requester_name,
+        email: $requester_email,
+        team: $requester_team
+      },
+      jira: {
+        ticket_id: $ticket_id
+      },
+      timestamps: {
+        requested_at: $requested_at,
+        completed_at: $completed_at
+      },
+      image: {
+        name: $image_name,
+        family: $image_family,
+        project: $project_id
+      },
+      vm: {
+        name: $vm_name,
+        status: $vm_status,
+        zone: $zone,
+        machine_type: $machine_type,
+        workstation_user: $vm_user
+      },
+      software: {
+        fingerprint: $software_fingerprint,
+        enabled: ($enabled_software | split(","))
+      },
+      message: $message
+    }')
+
+  local dest="gs://jira-winde-bucket/builds/${REQUEST_ID:-unknown}.json"
+  if echo "${jira_json}" | gsutil -q cp - "${dest}"; then
+    echo "[JIRA-BUCKET] JSON written → ${dest}"
+  else
+    echo "[JIRA-BUCKET] WARNING: Failed to write JSON to ${dest}"
+  fi
+}
+
 # ── Helper: send email via Gmail SMTP ────────────────────────────────────────
 send_email() {
   local recipient="$1"
@@ -358,6 +435,7 @@ done
 if [ "${ALL_FALSE}" = "true" ]; then
   echo "[WARN] No components selected – exiting early."
   write_status "FAILED" "No software components selected"
+  write_jira_bucket "FAILED" "No software components selected" || true
 
   exit 0
 fi
@@ -474,6 +552,7 @@ else
     echo "[ERROR] Packer build failed"
     [ -f /tmp/packer-debug.log ] && tail -100 /tmp/packer-debug.log
     write_status "FAILED" "Packer build failed — check logs" || true
+    write_jira_bucket "FAILED" "Packer build failed — check logs" || true
     exit 1
   fi
 fi
@@ -612,6 +691,9 @@ fi
 # COMPLETION: write final status + send notification
 # ══════════════════════════════════════════════════════════════════════════════
 write_status "COMPLETED" "Image build and provisioning completed successfully" || echo "[WARN] write_status COMPLETED failed, continuing..."
+
+# ── Write build details to jira-winde-bucket ─────────────────────────────────
+write_jira_bucket "COMPLETED" "Image build and provisioning completed successfully" || echo "[WARN] write_jira_bucket failed, continuing..."
 
 echo "══════════════════════════════════════════════════════════════"
 echo "  BUILD COMPLETE"

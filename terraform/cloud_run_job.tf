@@ -50,7 +50,7 @@ resource "google_cloud_run_v2_job" "windows_image_builder" {
         }
         env {
           name  = "SOURCE_IMAGE_PROJECT_ID"
-          value = var.project_id
+          value = var.source_image_project_id != "" ? var.source_image_project_id : var.project_id
         }
         env {
           name  = "SOURCE_IMAGE_FAMILY"

@@ -309,7 +309,7 @@ if [ -n "${REQUEST_JSON_GCS}" ]; then
     DISK_SIZE_GB="250"
   fi
 
-  # Override IMAGE_FAMILY from JSON (defaults to nmfs-windows-2025)
+  # Override IMAGE_FAMILY from JSON (defaults to nmfs-windows-2022)
   if [ -n "${IMAGE_CONFIG_FAMILY}" ]; then
     IMAGE_FAMILY="${IMAGE_CONFIG_FAMILY}"
   fi

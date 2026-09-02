@@ -44,7 +44,7 @@ $auditSettings = @(
     @{ Subcategory = "Process Creation";                STIG = "V-278054"; Success = "enable"; Failure = "disable" },
 
     # Logon/Logoff
-    @{ Subcategory = "Account Lockout";                 STIG = "V-278056"; Success = "disable"; Failure = "enable" },
+    @{ Subcategory = "Account Lockout";                 STIG = "V-278055/056"; Success = "enable"; Failure = "enable" },
     @{ Subcategory = "Group Membership";                STIG = "V-278057"; Success = "enable"; Failure = "disable" },
 
     # Object Access

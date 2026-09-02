@@ -218,17 +218,23 @@ Set-RegistryValue `
 
 Write-Section "CAT II: Event Log Sizes (V-278105, V-278106, V-278107)"
 
-# V-278105: Application event log >= 32768 KB
+# V-278105: Application event log >= 32768 KB (via GPO registry + wevtutil)
+Set-RegistryValue `
+    -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application" `
+    -Name "MaxSize" -Value 32768 -STIG "V-278105"
 wevtutil sl Application /ms:33554432
-Write-Fixed "[V-278105] Application log set to 32768 KB (33554432 bytes)"
 
-# V-278106: Security event log >= 196608 KB (1 week of records)
-wevtutil sl Security /ms:201326592
-Write-Fixed "[V-278106] Security log set to 196608 KB (201326592 bytes)"
+# V-278106: Security event log >= 5120000 KB (SCC requires >= 5120000)
+Set-RegistryValue `
+    -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security" `
+    -Name "MaxSize" -Value 5120000 -STIG "V-278106"
+wevtutil sl Security /ms:5242880000
 
 # V-278107: System event log >= 32768 KB
+Set-RegistryValue `
+    -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System" `
+    -Name "MaxSize" -Value 32768 -STIG "V-278107"
 wevtutil sl System /ms:33554432
-Write-Fixed "[V-278107] System log set to 32768 KB (33554432 bytes)"
 
 Write-Section "CAT II: SmartScreen & Defender (V-278108)"
 

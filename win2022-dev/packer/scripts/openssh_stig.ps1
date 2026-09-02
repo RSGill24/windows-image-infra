@@ -100,8 +100,6 @@ ClientAliveCountMax 1
 # V-285320: Configuration file minimum requirements
 # StrictModes ensures proper file permissions on user files
 StrictModes yes
-# Only allow SSHv2 protocol (default on modern OpenSSH)
-Protocol 2
 
 # V-285323: No GSSAPI authentication
 GSSAPIAuthentication no
@@ -114,21 +112,25 @@ AllowTcpForwarding no
 PermitRootLogin no
 IgnoreRhosts yes
 HostbasedAuthentication no
-Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
-MACs hmac-sha2-512,hmac-sha2-256,hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
-KexAlgorithms ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+Ciphers aes256-ctr,aes192-ctr,aes128-ctr
+MACs hmac-sha2-512,hmac-sha2-256
+KexAlgorithms ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
 
 # Host keys
-HostKey __PROGRAMDATA__/ssh/ssh_host_rsa_key
-HostKey __PROGRAMDATA__/ssh/ssh_host_ecdsa_key
-HostKey __PROGRAMDATA__/ssh/ssh_host_ed25519_key
+HostKey C:\ProgramData\ssh\ssh_host_rsa_key
+HostKey C:\ProgramData\ssh\ssh_host_ecdsa_key
+HostKey C:\ProgramData\ssh\ssh_host_ed25519_key
 
 # Logging
 SyslogFacility LOCAL0
 LogLevel INFO
 
-# Default sftp subsystem
+# Subsystem
 Subsystem sftp sftp-server.exe
+
+# Admin authorized keys
+Match Group administrators
+       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys
 "@
 
 # Backup existing config
@@ -187,7 +189,7 @@ foreach ($keyFile in $hostKeys) {
 }
 
 # Set permissions on public host key files (V-285322)
-# SYSTEM, Administrators = Full, Authenticated Users = Read
+# ONLY SYSTEM + Administrators — SCC checks "Other accounts: none_exists"
 foreach ($keyFile in $hostKeys) {
     $pubKey = "$keyFile.pub"
     if (Test-Path $pubKey) {
@@ -200,12 +202,9 @@ foreach ($keyFile in $hostKeys) {
                 "NT AUTHORITY\SYSTEM", "FullControl", "Allow")
             $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
                 "BUILTIN\Administrators", "FullControl", "Allow")
-            $readRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                "NT AUTHORITY\Authenticated Users", "Read", "Allow")
 
             $acl.AddAccessRule($systemRule)
             $acl.AddAccessRule($adminRule)
-            $acl.AddAccessRule($readRule)
             Set-Acl -Path $pubKey -AclObject $acl
             Write-Fixed "V-285322: Set permissions on $pubKey"
         } catch {
@@ -230,10 +229,15 @@ try {
     $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
         "BUILTIN\Administrators", "FullControl", "Allow")
 
+    # SCC requires Authenticated Users:(RX) on sshd_config
+    $rxRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "NT AUTHORITY\Authenticated Users", "ReadAndExecute", "Allow")
+
     $acl.AddAccessRule($systemRule)
     $acl.AddAccessRule($adminRule)
+    $acl.AddAccessRule($rxRule)
     Set-Acl -Path $sshdConfigPath -AclObject $acl
-    Write-Fixed "sshd_config permissions restricted to SYSTEM + Administrators"
+    Write-Fixed "sshd_config permissions: SYSTEM(F) + Admins(F) + AuthUsers(RX)"
 } catch {
     Write-Warn "Failed to set sshd_config permissions: $_"
     $ErrorCount++

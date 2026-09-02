@@ -227,16 +227,19 @@ build {
     destination = "${var.hardening_target_dir}/install_trellix.ps1"
   }
 
-  # FIX: script is named audit.ps1 on disk -- upload as audit.ps1.
-  # run_all.ps1 calls "$scriptDir\audit.ps1" so the filename must match exactly.
   provisioner "file" {
-    source      = "${var.hardening_source_dir}/audit.ps1"
-    destination = "${var.hardening_target_dir}/audit.ps1"
+    source      = "${var.hardening_source_dir}/win2025_registry_fixes.ps1"
+    destination = "${var.hardening_target_dir}/win2025_registry_fixes.ps1"
   }
 
   provisioner "file" {
-    source      = "${var.hardening_source_dir}/apply_remaining_fixes.ps1"
-    destination = "${var.hardening_target_dir}/apply_remaining_fixes.ps1"
+    source      = "${var.hardening_source_dir}/user_rights_stig.ps1"
+    destination = "${var.hardening_target_dir}/user_rights_stig.ps1"
+  }
+
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/openssh_stig.ps1"
+    destination = "${var.hardening_target_dir}/openssh_stig.ps1"
   }
 
   provisioner "file" {
@@ -270,7 +273,10 @@ build {
       "  @{ File='install_dsc_deps.ps1';       MinLines=50  },",
       "  @{ File='create_mof.ps1';             MinLines=50  },",
       "  @{ File='audit.ps1';                  MinLines=30  },",
-      "  @{ File='apply_remaining_fixes.ps1';  MinLines=30  }",
+      "  @{ File='apply_remaining_fixes.ps1';  MinLines=30  },",
+      "  @{ File='win2025_registry_fixes.ps1'; MinLines=50  },",
+      "  @{ File='user_rights_stig.ps1';       MinLines=50  },",
+      "  @{ File='openssh_stig.ps1';           MinLines=50  }",
       ")",
       "$failed = $false",
       "foreach ($c in $checks) {",

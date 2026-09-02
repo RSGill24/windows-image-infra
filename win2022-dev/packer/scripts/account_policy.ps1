@@ -168,17 +168,15 @@ if ($ErrorCount -eq 0) {
     Write-Host "  $ErrorCount policy issue(s) need attention." -ForegroundColor Yellow
 }
 
-exit $ErrorCount
-
 # -----------------------------------------------------------------------
 # SecurityOption rules skipped from DSC MOF (V-254445, V-254465)
 # These were removed from DSC to prevent SCE database writes breaking
 # WinRM. Applied here via registry after all uploads are complete.
 # -----------------------------------------------------------------------
 
-# V-254445: Network security — LAN Manager authentication level
+# V-254445 / V-278225: Network security — LAN Manager authentication level
 # Must be: Send NTLMv2 response only, refuse LM and NTLM (value 5)
-Write-Section "V-254445: LAN Manager authentication level"
+Write-Section "V-278225: LAN Manager authentication level"
 try {
     Set-ItemProperty `
         -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
@@ -217,3 +215,5 @@ try {
     Write-Warn "Failed to set LDAPClientIntegrity: $_"
     $ErrorCount++
 }
+
+exit $ErrorCount

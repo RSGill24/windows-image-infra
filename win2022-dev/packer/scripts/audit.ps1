@@ -1,11 +1,8 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Applies advanced audit policy subcategories.
-    Fixes V-278942 to V-278947:
-      File System (Success + Failure)
-      Handle Manipulation (Success + Failure)
-      Registry (Success + Failure)
+    Applies ALL advanced audit policy subcategories required by Windows Server 2025 STIG.
+    Covers V-278048 through V-278077, V-278199, V-278942 to V-278947, V-279922/V-279923.
 #>
 
 Set-StrictMode -Version Latest
@@ -15,30 +12,58 @@ function Write-OK   ($m) { Write-Host "  [OK]   $m" -ForegroundColor Green  }
 function Write-Fail ($m) { Write-Host "  [FAIL] $m" -ForegroundColor Red    }
 function Write-Warn ($m) { Write-Host "  [WARN] $m" -ForegroundColor Yellow }
 
-Write-Host "`n=== Applying Advanced Audit Policy (V-278942 to V-278947) ===" -ForegroundColor Cyan
+Write-Host "`n=== Applying Advanced Audit Policy (Win2025 STIG) ===" -ForegroundColor Cyan
 
 $ErrorCount = 0
 
 # -----------------------------------------------------------------------
-# Ensure advanced audit policy is NOT overridden by basic audit policy
-# This registry key must be 1 or advanced auditpol settings are ignored
+# V-278199: Ensure advanced audit policy overrides basic audit policy
 # -----------------------------------------------------------------------
 $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
 $current = (Get-ItemProperty -Path $regPath -Name 'SCENoApplyLegacyAuditPolicy' -ErrorAction SilentlyContinue).SCENoApplyLegacyAuditPolicy
 if ($current -ne 1) {
     Set-ItemProperty -Path $regPath -Name 'SCENoApplyLegacyAuditPolicy' -Value 1 -Type DWord
-    Write-OK "Set SCENoApplyLegacyAuditPolicy = 1 (advanced audit takes precedence)"
+    Write-OK "V-278199: SCENoApplyLegacyAuditPolicy = 1"
 } else {
-    Write-OK "SCENoApplyLegacyAuditPolicy already set correctly"
+    Write-OK "V-278199: SCENoApplyLegacyAuditPolicy already set"
 }
 
 # -----------------------------------------------------------------------
-# Apply subcategory settings via auditpol
+# Apply ALL required audit subcategory settings via auditpol
 # -----------------------------------------------------------------------
 $auditSettings = @(
-    @{ Subcategory = "File System";          STIG = "V-278942/V-278943"; Success = "enable"; Failure = "enable" },
-    @{ Subcategory = "Handle Manipulation";  STIG = "V-278944/V-278945"; Success = "enable"; Failure = "enable" },
-    @{ Subcategory = "Registry";             STIG = "V-278946/V-278947"; Success = "enable"; Failure = "enable" }
+    # Account Logon
+    @{ Subcategory = "Credential Validation";           STIG = "V-278048"; Success = "enable"; Failure = "enable" },
+
+    # Account Management
+    @{ Subcategory = "Other Account Management Events"; STIG = "V-278049"; Success = "enable"; Failure = "enable" },
+    @{ Subcategory = "User Account Management";         STIG = "V-278052"; Success = "enable"; Failure = "enable" },
+
+    # Detailed Tracking
+    @{ Subcategory = "Plug and Play Events";            STIG = "V-278053"; Success = "enable"; Failure = "disable" },
+    @{ Subcategory = "Process Creation";                STIG = "V-278054"; Success = "enable"; Failure = "disable" },
+
+    # Logon/Logoff
+    @{ Subcategory = "Account Lockout";                 STIG = "V-278056"; Success = "disable"; Failure = "enable" },
+    @{ Subcategory = "Group Membership";                STIG = "V-278057"; Success = "enable"; Failure = "disable" },
+
+    # Object Access
+    @{ Subcategory = "Other Object Access Events";      STIG = "V-278062/063"; Success = "enable"; Failure = "enable" },
+    @{ Subcategory = "Removable Storage";               STIG = "V-278064/065"; Success = "enable"; Failure = "enable" },
+    @{ Subcategory = "File System";                     STIG = "V-278942/943"; Success = "enable"; Failure = "enable" },
+    @{ Subcategory = "Handle Manipulation";             STIG = "V-278944/945"; Success = "enable"; Failure = "enable" },
+    @{ Subcategory = "Registry";                        STIG = "V-278946/947"; Success = "enable"; Failure = "enable" },
+
+    # Policy Change
+    @{ Subcategory = "Audit Policy Change";             STIG = "V-278067"; Success = "enable"; Failure = "enable" },
+    @{ Subcategory = "Authorization Policy Change";     STIG = "V-278069"; Success = "enable"; Failure = "disable" },
+
+    # Privilege Use
+    @{ Subcategory = "Sensitive Privilege Use";          STIG = "V-278070/071/V-279922/923"; Success = "enable"; Failure = "enable" },
+
+    # System
+    @{ Subcategory = "IPsec Driver";                    STIG = "V-278072/073"; Success = "enable"; Failure = "enable" },
+    @{ Subcategory = "Security System Extension";       STIG = "V-278077"; Success = "enable"; Failure = "disable" }
 )
 
 foreach ($s in $auditSettings) {
@@ -59,22 +84,38 @@ foreach ($s in $auditSettings) {
 # -----------------------------------------------------------------------
 Write-Host "`n--- Verification ---" -ForegroundColor Cyan
 
-$subcategories = @("File System", "Handle Manipulation", "Registry")
-foreach ($sub in $subcategories) {
+foreach ($s in $auditSettings) {
+    $sub = $s.Subcategory
     $result = & auditpol /get /subcategory:"$sub" 2>&1
     $line   = $result | Select-String $sub
     if ($line) {
-        if ($line -match 'Success and Failure') {
-            Write-OK "$sub : Success and Failure [COMPLIANT]"
-        } elseif ($line -match 'Success') {
-            Write-Warn "$sub : Success only [PARTIAL - Failure missing]"
-            $ErrorCount++
-        } elseif ($line -match 'Failure') {
-            Write-Warn "$sub : Failure only [PARTIAL - Success missing]"
-            $ErrorCount++
-        } else {
-            Write-Fail "$sub : No Auditing [NOT COMPLIANT]"
-            $ErrorCount++
+        $expectSuccess = ($s.Success -eq "enable")
+        $expectFailure = ($s.Failure -eq "enable")
+
+        $hasSuccess = $line -match 'Success'
+        $hasFailure = $line -match 'Failure'
+
+        if ($expectSuccess -and $expectFailure) {
+            if ($line -match 'Success and Failure') {
+                Write-OK "$sub : Success and Failure [COMPLIANT]"
+            } else {
+                Write-Warn "$sub : expected Success+Failure, got: $line"
+                $ErrorCount++
+            }
+        } elseif ($expectSuccess -and -not $expectFailure) {
+            if ($hasSuccess) {
+                Write-OK "$sub : Success [COMPLIANT]"
+            } else {
+                Write-Warn "$sub : expected Success, got: $line"
+                $ErrorCount++
+            }
+        } elseif (-not $expectSuccess -and $expectFailure) {
+            if ($hasFailure) {
+                Write-OK "$sub : Failure [COMPLIANT]"
+            } else {
+                Write-Warn "$sub : expected Failure, got: $line"
+                $ErrorCount++
+            }
         }
     } else {
         Write-Warn "$sub : Could not parse auditpol output"

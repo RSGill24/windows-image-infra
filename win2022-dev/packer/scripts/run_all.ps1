@@ -81,12 +81,15 @@ function Invoke-Step {
 Write-Host "`n--- Pre-flight: Script integrity checks ---" -ForegroundColor Yellow
 
 $integrityChecks = @(
-    @{ Path = "$scriptDir\install_dod_certs.ps1";      MinLines = 50;  Label = "install_dod_certs.ps1"     }
+    @{ Path = "$scriptDir\install_dod_certs.ps1";      MinLines = 50;  Label = "install_dod_certs.ps1"      }
     @{ Path = "$scriptDir\stig_remediation_fixes.ps1"; MinLines = 100; Label = "stig_remediation_fixes.ps1" }
-    @{ Path = "$scriptDir\install_dsc_deps.ps1";       MinLines = 50;  Label = "install_dsc_deps.ps1"      }
-    @{ Path = "$scriptDir\create_mof.ps1";             MinLines = 50;  Label = "create_mof.ps1"            }
-    @{ Path = "$scriptDir\audit.ps1";                  MinLines = 30;  Label = "audit.ps1"                 }
-    @{ Path = "$scriptDir\apply_remaining_fixes.ps1";  MinLines = 30;  Label = "apply_remaining_fixes.ps1" }
+    @{ Path = "$scriptDir\install_dsc_deps.ps1";       MinLines = 50;  Label = "install_dsc_deps.ps1"       }
+    @{ Path = "$scriptDir\create_mof.ps1";             MinLines = 50;  Label = "create_mof.ps1"             }
+    @{ Path = "$scriptDir\audit.ps1";                  MinLines = 30;  Label = "audit.ps1"                  }
+    @{ Path = "$scriptDir\apply_remaining_fixes.ps1";  MinLines = 30;  Label = "apply_remaining_fixes.ps1"  }
+    @{ Path = "$scriptDir\win2025_registry_fixes.ps1"; MinLines = 50;  Label = "win2025_registry_fixes.ps1" }
+    @{ Path = "$scriptDir\user_rights_stig.ps1";       MinLines = 50;  Label = "user_rights_stig.ps1"       }
+    @{ Path = "$scriptDir\openssh_stig.ps1";           MinLines = 50;  Label = "openssh_stig.ps1"           }
 )
 
 $integrityFail = $false
@@ -154,16 +157,25 @@ Invoke-Step "$scriptDir\services_stig.ps1"           "Services STIG fixes"      
 # V-254285/286/287/288/289/290/291/292 -- password and lockout policy
 Invoke-Step "$scriptDir\account_policy.ps1"          "Account Policy (net accounts + secedit)"
 
-# V-278942/943/944/945/946/947 -- audit file system, handle manipulation, registry
-# FIX: script is named audit.ps1 not apply_audit_policy.ps1
-Invoke-Step "$scriptDir\audit.ps1"                   "Audit Subcategory Policy (V-278942 to V-278947)" -AllowFailure
+# V-278048 to V-278077, V-278199, V-278942 to V-278947, V-279922/923 -- all audit subcategories
+Invoke-Step "$scriptDir\audit.ps1"                   "Advanced Audit Policy (all subcategories)"       -AllowFailure
 
 # V-254251/258/261 -- C:\ permissions, password expiry, cert file removal
 Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"   "Remaining STIG fixes (V-254251/258/261)"         -AllowFailure
 
 # Broader targeted fixes for remaining SCAP failures
 Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"                       -AllowFailure
-Invoke-Step "$scriptDir\dod_banner.ps1"           "Apply dod banner"
+
+# Win2025 CAT I + CAT II registry/GPO fixes (V-278082 to V-278235)
+Invoke-Step "$scriptDir\win2025_registry_fixes.ps1"  "Win2025 Registry/GPO STIG fixes"                 -AllowFailure
+
+# V-278183 to V-278261 -- user rights assignments via secedit
+Invoke-Step "$scriptDir\user_rights_stig.ps1"        "User Rights Assignments (V-278183 to V-278261)"  -AllowFailure
+
+# V-285313 to V-285323 -- OpenSSH hardening
+Invoke-Step "$scriptDir\openssh_stig.ps1"            "OpenSSH STIG (V-285313 to V-285323)"             -AllowFailure
+
+Invoke-Step "$scriptDir\dod_banner.ps1"              "Apply DoD banner"
 
 # -----------------------------------------------------------------------
 # STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)

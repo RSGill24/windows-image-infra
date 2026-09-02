@@ -243,6 +243,11 @@ build {
   }
 
   provisioner "file" {
+    source      = "${var.hardening_source_dir}/repair_winrm_for_packer.ps1"
+    destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
+  }
+
+  provisioner "file" {
     source      = "${var.hardening_source_dir}/Certificates_PKCS7_v5_14_DoD.der.p7b"
     destination = "${var.hardening_target_dir}/Certificates_PKCS7_v5_14_DoD.der.p7b"
   }

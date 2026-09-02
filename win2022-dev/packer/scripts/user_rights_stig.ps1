@@ -148,7 +148,7 @@ Set-UserRight -Right "SeRestorePrivilege" `
     -STIG "V-278261" -Label "Restore files"
 
 # -----------------------------------------------------------------------
-# Apply the modified config
+# Apply the modified config via secedit (immediate effect)
 # -----------------------------------------------------------------------
 Write-Section "Applying user rights via secedit"
 
@@ -162,6 +162,84 @@ if ($LASTEXITCODE -eq 0) {
     Write-Warn "Check: $env:windir\security\logs\scesrv.log"
     $ErrorCount++
 }
+
+# -----------------------------------------------------------------------
+# Persist user rights via Local Group Policy GptTmpl.inf
+# This ensures settings survive image capture and reboot
+# -----------------------------------------------------------------------
+Write-Section "Persisting user rights via Local Group Policy"
+
+$gptDir = "$env:SystemRoot\System32\GroupPolicy\Machine\Microsoft\Windows NT\SecEdit"
+if (!(Test-Path $gptDir)) {
+    New-Item -Path $gptDir -ItemType Directory -Force | Out-Null
+}
+
+$gptTmplPath = Join-Path $gptDir "GptTmpl.inf"
+
+# Read existing GptTmpl.inf or create new
+$infContent = ""
+if (Test-Path $gptTmplPath) {
+    $infContent = Get-Content $gptTmplPath -Raw
+}
+
+# Build the Privilege Rights section
+$privRightsSection = @"
+[Privilege Rights]
+SeNetworkLogonRight = $SID_Administrators,$SID_AuthUsers
+SeDenyNetworkLogonRight = $SID_Guests
+SeDenyBatchLogonRight = $SID_Guests
+SeDenyInteractiveLogonRight = $SID_Guests
+SeDenyRemoteInteractiveLogonRight = $SID_Guests
+SeInteractiveLogonRight = $SID_Administrators
+SeBackupPrivilege = $SID_Administrators
+SeAuditPrivilege = $SID_LocalService,$SID_NetworkService
+SeImpersonatePrivilege = $SID_Administrators,$SID_LocalService,$SID_NetworkService,$SID_Service
+SeIncreaseBasePriorityPrivilege = $SID_Administrators
+SeRestorePrivilege = $SID_Administrators
+"@
+
+# If GptTmpl.inf already has a [Privilege Rights] section, replace it
+if ($infContent -match '\[Privilege Rights\]') {
+    $infContent = $infContent -replace '(?s)\[Privilege Rights\].*?(?=\[|$)', "$privRightsSection`r`n"
+} else {
+    # Append to existing or create new
+    if ($infContent -match '\[Unicode\]') {
+        $infContent += "`r`n$privRightsSection"
+    } else {
+        $infContent = "[Unicode]`r`nUnicode=yes`r`n[Version]`r`nsignature=`"`$CHICAGO`$`"`r`nRevision=1`r`n$privRightsSection"
+    }
+}
+
+Set-Content -Path $gptTmplPath -Value $infContent -Encoding Unicode -Force
+Write-OK "GptTmpl.inf written to: $gptTmplPath"
+
+# Update gpt.ini to register the Security CSE
+$gptIniPath = "$env:SystemRoot\System32\GroupPolicy\gpt.ini"
+$secCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
+if (Test-Path $gptIniPath) {
+    $gptContent = Get-Content $gptIniPath -Raw
+    if ($gptContent -notmatch "827D319E") {
+        if ($gptContent -match 'gPCMachineExtensionNames=') {
+            $gptContent = $gptContent -replace '(gPCMachineExtensionNames=\[)', "`$1$secCSE"
+        } else {
+            $gptContent = $gptContent -replace '(\[General\])', "`$1`r`ngPCMachineExtensionNames=[$secCSE]"
+        }
+        if ($gptContent -match 'Version=(\d+)') {
+            $newVer = [int]$Matches[1] + 1
+            $gptContent = $gptContent -replace 'Version=\d+', "Version=$newVer"
+        }
+        Set-Content -Path $gptIniPath -Value $gptContent -Encoding ASCII -Force
+        Write-OK "Updated gpt.ini with Security CSE"
+    }
+} else {
+    $gptContent = "[General]`r`ngPCMachineExtensionNames=[$secCSE]`r`nVersion=1`r`ngPCFunctionality=0"
+    Set-Content -Path $gptIniPath -Value $gptContent -Encoding ASCII -Force
+    Write-OK "Created gpt.ini with Security CSE"
+}
+
+# Force gpupdate
+gpupdate /force /target:computer 2>&1 | Out-Null
+Write-OK "gpupdate /force completed"
 
 # -----------------------------------------------------------------------
 # Cleanup

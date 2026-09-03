@@ -40,13 +40,14 @@ if ($sshdFeature.State -ne 'Installed') {
     Write-OK "OpenSSH Server already installed"
 }
 
-# Ensure sshd service is set to Automatic (do NOT start during Packer build —
-# starting sshd can return exit code 16001 which kills the Packer pipeline.
-# The service will auto-start on first boot from the captured image.)
+# Ensure sshd service exists and is set to Automatic
 try {
     $svc = Get-Service -Name sshd -ErrorAction Stop
-    Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
-    Write-OK "sshd service set to Automatic (will start on first boot)"
+    Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
+    if ($svc.Status -ne 'Running') {
+        Start-Service -Name sshd -ErrorAction Stop
+    }
+    Write-OK "sshd service set to Automatic and Running"
 } catch {
     Write-Warn "sshd service configuration failed: $_"
     $ErrorCount++
@@ -147,16 +148,22 @@ Write-Fixed "sshd_config written with STIG-hardened settings"
 # -----------------------------------------------------------------------
 Write-Section "V-285321/V-285322: SSH host key file permissions"
 
-# Host keys auto-generate when sshd starts on first boot.
-# Do NOT run ssh-keygen during Packer build — it returns exit code 16001
-# which poisons $LASTEXITCODE and kills the pipeline.
+# Generate host keys if they don't exist
 $hostKeys = @(
     "$sshdConfigDir\ssh_host_rsa_key",
     "$sshdConfigDir\ssh_host_ecdsa_key",
     "$sshdConfigDir\ssh_host_ed25519_key"
 )
 
-# Set permissions on private host key files (V-285321) if they exist
+foreach ($keyFile in $hostKeys) {
+    if (!(Test-Path $keyFile)) {
+        Write-Host "  Generating host key: $keyFile"
+        $keyType = if ($keyFile -match 'rsa') { 'rsa' } elseif ($keyFile -match 'ecdsa') { 'ecdsa' } else { 'ed25519' }
+        & ssh-keygen -t $keyType -f $keyFile -N '""' -q 2>&1 | Out-Null
+    }
+}
+
+# Set permissions on private host key files (V-285321)
 # Only SYSTEM and Administrators should have access
 foreach ($keyFile in $hostKeys) {
     if (Test-Path $keyFile) {
@@ -237,21 +244,23 @@ try {
 }
 
 # -----------------------------------------------------------------------
-# Stop sshd if running (do NOT restart — service will start on first boot)
+# Restart sshd to apply config
 # -----------------------------------------------------------------------
-Write-Section "Finalizing sshd service"
+Write-Section "Restarting sshd service"
 
 try {
-    Stop-Service sshd -Force -ErrorAction SilentlyContinue
+    Restart-Service sshd -Force -ErrorAction Stop
+    Start-Sleep -Seconds 2
     $svc = Get-Service sshd
-    if ($svc.StartType -eq 'Automatic') {
+    if ($svc.Status -eq 'Running') {
         Write-OK "sshd service restarted and running"
     } else {
-        Write-Warn "sshd StartType: $($svc.StartType) (expected Automatic)"
+        Write-Warn "sshd status: $($svc.Status)"
         $ErrorCount++
     }
 } catch {
-    Write-Warn "sshd finalization: $_"
+    Write-Warn "Failed to restart sshd: $_"
+    $ErrorCount++
 }
 
 # -----------------------------------------------------------------------
@@ -265,6 +274,4 @@ if ($ErrorCount -eq 0) {
     Write-Host "  $ErrorCount issue(s) need attention." -ForegroundColor Yellow
 }
 
-# Reset LASTEXITCODE to prevent native command exit codes from poisoning the pipeline
-$global:LASTEXITCODE = 0
 exit $ErrorCount

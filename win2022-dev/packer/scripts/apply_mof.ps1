@@ -8,7 +8,7 @@
 .NOTES
     Previous version polled the transcript log for specific verbose strings
     ("Invoke CimMethod complete", "LCM: [End Set"). Those strings are version-
-    dependent and often do not appear — causing the script to poll the entire
+    dependent and often do not appear -- causing the script to poll the entire
     30 min timeout even when DSC finished in 8 min.
 
     This version:
@@ -21,7 +21,7 @@
         every subsequent provisioner appears to hang.
       - Removed the Post_STIG_All scheduled task. run_all.ps1 now re-runs
         dod_banner, account_policy, audit, etc. INLINE in the WinRM session
-        after apply_mof returns — we restore WinRM here so that works.
+        after apply_mof returns -- we restore WinRM here so that works.
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -49,7 +49,7 @@ Remove-DscConfigurationDocument -Stage Previous -Force -ErrorAction SilentlyCont
 Remove-Item $logFile -Force -ErrorAction SilentlyContinue
 
 # ---------------------------------------------------------------------------
-# MOF sanitization — physically strip any DSC instance that targets WinRM.
+# MOF sanitization -- physically strip any DSC instance that targets WinRM.
 # PowerSTIG's SkipRule IDs can shift between versions; our list may miss one.
 # Walks the MOF with a proper brace counter so we correctly handle nested
 # '};' patterns inside instance bodies (e.g., ValueData = { "0" };). The
@@ -88,7 +88,7 @@ function Split-MofInstances {
 
 $instances = Split-MofInstances -Text $mofText
 if ($instances.Count -eq 0) {
-    Write-Warning 'MOF sanitizer: no instances found — leaving MOF unchanged.'
+    Write-Warning 'MOF sanitizer: no instances found -- leaving MOF unchanged.'
 } else {
     $header = $mofText.Substring(0, $instances[0].Start)
     $footer = $mofText.Substring($instances[-1].End)
@@ -124,7 +124,7 @@ Stop-Transcript
 
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
 
-# WinRM guardian REMOVED — MOF sanitization above physically strips all WinRM/
+# WinRM guardian REMOVED -- MOF sanitization above physically strips all WinRM/
 # WSMan/AllowBasic/AllowUnencrypted resources from the MOF before DSC sees it,
 # so there is nothing left that could disable Basic auth. The guardian's own
 # Set-Item WSMan:\... writes were racing Packer's WinRM session mid-cleanup
@@ -170,7 +170,7 @@ while ($true) {
         break
     }
     if ($elapsed -ge ($timeoutMin * 60)) {
-        Write-Host "Timeout after $timeoutMin min — force-stopping DSC."
+        Write-Host "Timeout after $timeoutMin min -- force-stopping DSC."
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         Start-Sleep 5
         Stop-DscConfiguration -Force -ErrorAction SilentlyContinue
@@ -178,7 +178,7 @@ while ($true) {
     }
 }
 
-# Guardian stop logic removed — guardian itself removed above.
+# Guardian stop logic removed -- guardian itself removed above.
 
 # ---------------------------------------------------------------------------
 # Restore WinRM inline. STIG DSC registry rules can set

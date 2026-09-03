@@ -25,7 +25,7 @@ function Import-CertsToStore {
             $found = $store.Certificates.Find("FindByThumbprint", $cert.Thumbprint, $false)
             if ($found.Count -eq 0) {
                 $store.Add($cert)
-                Write-Host "✅ Imported $($cert.Subject) -> $StoreName"
+                Write-Host "[OK] Imported $($cert.Subject) -> $StoreName"
             } else {
                 Write-Host "Already exists: $($cert.Subject) -> $StoreName"
             }
@@ -95,4 +95,4 @@ $rootStore.Close()
 $caStore.Close()
 $disallowedStore.Close()
 
-Write-Host "`n✅ Script completed (STIG aligned except Disallowed certs)"
+Write-Host "`n[OK] Script completed (STIG aligned except Disallowed certs)"

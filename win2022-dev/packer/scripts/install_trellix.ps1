@@ -19,7 +19,7 @@ function Log($msg, $color = "White") {
 }
 
 if (Test-Path $debugLog) { Remove-Item $debugLog -Force }
-Log "===== Trellix HX Agent Install — FINAL =====" "Cyan"
+Log "===== Trellix HX Agent Install -- FINAL =====" "Cyan"
 Log "Running as : $($env:USERNAME)"
 Log "Computer   : $($env:COMPUTERNAME)"
 Log "OS         : $([System.Environment]::OSVersion.VersionString)"
@@ -54,13 +54,13 @@ if ($xagtReg) {
             $proc = Start-Process msiexec.exe -ArgumentList "/x $productCode /quiet /norestart" -Wait -PassThru
             Log "  Uninstall exit code: $($proc.ExitCode)"
         } else {
-            Log "  WARNING: Could not parse product code — skipping uninstall" "Red"
+            Log "  WARNING: Could not parse product code -- skipping uninstall" "Red"
         }
     } catch {
         Log "  WARNING: Uninstall exception: $($_.Exception.Message)" "Red"
     }
 } else {
-    Log "No existing agent found — fresh install" "Cyan"
+    Log "No existing agent found -- fresh install" "Cyan"
 }
 
 # ----------------------------
@@ -105,13 +105,13 @@ Log "[4/7] Downloading from GCS..." "Yellow"
 gcloud storage cp $bucketMSI $downloadMSI
 Log "  MSI download exit code: $LASTEXITCODE"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $downloadMSI)) {
-    Log "FATAL: MSI download failed — cannot continue" "Red"; return
+    Log "FATAL: MSI download failed -- cannot continue" "Red"; return
 }
 
 gcloud storage cp $bucketConfig $downloadCfg
 Log "  Config download exit code: $LASTEXITCODE"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $downloadCfg)) {
-    Log "FATAL: config download failed — cannot continue" "Red"; return
+    Log "FATAL: config download failed -- cannot continue" "Red"; return
 }
 
 $msiSize = (Get-Item $downloadMSI).Length
@@ -140,10 +140,10 @@ Log "  Exit code: $exitCode"
 
 switch ($exitCode) {
     0     { Log "  MSI install SUCCESS" "Green" }
-    3010  { Log "  MSI install SUCCESS — reboot required" "Yellow" }
-    1603  { Log "  ERROR 1603: Fatal install error — check $logPath" "Red" }
+    3010  { Log "  MSI install SUCCESS -- reboot required" "Yellow" }
+    1603  { Log "  ERROR 1603: Fatal install error -- check $logPath" "Red" }
     1618  { Log "  ERROR 1618: Another MSI already running" "Red" }
-    1619  { Log "  ERROR 1619: MSI cannot be opened — corrupt?" "Red" }
+    1619  { Log "  ERROR 1619: MSI cannot be opened -- corrupt?" "Red" }
     1638  { Log "  ERROR 1638: Another version already installed" "Red" }
     default { Log "  ERROR: Unexpected exit code $exitCode" "Red" }
 }
@@ -153,12 +153,12 @@ if ($exitCode -notin @(0, 3010)) {
         $msiErrors = Get-Content $logPath | Select-String -Pattern "error|fail|return value [23]|actions.dll" -CaseSensitive:$false | Select-Object -Last 20
         foreach ($line in $msiErrors) { Log "  MSI: $line" "Red" }
     }
-    Log "FATAL: Install failed — stopping" "Red"
+    Log "FATAL: Install failed -- stopping" "Red"
     return
 }
 
 # ----------------------------
-# 6. Delete Agent UUID — CRITICAL for image reusability
+# 6. Delete Agent UUID -- CRITICAL for image reusability
 # ----------------------------
 Log "[6/7] Removing agent.uuid for image reusability..." "Yellow"
 
@@ -173,7 +173,7 @@ foreach ($uuidPath in $uuidPaths) {
         Log "  Deleted UUID: $uuidPath" "Green"
     }
 }
-Log "  UUID removed — fresh UUID generated on first boot" "Green"
+Log "  UUID removed -- fresh UUID generated on first boot" "Green"
 
 # ----------------------------
 # 7. Stop service + set Manual
@@ -185,7 +185,7 @@ foreach ($svc in $serviceNames) {
     if ($s) {
         Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
         Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue
-        Log "  $svc — Stopped / Manual" "Green"
+        Log "  $svc -- Stopped / Manual" "Green"
     } else {
         Log "  WARNING: $svc service not found" "Red"
     }
@@ -201,7 +201,7 @@ Log "Temp files cleaned"
 Log "`n===== Trellix HX Agent install complete =====" "Green"
 Log "Install path : C:\Program Files (x86)\FireEye\xagt"        "Cyan"
 Log "Config path  : C:\ProgramData\FireEye\agent_config.json"   "Cyan"
-Log "Agent UUID   : Deleted — fresh UUID on first boot"         "Cyan"
+Log "Agent UUID   : Deleted -- fresh UUID on first boot"         "Cyan"
 Log "Service      : Stopped / Manual"                           "Cyan"
 Log "MSI log      : $logPath"                                   "Cyan"
 Log "Debug log    : $debugLog"                                  "Cyan"

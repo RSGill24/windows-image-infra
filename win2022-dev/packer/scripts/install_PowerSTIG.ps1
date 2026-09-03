@@ -3,7 +3,7 @@ Write-Host "Installing PowerSTIG..."
 # Enforce TLS 1.2 so PSGallery HTTPS connections succeed on older .NET defaults.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# Install NuGet provider FIRST — required before Set-PSRepository or Install-Module
+# Install NuGet provider FIRST -- required before Set-PSRepository or Install-Module
 # can reach PSGallery. -ForceBootstrap avoids the interactive ShouldContinue prompt
 # that throws NullReferenceException under non-interactive contexts (WinRM, SYSTEM).
 if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {

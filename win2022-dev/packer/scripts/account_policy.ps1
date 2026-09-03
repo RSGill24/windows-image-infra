@@ -57,7 +57,7 @@ foreach ($cmd in $netCmds) {
 }
 
 # -----------------------------------------------------------------------
-# PASS 2: secedit — reliable fallback that bypasses the SCE lock
+# PASS 2: secedit -- reliable fallback that bypasses the SCE lock
 # -----------------------------------------------------------------------
 Write-Section "Pass 2: Account Policy via secedit (SCE lock bypass)"
 
@@ -72,7 +72,7 @@ try {
     secedit /export /areas SECURITYPOLICY /cfg $seceditCfg /quiet
 
     if (-not (Test-Path $seceditCfg)) {
-        Write-Warn "secedit export failed — cannot apply account policy via secedit"
+        Write-Warn "secedit export failed -- cannot apply account policy via secedit"
         $ErrorCount++
     } else {
         Write-OK "Policy exported to: $seceditCfg"
@@ -119,7 +119,7 @@ try {
 Write-Section "Pass 3: Verification"
 
 try {
-    # Capture as a single string array — one element per line
+    # Capture as a single string array -- one element per line
     $netOut = (net accounts 2>&1) -join "`n"
 
     Write-Host "  net accounts output:" -ForegroundColor Gray
@@ -176,7 +176,7 @@ exit $ErrorCount
 # WinRM. Applied here via registry after all uploads are complete.
 # -----------------------------------------------------------------------
 
-# V-254445: Network security — LAN Manager authentication level
+# V-254445: Network security -- LAN Manager authentication level
 # Must be: Send NTLMv2 response only, refuse LM and NTLM (value 5)
 Write-Section "V-254445: LAN Manager authentication level"
 try {
@@ -195,7 +195,7 @@ try {
     $ErrorCount++
 }
 
-# V-254465: Network security — LDAP client signing requirements
+# V-254465: Network security -- LDAP client signing requirements
 # Must be: Negotiate signing (value 1)
 Write-Section "V-254465: LDAP client signing requirements"
 try {

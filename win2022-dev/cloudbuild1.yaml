@@ -99,6 +99,25 @@ images:
   - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest'
 
 # ── Service Account & Options ─────────────────────────────────
-serviceAccount: "packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
+# Must be the FULL resource name. A bare email is rejected with
+# "Failed to parse resource name packer-win-sa@...".
+serviceAccount: "projects/${_PROJECT_ID}/serviceAccounts/packer-win-sa@${_PROJECT_ID}.iam.gserviceaccount.com"
 options:
   logging: CLOUD_LOGGING_ONLY
+  # ALLOW_LOOSE is required. Ten of the substitutions declared above are not
+  # referenced by any step in this file:
+  #   _SOURCE_IMAGE_PROJECT_ID _SOURCE_IMAGE_FAMILY _SOURCE_IMAGE _IMAGE_FAMILY
+  #   _ZONE _MACHINE_TYPE _WINRM_SECRET _PACKER_TEMPLATE
+  #   _HARDENING_SOURCE_DIR _HARDENING_TARGET_DIR
+  # Cloud Build rejects the submission outright when a declared substitution is
+  # unused ("key ... is not matched in the template"), so this file could not be
+  # submitted at all without this option.
+  #
+  # They are unused because Cloud Build only builds and pushes the container.
+  # The Packer run happens later in the Cloud Run job, which supplies those same
+  # values as ENV VARS read by docker-entrypoint.sh. The copies here are
+  # documentation only and can drift from the job -- they already have: this file
+  # says windows-2025 / nmfs-windows-2025 while the 'windows-image-build' job is
+  # still set to windows-2022 / nmfs-windows-2022. The Cloud Run job is the
+  # source of truth; change values there, not here.
+  substitution_option: ALLOW_LOOSE

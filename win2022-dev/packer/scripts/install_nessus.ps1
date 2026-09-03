@@ -27,12 +27,12 @@ foreach ($entry in $regEntries) {
             break
         }
     } catch {
-        # Some registry keys don't have DisplayName — skip silently
+        # Some registry keys don't have DisplayName -- skip silently
     }
 }
 
 if ($nessusReg) {
-    Write-Host "Found: $($nessusReg.DisplayName) — uninstalling via msiexec..." -ForegroundColor Yellow
+    Write-Host "Found: $($nessusReg.DisplayName) -- uninstalling via msiexec..." -ForegroundColor Yellow
     Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
 
     try {
@@ -43,13 +43,13 @@ if ($nessusReg) {
             if ($proc.ExitCode -eq 0) {
                 Write-Host "Uninstall complete." -ForegroundColor Green
             } else {
-                Write-Warning "Uninstall returned code $($proc.ExitCode) — continuing anyway."
+                Write-Warning "Uninstall returned code $($proc.ExitCode) -- continuing anyway."
             }
         } else {
-            Write-Warning "Could not parse product code — skipping uninstall, continuing."
+            Write-Warning "Could not parse product code -- skipping uninstall, continuing."
         }
     } catch {
-        Write-Warning "Uninstall exception: $($_.Exception.Message) — continuing."
+        Write-Warning "Uninstall exception: $($_.Exception.Message) -- continuing."
     }
 } else {
     Write-Host "No existing Nessus Agent found. Fresh install." -ForegroundColor Cyan
@@ -97,7 +97,7 @@ Write-Host "nessuscli.exe exists:      $(Test-Path $cliPath)"
 Write-Host "nessus-service.exe exists: $(Test-Path $serviceBinPath)"
 
 # ----------------------------
-# 5. Configure service — Stopped / Manual
+# 5. Configure service -- Stopped / Manual
 # Client will start and link the agent on first boot
 # ----------------------------
 Write-Host "[5/5] Configuring Nessus service..." -ForegroundColor Yellow
@@ -108,7 +108,7 @@ if ($svc) {
     $startMode = (Get-WmiObject Win32_Service -Filter "Name='$serviceName'").StartMode
     Write-Host "Service: $($svc.DisplayName) | Stopped | StartupType: $startMode" -ForegroundColor Green
 } else {
-    Write-Warning "Service '$serviceName' not found — installation may have failed."
+    Write-Warning "Service '$serviceName' not found -- installation may have failed."
 }
 
 # Cleanup MSI
@@ -126,4 +126,4 @@ Write-Host "Install path : $installPath"                         -ForegroundColo
 Write-Host "Data path    : C:\ProgramData\Tenable\Nessus Agent"  -ForegroundColor Cyan
 Write-Host "Service      : $finalStatus | StartupType: $finalStartMode" -ForegroundColor Cyan
 Write-Host "MSI log      : $logPath"                             -ForegroundColor Cyan
-Write-Host "Activation   : Deferred — client will activate on first boot" -ForegroundColor Cyan
+Write-Host "Activation   : Deferred -- client will activate on first boot" -ForegroundColor Cyan

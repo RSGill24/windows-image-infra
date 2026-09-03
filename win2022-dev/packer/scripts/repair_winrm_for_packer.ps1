@@ -10,7 +10,7 @@
     This script restores just enough WinRM capability for Packer to finish
     without undoing any STIG controls.
 
-    The image is captured AFTER this runs — these settings are baked in.
+    The image is captured AFTER this runs -- these settings are baked in.
     On first boot from the image, run_post_sysprep.ps1 re-locks WinRM down.
 #>
 
@@ -43,7 +43,7 @@ try {
     Write-Info "WSMan Basic auth (non-fatal): $_"
 }
 
-# Re-enable Negotiate (NTLM/Kerberos) auth — Packer falls back to this
+# Re-enable Negotiate (NTLM/Kerberos) auth -- Packer falls back to this
 try {
     Set-Item -Path "WSMan:\localhost\Service\Auth\Negotiate" -Value $true -Force
     Write-Fixed "WinRM Negotiate auth re-enabled"
@@ -72,7 +72,7 @@ if (Test-Path $winrmAuthPath) {
 
 # -----------------------------------------------------------------------
 # 2. Ensure packer_user account is not affected by password policy changes
-#    The STIG fix sets PasswordExpires=True for all accounts — exclude
+#    The STIG fix sets PasswordExpires=True for all accounts -- exclude
 #    packer_user so the active session token stays valid.
 # -----------------------------------------------------------------------
 Write-Section "Protect packer_user account from STIG account policy changes"
@@ -85,7 +85,7 @@ foreach ($acct in $packerAccounts) {
 
     try {
         # Set password to never expire for the build account
-        # This is intentional — packer_user is a build-time account only,
+        # This is intentional -- packer_user is a build-time account only,
         # not a persistent user account, so STIG password expiry does not apply.
         $adsiUser = [ADSI]"WinNT://./$acct,user"
         $adsiUser.UserFlags.Value = $adsiUser.UserFlags.Value -bor 65536  # ADS_UF_DONT_EXPIRE_PASSWD
@@ -130,9 +130,9 @@ try {
     if ($netstat) {
         Write-OK "WinRM port confirmed open:`n$netstat"
     } else {
-        Write-Info "Could not confirm WinRM listener — Packer may still connect"
+        Write-Info "Could not confirm WinRM listener -- Packer may still connect"
     }
 }
 
-Write-Host "`n=== WinRM repair complete — Packer should reconnect successfully ===" -ForegroundColor Green
+Write-Host "`n=== WinRM repair complete -- Packer should reconnect successfully ===" -ForegroundColor Green
 exit 0

@@ -130,14 +130,46 @@ build {
   }
 
   # Step 2: Install PSWindowsUpdate and apply Windows Updates.
+  #
+  # elevated_user/password are REQUIRED here. They were previously removed on the
+  # reasoning that "LocalAccountTokenFilterPolicy=1 gives WinRM admin sessions full
+  # tokens, so the elevation wrapper is unnecessary." That is true of the token but
+  # not of the LOGON TYPE, and the Windows Update COM API gates on logon type: it
+  # refuses to install from a NETWORK logon no matter how privileged the token is.
+  # The result was:
+  #
+  #   Get-WindowsUpdate -Install -> An error occurred: Access is denied.
+  #                                 (Exception from HRESULT: 0x80070005 E_ACCESSDENIED)
+  #   -> script exit 1 -> "Provisioning step had errors" -> instance deleted
+  #
+  # This only bites when updates are actually pending, which is why it can look
+  # intermittent: a freshly published source image with nothing to install exits 0
+  # and the build passes.
+  #
+  # elevated_user makes Packer run the script through a scheduled task, which is a
+  # BATCH logon, and Windows Update accepts that. The HRESULT 0x80070002 failure
+  # this wrapper used to throw at RegisterTaskDefinition is already fixed by Step 1
+  # above, which starts seclogon and grants packer_user SeBatchLogonRight.
   provisioner "powershell" {
+    elevated_user     = "packer_user"
+    elevated_password = var.packer_user_password
     inline = [
-      "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force",
+      "$ErrorActionPreference = 'Continue'",
+      "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null",
       "Install-Module -Name PSWindowsUpdate -Force -SkipPublisherCheck",
-      "Get-WindowsUpdate -Install -AcceptAll -AutoReboot:$false"
+      "Import-Module PSWindowsUpdate",
+      "try {",
+      "  Get-WindowsUpdate -Install -AcceptAll -IgnoreReboot -ErrorAction Stop | Out-String | Write-Host",
+      "  Write-Host 'Windows Update run completed.'",
+      "} catch {",
+      "  # Do not sink a 90-minute build over a transient WU failure, but make it",
+      "  # loud so an unpatched image is never mistaken for a patched one.",
+      "  Write-Host \"WARNING: Windows Update failed: $_\"",
+      "  Write-Host 'WARNING: image may be missing patches - check before promoting.'",
+      "}",
+      "$hf = (Get-HotFix | Measure-Object).Count",
+      "Write-Host \"Installed hotfix count: $hf\""
     ]
-    # elevated_user/password removed -- LocalAccountTokenFilterPolicy=1 set in Step 1
-    # gives WinRM admin sessions full tokens, so elevation wrapper is unnecessary.
   }
 
   # Step 3: Upload each hardening script individually with its full destination
@@ -210,6 +242,24 @@ build {
     destination = "${var.hardening_target_dir}/apply_remaining_fixes.ps1"
   }
 
+  # Primary registry remediation for the Server 2025 STIG. Reads the benchmark
+  # content shipped inside PowerSTIG and applies every registry rule directly,
+  # so compliance no longer depends on the DSC apply succeeding end to end.
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/win2025_registry_fixes.ps1"
+    destination = "${var.hardening_target_dir}/win2025_registry_fixes.ps1"
+  }
+
+  # Uploaded so it is available on the VM, but NOT invoked by run_all.ps1.
+  # Nothing in this pipeline modifies WinRM any more (create_mof.ps1 derives the
+  # WinRM rules out of the DSC MOF and win2025_registry_fixes.ps1 refuses them by
+  # key path), so there is nothing to repair. Kept on disk for manual recovery if
+  # a future change does disturb the listener mid-build.
+  provisioner "file" {
+    source      = "${var.hardening_source_dir}/repair_winrm_for_packer.ps1"
+    destination = "${var.hardening_target_dir}/repair_winrm_for_packer.ps1"
+  }
+
   provisioner "file" {
     source      = "${var.hardening_source_dir}/install_nessus.ps1"
     destination = "${var.hardening_target_dir}/install_nessus.ps1"
@@ -225,18 +275,6 @@ build {
   provisioner "file" {
     source      = "${var.hardening_source_dir}/install_trellix.ps1"
     destination = "${var.hardening_target_dir}/install_trellix.ps1"
-  }
-
-  # FIX: script is named audit.ps1 on disk -- upload as audit.ps1.
-  # run_all.ps1 calls "$scriptDir\audit.ps1" so the filename must match exactly.
-  provisioner "file" {
-    source      = "${var.hardening_source_dir}/audit.ps1"
-    destination = "${var.hardening_target_dir}/audit.ps1"
-  }
-
-  provisioner "file" {
-    source      = "${var.hardening_source_dir}/apply_remaining_fixes.ps1"
-    destination = "${var.hardening_target_dir}/apply_remaining_fixes.ps1"
   }
 
   provisioner "file" {
@@ -270,7 +308,8 @@ build {
       "  @{ File='install_dsc_deps.ps1';       MinLines=50  },",
       "  @{ File='create_mof.ps1';             MinLines=50  },",
       "  @{ File='audit.ps1';                  MinLines=30  },",
-      "  @{ File='apply_remaining_fixes.ps1';  MinLines=30  }",
+      "  @{ File='apply_remaining_fixes.ps1';  MinLines=30  },",
+      "  @{ File='win2025_registry_fixes.ps1'; MinLines=200 }",
       ")",
       "$failed = $false",
       "foreach ($c in $checks) {",

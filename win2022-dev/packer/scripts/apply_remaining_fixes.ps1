@@ -27,7 +27,7 @@ try {
     $localUsers = Get-LocalUser -ErrorAction Stop | Where-Object { $_.Enabled }
     foreach ($user in $localUsers) {
         try {
-            # Parse net user output — always available and always populated
+            # Parse net user output -- always available and always populated
             $netUserOut = (net user $user.Name 2>&1) -join "`n"
             $neverExpires = $netUserOut -match 'Password expires\s+Never'
 
@@ -55,25 +55,19 @@ try {
 }
 
 # -----------------------------------------------------------------------
-# V-254251: Fix C:\ root ACL
-# -----------------------------------------------------------------------
-Write-Section "V-254251: Fix C:\ permissions"
-
-try {
-    icacls "C:\" /inheritance:r | Out-Null
-    icacls "C:\" /remove "Everyone"            2>$null | Out-Null
-    icacls "C:\" /remove "Authenticated Users" 2>$null | Out-Null
-
-    icacls "C:\" /grant:r "SYSTEM:(OI)(CI)(F)"            | Out-Null
-    icacls "C:\" /grant:r "Administrators:(OI)(CI)(F)"    | Out-Null
-    icacls "C:\" /grant:r "Users:(OI)(CI)(RX)"            | Out-Null
-    icacls "C:\" /grant:r "CREATOR OWNER:(OI)(CI)(IO)(F)" | Out-Null
-
-    Write-OK "C:\ ACL reset to STIG-required defaults"
-} catch {
-    Write-Fail "ACL fix failed: $_"
-    $ErrorCount++
-}
+# ============================================================
+# C:\ root directory ACL -- DISABLED (slow, and duplicated)
+# ============================================================
+# Rewriting the ACL on C:\ walks the whole volume and was by far the slowest
+# step in the build. It was also being done TWICE -- once here and once in the
+# other post-DSC script -- so the cost was paid twice for the same result.
+# Disabled at the caller's direction.
+#
+# The Server 2025 STIG expresses system-drive permissions as a PermissionRule,
+# which DSC applies from the MOF, so this hand-rolled ACL reset is redundant on
+# top of that. Re-enable only if a SCC scan actually flags the system drive.
+Write-Section "C:\ root ACL -- skipped (disabled: slow)"
+Write-Warn "C:\ ACL reset disabled; DSC PermissionRule covers system-drive permissions"
 
 # -----------------------------------------------------------------------
 # V-254261: Remove cert/install artifacts
@@ -159,14 +153,14 @@ $guestCheck = Get-LocalUser | Where-Object { $_.SID -like "*-501" }
 if ($adminCheck.Name -eq "AdminRenamed") {
     Write-OK "Administrator verified: $($adminCheck.Name)"
 } else {
-    Write-Fail "Administrator not renamed — current name: $($adminCheck.Name)"
+    Write-Fail "Administrator not renamed -- current name: $($adminCheck.Name)"
     $ErrorCount++
 }
 
 if ($guestCheck.Name -eq "GuestDisabled") {
     Write-OK "Guest verified: $($guestCheck.Name)"
 } else {
-    Write-Fail "Guest not renamed — current name: $($guestCheck.Name)"
+    Write-Fail "Guest not renamed -- current name: $($guestCheck.Name)"
     $ErrorCount++
 }
 
@@ -181,7 +175,7 @@ $leftover = @(Get-ChildItem `
 if ($leftover.Count -eq 0) {
     Write-OK "No leftover cert/install files"
 } else {
-    Write-Warn "$($leftover.Count) leftover file(s) — may need manual review"
+    Write-Warn "$($leftover.Count) leftover file(s) -- may need manual review"
     $leftover | ForEach-Object { Write-Warn "  $($_.FullName)" }
 }
 

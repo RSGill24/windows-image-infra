@@ -17,7 +17,7 @@
 #        stig_remediation_fixes.ps1 after all uploads are complete.
 #   AccountPolicy DSC resource writes to the SCE security database during
 #   Start-DscConfiguration, which causes Windows to re-enforce GPO-derived
-#   WinRM restrictions mid-session — breaking Packer's WinRM connection before
+#   WinRM restrictions mid-session -- breaking Packer's WinRM connection before
 #   subsequent provisioners can run. These rules are handled exclusively by
 #   account_policy.ps1 which runs after all file uploads are complete.
 #
@@ -138,6 +138,158 @@ try {
 # -----------------------------------------------------------------------
 # Generate temporary DSC configuration script
 # -----------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# Build the DSC skip list FROM the 2025 STIG content, not from a hardcoded
+# V-ID table.
+#
+# WHY: this file previously listed 25 hardcoded V-254xxx (Server 2022) IDs in
+# SkipRule. The build targets Server 2025, whose STIG uses V-278xxx/V-285xxx,
+# so every one of those entries matched nothing. Nothing was actually skipped --
+# in particular the six WinRM rules were applied by DSC mid-build, which severs
+# Packer's own WinRM session. Deriving the list from the installed STIG content
+# cannot go stale the next time DISA renumbers.
+# -----------------------------------------------------------------------
+Write-Host "`n--- Deriving skip list from $($stigXml.Name) ---"
+
+$ruleContentFile = Get-ChildItem -Path $stigDataPath -Filter "WindowsServer-2025-MS-*.xml" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Name -notmatch '\.org\.' } |
+                   Sort-Object Name -Descending |
+                   Select-Object -First 1
+
+if (-not $ruleContentFile) {
+    Write-Error "No WindowsServer-2025-MS-*.xml rule content found in $stigDataPath"
+    exit 1
+}
+Write-Host "Rule content: $($ruleContentFile.Name)"
+
+[xml]$ruleXml = Get-Content -Path $ruleContentFile.FullName -Raw -Encoding UTF8
+
+$dynamicSkips = New-Object System.Collections.Generic.List[string]
+
+# --- WinRM registry rules -------------------------------------------------
+# Matched by KEY PATH, not by V-ID. Applying any of these disables Basic auth
+# or unencrypted traffic on the live WinRM listener and kills the build.
+# Excluded from the image at the caller's direction; applied via domain GPO at
+# first boot instead.
+foreach ($r in $ruleXml.SelectNodes('//RegistryRule/Rule')) {
+    $k = $r.SelectSingleNode('Key')
+    if ($null -ne $k -and $k.InnerText -match '\\WinRM\\(Client|Service)|\\WSMAN\\') {
+        $dynamicSkips.Add($r.GetAttribute('id')) | Out-Null
+    }
+}
+Write-Host "  WinRM rules skipped:            $($dynamicSkips.Count)"
+
+# --- SecurityOption rules that write the SCE database ---------------------
+# SecurityOptionDsc writes through the Security Configuration Engine, which
+# re-enforces GPO-derived WinRM restrictions mid-apply -- the same failure mode
+# as AccountPolicy. These two are re-applied by account_policy.ps1 afterwards.
+$sceCount = 0
+foreach ($r in $ruleXml.SelectNodes('//SecurityOptionRule/Rule')) {
+    $on = $r.SelectSingleNode('OptionName')
+    if ($null -ne $on -and $on.InnerText -match 'LAN Manager authentication level|LDAP client signing') {
+        $dynamicSkips.Add($r.GetAttribute('id')) | Out-Null
+        $sceCount++
+    }
+}
+Write-Host "  SCE-writing SecurityOptions:    $sceCount"
+
+# --- Certificate rules ----------------------------------------------------
+# install_dod_certs.ps1 owns the certificate stores. Letting DSC also manage
+# them causes it to reach for DISA InstallRoot content that is not present in
+# the build environment, and the resource blocks.
+$certCount = 0
+# NOTE: the node is RootCertificateRule, not CertificateRule. The VM run proved
+# this: with 'CertificateRule' the derivation reported "Certificate rules
+# skipped: 0" while the 2025 STIG actually carries 9 RootCertificateRule
+# entries, so DSC was still managing the certificate stores.
+foreach ($r in $ruleXml.SelectNodes('//RootCertificateRule/Rule')) {
+    $dynamicSkips.Add($r.GetAttribute('id')) | Out-Null
+    $certCount++
+}
+Write-Host "  Certificate rules skipped:      $certCount"
+
+# --- OpenSSH rules --------------------------------------------------------
+# sshd is not installed by this pipeline and no script configures it, so DSC
+# would either fail these or apply settings to a service that does not exist.
+# Excluded from the image at the caller's direction; applied by domain GPO.
+# Matched by V-ID *and* by title, so a renumbered OpenSSH rule is still caught.
+$sshVids = @(
+    'V-285313','V-285314','V-285315','V-285316','V-285317','V-285318',
+    'V-285319','V-285320','V-285321','V-285322','V-285323'
+)
+$sshCount = 0
+foreach ($r in $ruleXml.SelectNodes('//Rule')) {
+    $rid = $r.GetAttribute('id')
+    if (-not $rid) { continue }
+    $rbase = ($rid -split '\.')[0]
+
+    $isSsh = $sshVids -contains $rbase
+    if (-not $isSsh) {
+        $t = $r.SelectSingleNode('Title')
+        if ($null -ne $t -and $t.InnerText -match 'OpenSSH|sshd') { $isSsh = $true }
+    }
+    if ($isSsh) {
+        $dynamicSkips.Add($rid) | Out-Null
+        $sshCount++
+    }
+}
+Write-Host "  OpenSSH rules skipped:          $sshCount"
+
+# --- Rule CLASSES to exclude ---------------------------------------------
+# AccountPolicyRule / AuditPolicyRule / UserRightRule all write through
+# secedit/auditpol into the local security database. The SCE write re-enforces
+# GPO-derived WinRM restrictions mid-apply and drops Packer's connection; and
+# local user-rights / advanced-audit settings do not survive image capture
+# anyway, so they must come from a domain GPO at first boot.
+$skipTypes = @('AccountPolicyRule','AuditPolicyRule','UserRightRule')
+
+# PowerSTIG exposes SkipRuleType on its composite resources, but the parameter
+# has not existed in every release. Probe for it rather than assuming: if it is
+# absent, expand the classes into individual V-IDs so the same rules are still
+# excluded instead of the compile failing on an unknown property.
+$supportsSkipRuleType = @($dscCheck.Properties | ForEach-Object { $_.Name }) -contains 'SkipRuleType'
+
+if ($supportsSkipRuleType) {
+    Write-Host "  SkipRuleType supported:         yes"
+    $skipRuleTypeLiteral = ($skipTypes | ForEach-Object { "                '$_'" }) -join ",`r`n"
+} else {
+    Write-Host "  SkipRuleType supported:         NO - expanding classes into individual V-IDs" -ForegroundColor Yellow
+    $expanded = 0
+    foreach ($t in $skipTypes) {
+        foreach ($r in $ruleXml.SelectNodes("//$t/Rule")) {
+            $dynamicSkips.Add($r.GetAttribute('id')) | Out-Null
+            $expanded++
+        }
+    }
+    Write-Host "  Class rules expanded:           $expanded"
+    $skipRuleTypeLiteral = $null
+}
+
+$dynamicSkips = @($dynamicSkips | Where-Object { $_ } | Sort-Object -Unique)
+
+if ($dynamicSkips.Count -eq 0) {
+    Write-Warning "Derived skip list is EMPTY. Expected at least the WinRM rules."
+    Write-Warning "If the build hangs at ~40s with no provisioner output, this is why."
+}
+
+# Rendered into the generated configuration below.
+$skipRuleLiteral = ($dynamicSkips | ForEach-Object { "                '$_'" }) -join ",`r`n"
+
+Write-Host "  TOTAL individual SkipRule IDs:  $($dynamicSkips.Count)"
+Write-Host "  Rule TYPES skipped wholesale:   AccountPolicyRule, AuditPolicyRule, UserRightRule"
+
+# Render the SkipRuleType property only when the installed PowerSTIG supports it.
+if ($skipRuleTypeLiteral) {
+    $skipRuleTypeBlock = @"
+            SkipRuleType = @(
+$skipRuleTypeLiteral
+            )
+"@
+} else {
+    $skipRuleTypeBlock = "            # SkipRuleType unsupported by this PowerSTIG build --`r`n" +
+                         "            # those classes were expanded into SkipRule below."
+}
+
 $tempScript = Join-Path $env:TEMP "dsc_config_generated.ps1"
 
 $safeOutputPath  = $OutputPath  -replace "'", "''"
@@ -154,79 +306,17 @@ Configuration ApplyWindowsServerStig {
             StigVersion = '$stigVersionString'
             OrgSettings = '$safeOrgSettings'
 
-            # ---------------------------------------------------------------
-            # EXCEPTION RULES — ISSO-APPROVED DEVIATIONS ONLY
-            # ---------------------------------------------------------------
-            # All password policy, lockout policy, and security option values
-            # are driven by OrgSettings (pamdata.xml). Do NOT add exceptions
-            # for those rules here — exceptions override pamdata.xml and will
-            # cause SCAP failures.
-            #
-            # REMOVED exceptions that caused SCAP failures:
-            #   V-254446 ValueData='0'          -> Disabled blank-password protection (CAT I)
-            #   V-254289 PolicyValue='0'         -> Max password age = NEVER
-            #   V-254290 PolicyValue='0'         -> Min password age = 0
-            #   V-254291 PolicyValue='0'         -> Min password length = 0
-            #   V-254292 PolicyValue='Disabled'  -> Disabled password complexity
-            #   V-254501 Identity='Everyone'     -> Granted Everyone remote shutdown
-            # ---------------------------------------------------------------
-            Exception = @{
-                # V-254439: Deny log on as a service — Guests only
-                'V-254439' = @{ 'Identity' = 'Guests' }
-                # V-254435: Deny log on as a batch job — Guests only
-                'V-254435' = @{ 'Identity' = 'Guests' }
-            }
+            # NOTE: this file is GENERATED by create_mof.ps1. Do not edit it and
+            # do not hardcode V-IDs into it. Both lists below are derived from
+            # the installed Server 2025 STIG content; see create_mof.ps1 for why.
 
+            # Rule classes excluded from the image (secedit/auditpol writers).
+$skipRuleTypeBlock
+
+            # Individual rules excluded: WinRM, SCE-writing security options,
+            # and certificate rules.
             SkipRule = @(
-                # -------------------------------------------------------
-                # AccountPolicy rules — skipped to prevent SCE database
-                # write during DSC apply. The SCE write re-enforces
-                # GPO-derived WinRM restrictions mid-session, breaking
-                # Packer's connection. All handled by account_policy.ps1
-                # after all uploads are complete.
-                # -------------------------------------------------------
-                'V-254285',   # Account lockout duration
-                'V-254286',   # Account lockout threshold
-                'V-254287',   # Account lockout observation window
-                'V-254288',   # Enforce password history
-                'V-254289',   # Maximum password age
-                'V-254290',   # Minimum password age
-                'V-254291',   # Minimum password length
-                'V-254292',   # Password complexity
-                'V-254293',   # Reversible encryption (CAT I)
-                'V-254434'
-
-                # -------------------------------------------------------
-                # SecurityOption rules — also write to SCE database,
-                # same WinRM-breaking side effect as AccountPolicy.
-                # Handled by stig_remediation_fixes.ps1 after uploads.
-                # -------------------------------------------------------
-                'V-254445',   # Network security: LAN Manager auth level
-                'V-254465',   # Network security: LDAP client signing
-
-                # -------------------------------------------------------
-                # WinRM STIG rules — these DISABLE Basic auth / unencrypted
-                # traffic during DSC apply, which KILLS Packer's WinRM
-                # session mid-build and causes the instance to be deleted
-                # at ~41s with the provisioner hung. Must be applied AFTER
-                # the Packer image is captured (via first-boot scheduled
-                # task on the resulting image, not during build).
-                # Also protected by WinRM guardian task in apply_mof.ps1.
-                # -------------------------------------------------------
-                'V-254499',   # WinRM client: do not allow Basic auth
-                'V-254500',   # WinRM client: do not allow unencrypted traffic
-                'V-254501',   # WinRM client: do not use Digest auth
-                'V-254502',   # WinRM service: do not allow Basic auth
-                'V-254503',   # WinRM service: do not allow unencrypted traffic
-                'V-254504',   # WinRM service: must not store RunAs credentials
-
-                # -------------------------------------------------------
-                # Pre-existing skips (unchanged)
-                # -------------------------------------------------------
-                'V-254254.c',
-                'V-254271',
-                'V-254457',
-                'V-254458'
+$skipRuleLiteral
             )
         }
     }
@@ -273,11 +363,25 @@ if ($mofSize -lt 50000) {
 
 # -----------------------------------------------------------------------
 # Confirm AccountPolicy rules are absent from the compiled MOF.
-# If any appear, SkipRule did not take effect — abort before apply_mof.ps1
+# If any appear, SkipRule did not take effect -- abort before apply_mof.ps1
 # runs and breaks WinRM.
 # -----------------------------------------------------------------------
 Write-Host "Verifying SCE-writing resources are excluded from MOF..."
 $sceHits = Select-String -Path $mofFile -Pattern "AccountPolicy|SecurityOption" -SimpleMatch
+
+# The WinRM check is the one that actually protects the build: if a WinRM key
+# reached the MOF, applying it will sever Packer's session and the instance is
+# torn down with the provisioner still running. Fail here instead.
+$winrmHits = Select-String -Path $mofFile -Pattern "WinRM\\\\Client|WinRM\\\\Service|WSMAN"
+if ($winrmHits) {
+    Write-Error "WinRM registry rules found in the compiled MOF. Applying them would"
+    Write-Error "kill Packer's WinRM session mid-build. The derived SkipRule list did not"
+    Write-Error "cover them. Aborting before apply_mof.ps1 runs."
+    $winrmHits | Select-Object -First 10 | ForEach-Object { Write-Error "  $($_.Line.Trim())" }
+    exit 1
+}
+Write-Host "  [OK] No WinRM rules in MOF - Packer session is safe." -ForegroundColor Green
+
 if ($sceHits) {
     Write-Error "SCE-writing resources (AccountPolicy or SecurityOption) found in compiled MOF."
     Write-Error "DSC apply would break WinRM. Aborting. Check SkipRule entries in this script."
@@ -285,7 +389,7 @@ if ($sceHits) {
     $sceHits | ForEach-Object { Write-Error "  $($_.Line.Trim())" }
     exit 1
 }
-Write-Host "  [OK] No SCE-writing resources in MOF — safe to apply." -ForegroundColor Green
+Write-Host "  [OK] No SCE-writing resources in MOF -- safe to apply." -ForegroundColor Green
 
 Write-Host "=== DSC configuration compiled successfully ==="
 exit 0

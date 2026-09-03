@@ -13,7 +13,17 @@
     5. stig_remediation_fixes.ps1 runs AFTER apply_mof.ps1 (same reason)
     6. audit.ps1 runs AFTER apply_mof.ps1 (V-278942 to V-278947)
     7. apply_remaining_fixes.ps1 runs AFTER apply_mof.ps1 (V-254251/258/261)
-    8. repair_winrm_for_packer.ps1 runs LAST (must not be undone by any STIG script)
+    8. win2025_registry_fixes.ps1 runs after all other registry writers so the
+       Server 2025 STIG values are the ones captured into the image
+    9. repair_winrm_for_packer.ps1 is intentionally disabled -- no script in this
+       pipeline modifies WinRM any more, so there is nothing to repair
+
+    SERVER 2022 -> 2025: this pipeline builds Windows Server 2025, whose STIG
+    uses V-278xxx/V-285xxx IDs. Several scripts here were authored against the
+    Server 2022 STIG (V-254xxx) and their hardcoded IDs match nothing on 2025.
+    win2025_registry_fixes.ps1 and the derived skip list in create_mof.ps1 read
+    the installed benchmark instead of hardcoding IDs; prefer that approach when
+    adding rules rather than adding another V-ID table.
 
     FIX: Integrity check corrected to use 'audit.ps1' (the actual filename)
          instead of 'apply_audit_policy.ps1' which does not exist on disk.
@@ -87,6 +97,7 @@ $integrityChecks = @(
     @{ Path = "$scriptDir\create_mof.ps1";             MinLines = 50;  Label = "create_mof.ps1"            }
     @{ Path = "$scriptDir\audit.ps1";                  MinLines = 30;  Label = "audit.ps1"                 }
     @{ Path = "$scriptDir\apply_remaining_fixes.ps1";  MinLines = 30;  Label = "apply_remaining_fixes.ps1" }
+    @{ Path = "$scriptDir\win2025_registry_fixes.ps1"; MinLines = 200; Label = "win2025_registry_fixes.ps1" }
 )
 
 $integrityFail = $false
@@ -120,7 +131,7 @@ if ($integrityFail) {
 Invoke-Step "$scriptDir\install_PowerSTIG.ps1"   "Install PowerSTIG"
 Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (removes CIM duplicates)"
 # -----------------------------------------------------------------------
-# DOD Banner — inline set karo, file encoding issue avoid karne ke liye
+# DOD Banner -- inline set karo, file encoding issue avoid karne ke liye
 
 # -----------------------------------------------------------------------
 # STEP 2 -- Install DoD Certificates (V-254442, V-254443, V-254444)
@@ -139,7 +150,7 @@ Invoke-Step "$scriptDir\install_dsc_deps.ps1"    "Install DSC dependencies (remo
 # overwrite what dod_banner.ps1 just set.
 # -----------------------------------------------------------------------
 Invoke-Step "$scriptDir\create_mof.ps1"          "Create DSC MOF"
-Invoke-Step "$scriptDir\dod_banner.ps1"          "Apply DoD banner (pre-DSC — survives WinRM drop)" -AllowFailure
+Invoke-Step "$scriptDir\dod_banner.ps1"          "Apply DoD banner (pre-DSC -- survives WinRM drop)" -AllowFailure
 Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
 
 # -----------------------------------------------------------------------
@@ -148,27 +159,59 @@ Invoke-Step "$scriptDir\apply_mof.ps1"           "Apply DSC MOF"
 # DSC cannot undo secedit/registry/auditpol writes -- running these after
 # DSC ensures they are the final state baked into the image.
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\registry_stig.ps1"           "Registry STIG fixes"                             -AllowFailure
 Invoke-Step "$scriptDir\services_stig.ps1"           "Services STIG fixes"                             -AllowFailure
 
-# V-254285/286/287/288/289/290/291/292 -- password and lockout policy
+# Password and lockout policy. AccountPolicyRule is skipped in the DSC MOF
+# because the SCE write drops Packer's WinRM session mid-apply, so this is the
+# only thing that sets these values.
 Invoke-Step "$scriptDir\account_policy.ps1"          "Account Policy (net accounts + secedit)"
 
-# V-278942/943/944/945/946/947 -- audit file system, handle manipulation, registry
-# FIX: script is named audit.ps1 not apply_audit_policy.ps1
-Invoke-Step "$scriptDir\audit.ps1"                   "Audit Subcategory Policy (V-278942 to V-278947)" -AllowFailure
+# Object Access audit subcategories, plus SCENoApplyLegacyAuditPolicy.
+# Advanced audit policy itself does not survive image capture and is applied by
+# domain GPO at first boot; the registry override it sets here does persist.
+Invoke-Step "$scriptDir\audit.ps1"                   "Audit subcategory policy (object access)"        -AllowFailure
 
-# V-254251/258/261 -- C:\ permissions, password expiry, cert file removal
-Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"   "Remaining STIG fixes (V-254251/258/261)"         -AllowFailure
+# C:\ permissions, password expiry, certificate file removal.
+Invoke-Step "$scriptDir\apply_remaining_fixes.ps1"   "Remaining STIG fixes"                            -AllowFailure
 
-# Broader targeted fixes for remaining SCAP failures
 Invoke-Step "$scriptDir\stig_remediation_fixes.ps1"  "Targeted STIG remediation"                       -AllowFailure
-Invoke-Step "$scriptDir\dod_banner.ps1"           "Apply dod banner"
+
+# -----------------------------------------------------------------------
+# PRIMARY registry remediation for Windows Server 2025.
+#
+# Reads the Server 2025 STIG content that PowerSTIG ships and applies every
+# registry rule directly, verifying each write by reading it back. It runs
+# LAST among the writers so it has the final word on registry state -- the
+# older scripts above still carry some Server 2022 values, and this corrects
+# any of them that are wrong for the 2025 benchmark.
+#
+# WinRM, user-rights, advanced-audit and certificate rules are excluded inside
+# the script; those are applied by domain GPO at first boot.
+# -----------------------------------------------------------------------
+Invoke-Step "$scriptDir\win2025_registry_fixes.ps1"  "Server 2025 STIG registry remediation"           -AllowFailure
+
+Invoke-Step "$scriptDir\dod_banner.ps1"              "Apply DoD banner"                                -AllowFailure
+
+# Read-only sanity check on the highest-value keys. Runs after every writer so
+# what it prints is the state that will be captured into the image.
+Invoke-Step "$scriptDir\registry_stig.ps1"           "Registry verification (read-only)"               -AllowFailure
 
 # -----------------------------------------------------------------------
 # STEP 5 -- Repair WinRM for Packer (MUST be absolute last step)
 # -----------------------------------------------------------------------
-Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)"      -AllowFailure
+# repair_winrm_for_packer.ps1 is intentionally NOT run and NOT uploaded by the
+# Packer template. Leaving the call here without the upload made Invoke-Step hit
+# its Test-Path guard and emit only a Write-Warning, so the step looked like it
+# ran. Disabled explicitly instead of skipped silently.
+#
+# This is safe because the WinRM STIG rules are excluded from the image on both
+# sides: create_mof.ps1 derives them out of the DSC MOF (and fails the build if
+# any reach it), and win2025_registry_fixes.ps1 refuses them by key path. Nothing
+# in the pipeline touches the live WinRM configuration, so there is nothing to
+# repair. WinRM lockdown is applied by domain GPO at first boot.
+#
+# Invoke-Step "$scriptDir\repair_winrm_for_packer.ps1" "Repair WinRM for Packer (LAST step)" -AllowFailure
+Write-Host "`n--- WinRM repair: intentionally disabled (no STIG script modifies WinRM) ---" -ForegroundColor Gray
 
 # -----------------------------------------------------------------------
 # STEP 6 -- Final DSC compliance audit

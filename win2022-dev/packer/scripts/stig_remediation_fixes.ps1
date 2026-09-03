@@ -22,10 +22,10 @@ function Write-Skip  { param([string]$msg) Write-Host "  [SKIP] $msg" -Foregroun
 $ErrorCount = 0
 
 # ============================================================
-# CAT I — HIGH SEVERITY
+# CAT I -- HIGH SEVERITY
 # ============================================================
 
-Write-Section "CAT I: V-254446 — Prevent blank-password network logon"
+Write-Section "CAT I: V-254446 -- Prevent blank-password network logon"
 try {
     Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
         -Name "LimitBlankPasswordUse" -Value 1 -Type DWord -Force -ErrorAction Stop
@@ -33,7 +33,7 @@ try {
     if ($val -eq 1) {
         Write-OK "LimitBlankPasswordUse = 1 (blank password network logon blocked)"
     } else {
-        Write-Warn "Value is $val — expected 1"
+        Write-Warn "Value is $val -- expected 1"
         $ErrorCount++
     }
 } catch {
@@ -42,7 +42,7 @@ try {
 }
 
 # ============================================================
-# CAT II — PASSWORD POLICY
+# CAT II -- PASSWORD POLICY
 # ============================================================
 
 Write-Section "CAT II: Password Policy verification (V-254289/290/291/292)"
@@ -78,10 +78,10 @@ try {
 }
 
 # ============================================================
-# CAT II: V-254258 — Ensure all local enabled accounts have expiring passwords
+# CAT II: V-254258 -- Ensure all local enabled accounts have expiring passwords
 # ============================================================
 
-Write-Section "CAT II: V-254258 — Passwords must be configured to expire"
+Write-Section "CAT II: V-254258 -- Passwords must be configured to expire"
 
 $excludeAccounts = @('DefaultAccount', 'WDAGUtilityAccount', 'Guest', 'GuestDisabled', 'packer_user', 'packer', 'WinRMUser', 'Administrator', 'AdminRenamed')
 
@@ -111,10 +111,10 @@ try {
 }
 
 # ============================================================
-# CAT II: V-254261 — Remove software certificate installation files
+# CAT II: V-254261 -- Remove software certificate installation files
 # ============================================================
 
-Write-Section "CAT II: V-254261 — Remove .p12 and .pfx certificate files"
+Write-Section "CAT II: V-254261 -- Remove .p12 and .pfx certificate files"
 
 $gceCert = 'C:\ProgramData\Google\Compute Engine\mds-mtls-client.key.pfx'
 $knownTestFiles = @(
@@ -137,7 +137,7 @@ foreach ($f in $knownTestFiles) {
 }
 
 if (Test-Path $gceCert) {
-    Write-Skip "GCE mTLS cert retained (GCP agent dependency — document with ISSO): $gceCert"
+    Write-Skip "GCE mTLS cert retained (GCP agent dependency -- document with ISSO): $gceCert"
 }
 
 foreach ($pattern in @('*.p12', '*.pfx')) {
@@ -163,17 +163,17 @@ foreach ($pattern in @('*.p12', '*.pfx')) {
 }
 
 # ============================================================
-# CAT II: V-254284 — Secure Boot
+# CAT II: V-254284 -- Secure Boot
 # ============================================================
 
-Write-Section "CAT II: V-254284 — Secure Boot (infrastructure action required)"
+Write-Section "CAT II: V-254284 -- Secure Boot (infrastructure action required)"
 
 try {
     $sb = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
     if ($sb -eq $true) {
         Write-OK "Secure Boot is already enabled"
     } else {
-        Write-Warn "Secure Boot is OFF — enable in GCP Shielded VM config."
+        Write-Warn "Secure Boot is OFF -- enable in GCP Shielded VM config."
         Write-Warn "  In Packer HCL: shielded_instance_config { enable_secure_boot = true }"
     }
 } catch {
@@ -181,10 +181,10 @@ try {
 }
 
 # ============================================================
-# CAT II: V-254442/443/444 — DoD PKI certificates
+# CAT II: V-254442/443/444 -- DoD PKI certificates
 # ============================================================
 
-Write-Section "CAT II: V-254442 / 254443 / 254444 — DoD PKI certificate verification"
+Write-Section "CAT II: V-254442 / 254443 / 254444 -- DoD PKI certificate verification"
 
 $certChecks = @(
     @{ Name="DoD Root CA 3"; Store="Cert:\LocalMachine\Root";       Thumb="D73CA91102A2204A36459ED32213B467D7CE97FB"; Rule="V-254442" },
@@ -214,10 +214,10 @@ foreach ($cc in $certChecks) {
 }
 
 # ============================================================
-# CAT II: V-254447 / V-254448 — Rename built-in Administrator and Guest
+# CAT II: V-254447 / V-254448 -- Rename built-in Administrator and Guest
 # ============================================================
 
-Write-Section "CAT II: V-254447 — Rename built-in Administrator account"
+Write-Section "CAT II: V-254447 -- Rename built-in Administrator account"
 
 $newAdminName = "AdminRenamed"
 $newGuestName = "GuestDisabled"
@@ -240,7 +240,7 @@ try {
     $ErrorCount++
 }
 
-Write-Section "CAT II: V-254448 — Rename built-in Guest account"
+Write-Section "CAT II: V-254448 -- Rename built-in Guest account"
 
 try {
     $guestAcct = Get-LocalUser | Where-Object { $_.SID.Value -match '-501$' } | Select-Object -First 1
@@ -261,119 +261,50 @@ try {
 }
 
 # ============================================================
-# CAT II: V-254501 — Force shutdown from remote system — Administrators only
+# User rights -- REMOVED from the pipeline
 # ============================================================
-
-Write-Section "CAT II: V-254501 — SeRemoteShutdownPrivilege = Administrators only"
-
-$seceditCfg2 = "$env:TEMP\stig_userrights.cfg"
-$seceditDb2  = "$env:TEMP\stig_userrights.sdb"
-
-Remove-Item $seceditCfg2 -ErrorAction SilentlyContinue
-Remove-Item $seceditDb2  -ErrorAction SilentlyContinue
-
-try {
-    secedit /export /areas USER_RIGHTS /cfg $seceditCfg2 /quiet
-    if (Test-Path $seceditCfg2) {
-        $ucfg = Get-Content $seceditCfg2 -Raw
-        if ($ucfg -match 'SeRemoteShutdownPrivilege') {
-            $ucfg = $ucfg -replace 'SeRemoteShutdownPrivilege\s*=\s*[^\r\n]*', 'SeRemoteShutdownPrivilege = *S-1-5-32-544'
-        } else {
-            $ucfg = $ucfg -replace '(\[Privilege Rights\])', "`$1`r`nSeRemoteShutdownPrivilege = *S-1-5-32-544"
-        }
-        $ucfg | Set-Content $seceditCfg2 -Encoding Unicode
-        secedit /configure /db $seceditDb2 /cfg $seceditCfg2 /areas USER_RIGHTS /quiet
-        if ($LASTEXITCODE -eq 0) {
-            Write-Fixed "SeRemoteShutdownPrivilege restricted to Administrators only"
-        } else {
-            Write-Warn "secedit USER_RIGHTS returned exit code $LASTEXITCODE"
-            $ErrorCount++
-        }
-    } else {
-        Write-Warn "secedit export failed for USER_RIGHTS — cannot set SeRemoteShutdownPrivilege"
-        $ErrorCount++
-    }
-} catch {
-    Write-Warn "Exception setting SeRemoteShutdownPrivilege: $_"
-    $ErrorCount++
-} finally {
-    Remove-Item $seceditCfg2 -ErrorAction SilentlyContinue
-    Remove-Item $seceditDb2  -ErrorAction SilentlyContinue
-}
+# This block used secedit /areas USER_RIGHTS to set SeRemoteShutdownPrivilege.
+# User-rights assignments are excluded from the image at the caller's direction
+# and are applied by domain GPO at first boot, for two reasons:
+#   1. They do not reliably survive image capture and sysprep.
+#   2. The secedit write goes through the Security Configuration Engine, which
+#      re-enforces GPO-derived WinRM restrictions mid-session and can drop
+#      Packer's connection.
+# UserRightRule is also skipped as a whole class in the DSC MOF (create_mof.ps1),
+# so leaving this here would have been the one place user rights still got
+# written during a build.
+Write-Section "User rights -- skipped (applied by domain GPO at first boot)"
+Write-Skip "SeRemoteShutdownPrivilege and all other user-rights assignments"
 
 # ============================================================
-# CAT II: V-254251 — C:\ root directory permissions
+# C:\ root directory ACL -- DISABLED (slow, and duplicated)
 # ============================================================
-
-Write-Section "CAT II: V-254251 — C:\ root directory ACL"
-
-try {
-    $acl     = Get-Acl -Path "C:\"
-    $rights  = [System.Security.AccessControl.FileSystemRights]
-    $inherit = [System.Security.AccessControl.InheritanceFlags]
-    $prop    = [System.Security.AccessControl.PropagationFlags]
-    $allow   = [System.Security.AccessControl.AccessControlType]::Allow
-
-    $acl.SetAccessRuleProtection($false, $false)
-    $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "NT AUTHORITY\SYSTEM", $rights::FullControl,
-        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Administrators", $rights::FullControl,
-        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", $rights::ReadAndExecute,
-        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::None, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", $rights::CreateDirectories,
-        $inherit::ContainerInherit, $prop::None, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", $rights::CreateFiles,
-        $inherit::ContainerInherit, $prop::InheritOnly, $allow)))
-
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "CREATOR OWNER", $rights::FullControl,
-        ($inherit::ContainerInherit -bor $inherit::ObjectInherit), $prop::InheritOnly, $allow)))
-
-    Set-Acl -Path "C:\" -AclObject $acl
-    Write-Fixed "C:\ ACL reset to STIG-required defaults"
-} catch {
-    Write-Warn "Failed to set C:\ ACL: $_"
-    $ErrorCount++
-}
+# Rewriting the ACL on C:\ walks the whole volume and was by far the slowest
+# step in the build. It was also being done TWICE -- once here and once in the
+# other post-DSC script -- so the cost was paid twice for the same result.
+# Disabled at the caller's direction.
+#
+# The Server 2025 STIG expresses system-drive permissions as a PermissionRule,
+# which DSC applies from the MOF, so this hand-rolled ACL reset is redundant on
+# top of that. Re-enable only if a SCC scan actually flags the system drive.
+Write-Section "C:\ root ACL -- skipped (disabled: slow)"
+Write-Skip "C:\ ACL reset disabled; DSC PermissionRule covers system-drive permissions"
 
 # ============================================================
-# CAT II: V-278942 to V-278947 — Advanced Audit Policy (Object Access)
+# Advanced audit policy -- REMOVED from the pipeline
 # ============================================================
-
-Write-Section "CAT II: V-278942 to V-278947 — Advanced Audit Policy (Object Access)"
-
-$auditSubcategories = @(
-    @{ Name="File System";         Rule="V-278942/943" },
-    @{ Name="Handle Manipulation"; Rule="V-278944/945" },
-    @{ Name="Registry";            Rule="V-278946/947" }
-)
-
-foreach ($sub in $auditSubcategories) {
-    try {
-        $result = auditpol /set /subcategory:"$($sub.Name)" /success:enable /failure:enable 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Fixed "[$($sub.Rule)] Audit $($sub.Name) = Success+Failure"
-        } else {
-            Write-Warn "auditpol failed for $($sub.Name): $result"
-            $ErrorCount++
-        }
-    } catch {
-        Write-Warn "Exception setting audit for $($sub.Name): $_"
-        $ErrorCount++
-    }
-}
+# This block ran auditpol /set for the Object Access subcategories. Advanced
+# audit policy is excluded from the image at the caller's direction and applied
+# by domain GPO at first boot; it does not persist through image capture.
+# AuditPolicyRule is also skipped as a whole class in the DSC MOF.
+#
+# The one piece that DOES persist and that GPO audit policy depends on is the
+# SCENoApplyLegacyAuditPolicy registry value, which makes subcategory settings
+# override the legacy category settings. That is a registry rule, so it is
+# applied by win2025_registry_fixes.ps1 from the STIG content, and audit.ps1
+# sets it as a belt-and-braces guarantee.
+Write-Section "Advanced audit policy -- skipped (applied by domain GPO at first boot)"
+Write-Skip "Object Access subcategories (File System, Handle Manipulation, Registry)"
 
 # ============================================================
 # Summary

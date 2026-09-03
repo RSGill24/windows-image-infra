@@ -147,22 +147,16 @@ Write-Fixed "sshd_config written with STIG-hardened settings"
 # -----------------------------------------------------------------------
 Write-Section "V-285321/V-285322: SSH host key file permissions"
 
-# Generate host keys if they don't exist
+# Host keys auto-generate when sshd starts on first boot.
+# Do NOT run ssh-keygen during Packer build — it returns exit code 16001
+# which poisons $LASTEXITCODE and kills the pipeline.
 $hostKeys = @(
     "$sshdConfigDir\ssh_host_rsa_key",
     "$sshdConfigDir\ssh_host_ecdsa_key",
     "$sshdConfigDir\ssh_host_ed25519_key"
 )
 
-foreach ($keyFile in $hostKeys) {
-    if (!(Test-Path $keyFile)) {
-        Write-Host "  Generating host key: $keyFile"
-        $keyType = if ($keyFile -match 'rsa') { 'rsa' } elseif ($keyFile -match 'ecdsa') { 'ecdsa' } else { 'ed25519' }
-        & ssh-keygen -t $keyType -f $keyFile -N '""' -q 2>&1 | Out-Null
-    }
-}
-
-# Set permissions on private host key files (V-285321)
+# Set permissions on private host key files (V-285321) if they exist
 # Only SYSTEM and Administrators should have access
 foreach ($keyFile in $hostKeys) {
     if (Test-Path $keyFile) {
@@ -271,4 +265,6 @@ if ($ErrorCount -eq 0) {
     Write-Host "  $ErrorCount issue(s) need attention." -ForegroundColor Yellow
 }
 
+# Reset LASTEXITCODE to prevent native command exit codes from poisoning the pipeline
+$global:LASTEXITCODE = 0
 exit $ErrorCount

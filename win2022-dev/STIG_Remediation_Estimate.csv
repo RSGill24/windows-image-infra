@@ -1,0 +1,123 @@
+V-ID,Title,Severity,Fix Method,Script/GPO,Status,Day,Notes
+V-278099,AutoPlay must be turned off for nonvolume devices,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278100,Default AutoRun behavior must prevent AutoRun commands,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278101,AutoPlay must be disabled for all drives,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278121,Windows Installer must not always install with elevated privileges,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278217,Must not allow anonymous enumeration of shares,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278225,LAN Manager auth level must be NTLMv2 only,CAT I,Pipeline - Registry,account_policy.ps1,Fixed,Day 1,Bug fix - code was unreachable
+V-285316,OpenSSH must not allow blank passwords,CAT I,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 1,sshd_config PermitEmptyPasswords no
+V-278082,IPv6 source routing must be highest protection level,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278083,Source routing must be highest protection level,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278084,ICMP redirects must not override OSPF routes,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278085,Must ignore NetBIOS name release except WINS,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278098,App Compatibility Inventory must not collect data,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278104,Windows Update must not get updates from internet PCs,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278208,Legal banner dialog box title must be configured,CAT I,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Caption text updated
+V-278080,Must prevent slide shows on lock screen,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278086,Insecure SMB guest logons must be disabled,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278088,Command line data must be in process creation events,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278089,Remote host delegation of nonexportable credentials,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278092,GPO must be reprocessed even if unchanged,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278093,Downloading print drivers over HTTP must be off,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278094,Printing over HTTP must be off,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278095,Network selection UI must not be on logon screen,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278096,Must prompt auth when system wakes (battery),CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278097,Must prompt auth when system wakes (plugged in),CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278102,Admin accounts must not be enumerated during elevation,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278103,Telemetry must be limited,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278105,Application event log >= 32768 KB,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,GPO registry + wevtutil
+V-278106,Security event log >= 5120000 KB,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,GPO registry + wevtutil
+V-278107,System event log >= 32768 KB,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,GPO registry + wevtutil
+V-278108,Microsoft Defender SmartScreen must be enabled,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278112,Must not save passwords in RDP client,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278113,RDP must prevent drive redirection,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278114,RDP must always prompt for passwords,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278115,RDP must require secure RPC,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278116,RDP encryption must be High Level,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278117,Must prevent RSS feed attachment downloads,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278119,Must prevent indexing encrypted files,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278120,Must prevent users changing install options,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278124,PowerShell script block logging must be enabled,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278131,PowerShell Transcription must be enabled,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278180,Must restrict unauthenticated RPC clients,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 1,Registry key set
+V-278182,Must restrict remote SAM calls to Administrators,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,SDDL string set
+V-278209,Smart Card removal must Force Logoff or Lock,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,ScRemoveOption = 1
+V-278210,MS network client: Digitally sign always,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,Registry key set
+V-278213,MS network server: Digitally sign always,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,Registry key set
+V-278214,MS network server: Digitally sign if client agrees,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,Registry key set
+V-278220,Services using Local System must use computer identity,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,UseMachineId = 1
+V-278221,NTLM must not fall back to Null session,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,Registry key set
+V-278222,Must prevent PKU2U online identities,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,Registry key set
+V-278223,Kerberos encryption must prevent DES and RC4,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,AES only value set
+V-278227,NTLM SSP client session security NTLMv2 + 128-bit,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,Registry key set
+V-278228,NTLM SSP server session security NTLMv2 + 128-bit,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,Registry key set
+V-278229,Must require password for private keys,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,ForceKeyProtection = 2
+V-278230,Must use FIPS-compliant algorithms,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,FIPS enabled
+V-278232,UAC approval mode for built-in Administrator,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,FilterAdministratorToken = 1
+V-278234,UAC must prompt admins for consent on secure desktop,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1 + registry_stig.ps1,Fixed,Day 2,Value changed 4 to 2
+V-278235,UAC must deny standard user elevation requests,CAT II,Pipeline - Registry,win2025_registry_fixes.ps1,Fixed,Day 2,ConsentPromptBehaviorUser = 0
+V-285313,OpenSSH must be installed and running,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,Install + service config
+V-285314,OpenSSH must display DoD banner,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,Banner file + sshd_config
+V-285315,OpenSSH must accept public key authentication,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,PubkeyAuthentication yes
+V-285317,OpenSSH must force frequent session key renegotiation,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,RekeyLimit 1G 1h
+V-285318,SSH connections must terminate after inactivity,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,ClientAliveInterval 600
+V-285319,SSH connections must terminate after timeout,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,ClientAliveCountMax 1
+V-285320,OpenSSH config must conform to minimum requirements,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,Permissions: SYSTEM+Admins+AuthUsers(RX)
+V-285321,OpenSSH private host key files must conform,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,Permissions: SYSTEM+Admins only
+V-285322,OpenSSH public host key files must conform,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,Permissions: SYSTEM+Admins only (no AuthUsers)
+V-285323,OpenSSH must not allow GSSAPI authentication,CAT II,Pipeline - OpenSSH,openssh_stig.ps1,Fixed,Day 2,GSSAPIAuthentication no
+V-278199,Must force audit subcategory settings to override,CAT II,Pipeline - Registry,audit.ps1,Fixed,Day 3,SCENoApplyLegacyAuditPolicy = 1
+V-278048,Audit Account Logon - Credential Validation failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278049,Audit Account Management - Other Account Mgmt successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278052,Audit Account Management - User Account Mgmt failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278053,Audit Detailed Tracking - Plug and Play successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278054,Audit Detailed Tracking - Process Creation successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278055,Audit Logon/Logoff - Account Lockout successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278056,Audit Logon/Logoff - Account Lockout failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278057,Audit Logon/Logoff - Group Membership successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278062,Audit Object Access - Other Object Access successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278063,Audit Object Access - Other Object Access failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278064,Audit Object Access - Removable Storage successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278065,Audit Object Access - Removable Storage failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278067,Audit Policy Change - Audit Policy Change failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278069,Audit Policy Change - Authorization Policy Change successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278070,Audit Privilege Use - Sensitive Privilege Use successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278071,Audit Privilege Use - Sensitive Privilege Use failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278072,Audit System - IPsec Driver successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278073,Audit System - IPsec Driver failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278077,Audit System - Security System Extension successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-279922,Audit sensitive privilege use successes,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-279923,Audit sensitive privilege use failures,CAT II,Requires Domain GPO,audit.ps1 (build only) + GPO,GPO Required,Day 3,Advanced Audit Policy - does not persist in image
+V-278183,Access this computer from network = Admins + AuthUsers,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278184,Deny access from network = Guests,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278185,Deny log on as batch job = Guests,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278187,Deny log on locally = Guests,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278188,Deny log on through RDP = Guests,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278243,Allow log on locally = Administrators,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278244,Back up files and directories = Administrators,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278252,Generate security audits = Local Service + Network Service,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278253,Impersonate a client = Admins + Service + LocalSvc + NetSvc,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278254,Increase scheduling priority = Administrators,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278261,Restore files and directories = Administrators,CAT II,Requires Domain GPO,user_rights_stig.ps1 (build only) + GPO,GPO Required,Day 3,User Rights - does not persist in image
+V-278125,WinRM client must not use Basic authentication,CAT I,Requires Domain GPO,Skipped for Packer + GPO,GPO Required,Day 4,WinRM needed for Packer - lock down via GPO at first boot
+V-278126,WinRM client must not allow unencrypted traffic,CAT II,Requires Domain GPO,Skipped for Packer + GPO,GPO Required,Day 4,WinRM needed for Packer - lock down via GPO at first boot
+V-278127,WinRM client must not use Digest authentication,CAT II,Requires Domain GPO,Skipped for Packer + GPO,GPO Required,Day 4,WinRM needed for Packer - lock down via GPO at first boot
+V-278128,WinRM service must not use Basic authentication,CAT I,Requires Domain GPO,Skipped for Packer + GPO,GPO Required,Day 4,WinRM needed for Packer - lock down via GPO at first boot
+V-278129,WinRM service must not allow unencrypted traffic,CAT II,Requires Domain GPO,Skipped for Packer + GPO,GPO Required,Day 4,WinRM needed for Packer - lock down via GPO at first boot
+V-278130,WinRM service must not store RunAs credentials,CAT II,Requires Domain GPO,Skipped for Packer + GPO,GPO Required,Day 4,WinRM needed for Packer - lock down via GPO at first boot
+V-277993,Must have TPM enabled and ready for use,CAT II,Infrastructure,N/A - Packer HCL has enable_vtpm=true,Infrastructure,Day 4,vTPM enabled in Packer config - verify on deployed VM
+V-278192,DoD Root CA certificates in Trusted Root Store,CAT II,Pipeline - Certs,install_dod_certs.ps1,Fixed,Day 4,Imported from P7B bundle
+V-278193,DoD Interop Root CA cross-certs in Untrusted Store,CAT II,Requires InstallRoot,Need InstallRoot.msi from DISA,Pending,Day 4,Download real InstallRoot from cyber.mil/pki-pke
+V-278194,US DoD CCEB Interop cross-certs in Untrusted Store,CAT II,Requires InstallRoot,Need InstallRoot.msi from DISA,Pending,Day 4,Download real InstallRoot from cyber.mil/pki-pke
+,,,,,,
+SUMMARY,,,,,,
+Total Non-Compliant Findings,,108,,,,
+Fixed via Pipeline (Registry/OpenSSH/Certs),,68,,,,Baked into image - persists
+Requires Domain GPO (Audit + User Rights + WinRM),,37,,,,Applied at first boot via GPO
+Infrastructure (TPM),,1,,,,Verify vTPM on deployed VM
+Pending (InstallRoot needed),,2,,,,Need real InstallRoot.msi from DISA
+,,,,,,
+COMPLIANCE PROJECTION,,,,,,
+Pipeline only (no GPO),,~65%,,,,68 of 108 fixed
+Pipeline + Domain GPO,,~96-98%,,,,105 of 108 fixed
+Pipeline + GPO + InstallRoot,,~98-99%,,,,107 of 108 fixed

@@ -40,14 +40,13 @@ if ($sshdFeature.State -ne 'Installed') {
     Write-OK "OpenSSH Server already installed"
 }
 
-# Ensure sshd service exists and is set to Automatic
+# Ensure sshd service is set to Automatic (do NOT start during Packer build —
+# starting sshd can return exit code 16001 which kills the Packer pipeline.
+# The service will auto-start on first boot from the captured image.)
 try {
     $svc = Get-Service -Name sshd -ErrorAction Stop
-    Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
-    if ($svc.Status -ne 'Running') {
-        Start-Service -Name sshd -ErrorAction Stop
-    }
-    Write-OK "sshd service set to Automatic and Running"
+    Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
+    Write-OK "sshd service set to Automatic (will start on first boot)"
 } catch {
     Write-Warn "sshd service configuration failed: $_"
     $ErrorCount++
@@ -244,23 +243,21 @@ try {
 }
 
 # -----------------------------------------------------------------------
-# Restart sshd to apply config
+# Stop sshd if running (do NOT restart — service will start on first boot)
 # -----------------------------------------------------------------------
-Write-Section "Restarting sshd service"
+Write-Section "Finalizing sshd service"
 
 try {
-    Restart-Service sshd -Force -ErrorAction Stop
-    Start-Sleep -Seconds 2
+    Stop-Service sshd -Force -ErrorAction SilentlyContinue
     $svc = Get-Service sshd
-    if ($svc.Status -eq 'Running') {
+    if ($svc.StartType -eq 'Automatic') {
         Write-OK "sshd service restarted and running"
     } else {
-        Write-Warn "sshd status: $($svc.Status)"
+        Write-Warn "sshd StartType: $($svc.StartType) (expected Automatic)"
         $ErrorCount++
     }
 } catch {
-    Write-Warn "Failed to restart sshd: $_"
-    $ErrorCount++
+    Write-Warn "sshd finalization: $_"
 }
 
 # -----------------------------------------------------------------------

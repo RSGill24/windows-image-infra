@@ -4,13 +4,16 @@
 #
 # Note: GCP SDK may already be present from the Phase 1 golden image.
 # This task ensures it is installed and up to date.
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Check if Google Cloud SDK is already installed
   win_shell: |
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     gcloud version --format="value(Google Cloud SDK)" 2>$null
-    if ($LASTEXITCODE -ne 0) { echo "not_installed" }
+    if ($LASTEXITCODE -ne 0) { Write-Output "not_installed" }
   register: gcloud_check
   changed_when: false
   failed_when: false
@@ -18,6 +21,7 @@
 - name: Download Google Cloud SDK installer
   when: "'not_installed' in gcloud_check.stdout"
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $client = New-Object System.Net.WebClient
     $client.DownloadFile("https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe", "C:\Temp\GoogleCloudSDKInstaller.exe")
   register: gcloud_download
@@ -25,14 +29,15 @@
 - name: Install Google Cloud SDK silently
   when: "'not_installed' in gcloud_check.stdout"
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     Start-Process -FilePath "C:\Temp\GoogleCloudSDKInstaller.exe" -ArgumentList "/S", "/allusers" -Wait -NoNewWindow
 
 - name: Verify Google Cloud SDK installation
   win_shell: |
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     gcloud version
+    if ($LASTEXITCODE -ne 0) { exit 1 }
   register: gcloud_version
-  failed_when: gcloud_version.rc != 0
   changed_when: false
 
 - name: Log GCP Cloud SDK version

@@ -270,7 +270,40 @@ build {
       "Start-Service -Name seclogon -ErrorAction SilentlyContinue",
       "New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'LocalAccountTokenFilterPolicy' -Value 1 -PropertyType DWord -Force | Out-Null",
       "Set-Item -Path WSMan:\\localhost\\MaxTimeoutms -Value 1800000 -ErrorAction SilentlyContinue",
-      "Set-Item -Path WSMan:\\localhost\\MaxEnvelopeSizekb -Value 8192 -ErrorAction SilentlyContinue"
+      "Set-Item -Path WSMan:\\localhost\\MaxEnvelopeSizekb -Value 8192 -ErrorAction SilentlyContinue",
+      "Set-Item -Path WSMan:\\localhost\\Shell\\MaxMemoryPerShellMB -Value 2048 -ErrorAction SilentlyContinue",
+      "Set-Item -Path WSMan:\\localhost\\Shell\\MaxShellsPerUser -Value 30 -ErrorAction SilentlyContinue",
+      "Set-Item -Path WSMan:\\localhost\\Shell\\MaxProcessesPerShell -Value 25 -ErrorAction SilentlyContinue",
+      "Set-Item -Path WSMan:\\localhost\\Shell\\MaxConcurrentUsers -Value 10 -ErrorAction SilentlyContinue"
+    ]
+  }
+
+  # Pre-install Chocolatey via Packer native provisioner (before Ansible)
+  # This avoids Ansible module issues caused by Chocolatey modifying the PowerShell environment
+  provisioner "powershell" {
+    inline = [
+      "if (Test-Path 'C:\\ProgramData\\chocolatey\\bin\\choco.exe') { Write-Host 'Chocolatey already installed'; exit 0 }",
+      "Set-ExecutionPolicy Bypass -Scope Process -Force",
+      "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072",
+      "Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))",
+      "Write-Host 'Chocolatey installed successfully'",
+      "$env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'User')",
+      "choco --version",
+      "# Clean PowerShell profiles that Chocolatey may have modified",
+      "Remove-Item -Path $PROFILE.AllUsersAllHosts -ErrorAction SilentlyContinue",
+      "Remove-Item -Path $PROFILE.AllUsersCurrentHost -ErrorAction SilentlyContinue",
+      "Remove-Item -Path $PROFILE.CurrentUserAllHosts -ErrorAction SilentlyContinue",
+      "Remove-Item -Path $PROFILE.CurrentUserCurrentHost -ErrorAction SilentlyContinue"
+    ]
+  }
+
+  # Re-establish WinRM after Chocolatey install (new session with clean environment)
+  provisioner "powershell" {
+    inline = [
+      "Write-Host 'WinRM session re-established after Chocolatey install'",
+      "Write-Host 'PATH:' $env:PATH",
+      "$env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'User')",
+      "choco --version"
     ]
   }
 
@@ -337,7 +370,7 @@ build {
       "sleep 60",
 
       "INVENTORY=/tmp/packer_ansible_hosts.ini",
-      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=60\\nansible_winrm_operation_timeout_sec=120\\nansible_winrm_read_timeout_sec=150\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
+      "printf '[windows]\\nwinrm_target ansible_host=127.0.0.1 ansible_port=%s\\n\\n[windows:vars]\\nansible_connection=winrm\\nansible_winrm_scheme=https\\nansible_winrm_port=%s\\nansible_winrm_transport=basic\\nansible_winrm_server_cert_validation=ignore\\nansible_winrm_connection_timeout=120\\nansible_winrm_operation_timeout_sec=300\\nansible_winrm_read_timeout_sec=600\\nansible_user=packer_user\\nansible_become=no\\n' \"$TUNNEL_PORT\" \"$TUNNEL_PORT\" > \"$INVENTORY\"",
 
       "set +e",
       # Pass all component flags as ansible extra-vars

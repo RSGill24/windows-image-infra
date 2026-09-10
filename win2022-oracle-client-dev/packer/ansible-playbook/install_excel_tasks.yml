@@ -10,6 +10,9 @@
 #           <ExcludeApp ID="..." />  (exclude all except Excel)
 #         </Product>
 #       </Add>
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Create Office temp directory
@@ -19,64 +22,58 @@
 
 - name: Check if Microsoft Excel is already installed
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $excel = Get-ChildItem "C:\Program Files\Microsoft Office" -Filter "EXCEL.EXE" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     $excel2 = Get-ChildItem "C:\Program Files (x86)\Microsoft Office" -Filter "EXCEL.EXE" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($excel -or $excel2) { echo "installed" } else { echo "not_installed" }
+    if ($excel -or $excel2) { Write-Output "installed" } else { Write-Output "not_installed" }
   register: excel_check
   changed_when: false
 
 - name: Download Office Deployment Tool from GCS
   when: "'not_installed' in excel_check.stdout"
   win_shell: |
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
-    & gsutil cp gs://org-sec-agents-bucket/office/officedeploymenttool.exe C:\Temp\office\officedeploymenttool.exe
-    if ($LASTEXITCODE -ne 0) { throw "Office Deployment Tool download failed" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    gsutil cp gs://org-sec-agents-bucket/office/officedeploymenttool.exe C:\Temp\office\officedeploymenttool.exe
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
   register: odt_download
-  failed_when: odt_download.rc != 0
 
 - name: Download Office configuration XML from GCS
   when: "'not_installed' in excel_check.stdout"
   win_shell: |
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
-    & gsutil cp gs://org-sec-agents-bucket/office/configuration.xml C:\Temp\office\configuration.xml
-    if ($LASTEXITCODE -ne 0) { throw "Office configuration download failed" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    gsutil cp gs://org-sec-agents-bucket/office/configuration.xml C:\Temp\office\configuration.xml
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
   register: odt_config_download
-  failed_when: odt_config_download.rc != 0
 
 - name: Extract Office Deployment Tool
   when: "'not_installed' in excel_check.stdout"
   win_shell: |
-    Start-Process -FilePath "C:\Temp\office\officedeploymenttool.exe" `
-      -ArgumentList "/quiet", "/extract:C:\Temp\office" `
-      -Wait -NoNewWindow
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    Start-Process -FilePath "C:\Temp\office\officedeploymenttool.exe" -ArgumentList "/quiet", "/extract:C:\Temp\office" -Wait -NoNewWindow
 
 - name: Download Office binaries using ODT
   when: "'not_installed' in excel_check.stdout"
   win_shell: |
-    Start-Process -FilePath "C:\Temp\office\setup.exe" `
-      -ArgumentList "/download", "C:\Temp\office\configuration.xml" `
-      -Wait -NoNewWindow
-    if ($LASTEXITCODE -ne 0) { throw "Office download failed with exit code $LASTEXITCODE" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    Start-Process -FilePath "C:\Temp\office\setup.exe" -ArgumentList "/download", "C:\Temp\office\configuration.xml" -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
   register: office_download
-  failed_when: office_download.rc != 0
 
 - name: Install Microsoft Excel via ODT
   when: "'not_installed' in excel_check.stdout"
   win_shell: |
-    Start-Process -FilePath "C:\Temp\office\setup.exe" `
-      -ArgumentList "/configure", "C:\Temp\office\configuration.xml" `
-      -Wait -NoNewWindow
-    if ($LASTEXITCODE -ne 0) { throw "Office installation failed with exit code $LASTEXITCODE" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    Start-Process -FilePath "C:\Temp\office\setup.exe" -ArgumentList "/configure", "C:\Temp\office\configuration.xml" -Wait -NoNewWindow
+    if ($LASTEXITCODE -ne 0) { throw "Installation failed" }
   register: office_install
-  failed_when: office_install.rc != 0
 
 - name: Verify Microsoft Excel installation
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $excel = Get-ChildItem "C:\Program Files" -Filter "EXCEL.EXE" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $excel) { throw "EXCEL.EXE not found after installation" }
-    echo $excel.FullName
+    if (-not $excel) { exit 1 }
+    Write-Output $excel.FullName
   register: excel_bin
-  failed_when: excel_bin.rc != 0
   changed_when: false
 
 - name: Log Excel installation success

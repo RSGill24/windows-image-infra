@@ -23,10 +23,11 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 RUN pip3 install --no-cache-dir --break-system-packages \
     ansible-core>=2.17 \
     pywinrm>=0.5.0 \
+    pypsrp>=0.8.0 \
     cryptography>=48.0.1 \
     urllib3>=2.3.0 \
     requests>=2.32.0 \
-    && ansible-galaxy collection install ansible.windows community.windows
+    && ansible-galaxy collection install ansible.windows community.windows -p /usr/share/ansible/collections
 
 # ── Google Cloud SDK ──────────────────────────────────────────────────────────
 RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \

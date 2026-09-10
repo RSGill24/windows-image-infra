@@ -3,6 +3,9 @@
 # install_positron_tasks.yml – Positron IDE (binary from GCS)
 #
 # Requires: Installer uploaded to gs://org-sec-agents-bucket/positron/
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Create Positron temp directory
@@ -12,39 +15,39 @@
 
 - name: Check if Positron is already installed
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $pos = Get-ChildItem "C:\Program Files\Positron" -ErrorAction SilentlyContinue
     $pos2 = Get-ChildItem "$env:LOCALAPPDATA\Programs\Positron" -ErrorAction SilentlyContinue
-    if ($pos -or $pos2) { echo "installed" } else { echo "not_installed" }
+    if ($pos -or $pos2) { Write-Output "installed" } else { Write-Output "not_installed" }
   register: positron_check
   changed_when: false
 
 - name: Download Positron installer from GCS
   when: "'not_installed' in positron_check.stdout"
   win_shell: |
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
-    & gsutil cp gs://org-sec-agents-bucket/positron/PositronSetup.exe C:\Temp\positron\PositronSetup.exe
-    if ($LASTEXITCODE -ne 0) { throw "Positron download failed" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    gsutil cp gs://org-sec-agents-bucket/positron/PositronSetup.exe C:\Temp\positron\PositronSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
   register: positron_download
-  failed_when: positron_download.rc != 0
 
 - name: Install Positron silently
   when: "'not_installed' in positron_check.stdout"
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     Start-Process -FilePath "C:\Temp\positron\PositronSetup.exe" -ArgumentList "/S", "/D=C:\Program Files\Positron" -Wait -NoNewWindow
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Positron installation failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Installation failed" }
   register: positron_install
-  failed_when: positron_install.rc != 0
 
 - name: Verify Positron installation
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $pos = Get-ChildItem "C:\Program Files\Positron" -Filter "positron.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $pos) {
       $pos = Get-ChildItem "$env:LOCALAPPDATA\Programs\Positron" -Filter "positron.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     }
-    if (-not $pos) { throw "Positron binary not found" }
-    echo $pos.FullName
+    if (-not $pos) { exit 1 }
+    Write-Output $pos.FullName
   register: positron_bin
-  failed_when: positron_bin.rc != 0
   changed_when: false
 
 - name: Log Positron installation success

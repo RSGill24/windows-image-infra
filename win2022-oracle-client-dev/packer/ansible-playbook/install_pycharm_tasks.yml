@@ -1,6 +1,9 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
 # install_pycharm_tasks.yml – PyCharm Community Edition via Chocolatey
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Bootstrap Chocolatey (PyCharm)
@@ -8,26 +11,28 @@
 
 - name: Check if PyCharm Community is already installed
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $path = Get-ChildItem "C:\Program Files\JetBrains" -Filter "PyCharm Community*" -Directory -ErrorAction SilentlyContinue
-    if ($path) { echo "installed" } else { echo "not_installed" }
+    if ($path) { Write-Output "installed" } else { Write-Output "not_installed" }
   register: pycharm_check
   changed_when: false
 
 - name: Install PyCharm Community via Chocolatey
   when: "'not_installed' in pycharm_check.stdout"
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     choco install pycharm-community --yes --no-progress --limit-output
-    if ($LASTEXITCODE -ne 0) { throw "PyCharm Community installation failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "Installation failed" }
   register: pycharm_install
   failed_when: pycharm_install.rc != 0
 
 - name: Verify PyCharm installation
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $pycharm = Get-ChildItem "C:\Program Files\JetBrains" -Filter "pycharm*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $pycharm) { throw "PyCharm binary not found" }
-    echo $pycharm.FullName
+    if (-not $pycharm) { exit 1 }
+    Write-Output $pycharm.FullName
   register: pycharm_bin
-  failed_when: pycharm_bin.rc != 0
   changed_when: false
 
 - name: Log PyCharm installation success

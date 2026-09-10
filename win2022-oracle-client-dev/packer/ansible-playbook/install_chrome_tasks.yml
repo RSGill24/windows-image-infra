@@ -1,6 +1,9 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
 # install_chrome_tasks.yml – Google Chrome via Chocolatey
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Bootstrap Chocolatey (Chrome)
@@ -10,12 +13,14 @@
   win_stat:
     path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
   register: chrome_stat
+  changed_when: false
 
 - name: Install Google Chrome via Chocolatey
   when: not chrome_stat.stat.exists
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     choco install googlechrome --yes --no-progress --limit-output --ignore-checksums
-    if ($LASTEXITCODE -ne 0) { throw "Chrome installation failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "Installation failed" }
   register: chrome_install
   failed_when: chrome_install.rc != 0
 
@@ -23,6 +28,7 @@
   win_stat:
     path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
   register: chrome_bin
+  changed_when: false
   failed_when: not chrome_bin.stat.exists
 
 - name: Log Chrome installation success

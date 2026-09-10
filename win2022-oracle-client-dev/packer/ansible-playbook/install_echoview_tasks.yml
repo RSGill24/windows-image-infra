@@ -3,6 +3,9 @@
 # install_echoview_tasks.yml – Echoview v16+ (binary installer from GCS)
 #
 # Requires: Installer uploaded to gs://org-sec-agents-bucket/echoview/
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Create Echoview temp directory
@@ -12,42 +15,43 @@
 
 - name: Check if Echoview is already installed
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $ev = Get-ChildItem "C:\Program Files\Echoview Software" -ErrorAction SilentlyContinue
-    if ($ev) { echo "installed" } else { echo "not_installed" }
+    if ($ev) { Write-Output "installed" } else { Write-Output "not_installed" }
   register: echoview_check
   changed_when: false
 
 - name: Download Echoview installer from GCS
   when: "'not_installed' in echoview_check.stdout"
   win_shell: |
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
-    & gsutil cp gs://org-sec-agents-bucket/echoview/EchoviewSetup.exe C:\Temp\echoview\EchoviewSetup.exe
-    if ($LASTEXITCODE -ne 0) { throw "Echoview download failed" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    gsutil cp gs://org-sec-agents-bucket/echoview/EchoviewSetup.exe C:\Temp\echoview\EchoviewSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
   register: echoview_download
-  failed_when: echoview_download.rc != 0
 
 - name: Verify Echoview installer downloaded
   when: "'not_installed' in echoview_check.stdout"
   win_stat:
     path: "C:\\Temp\\echoview\\EchoviewSetup.exe"
   register: echoview_installer
+  changed_when: false
   failed_when: not echoview_installer.stat.exists
 
 - name: Install Echoview silently
   when: "'not_installed' in echoview_check.stdout"
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     Start-Process -FilePath "C:\Temp\echoview\EchoviewSetup.exe" -ArgumentList "/S", "/v/qn" -Wait -NoNewWindow
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Echoview installation failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Installation failed" }
   register: echoview_install
-  failed_when: echoview_install.rc != 0
 
 - name: Verify Echoview installation
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $ev = Get-ChildItem "C:\Program Files\Echoview Software" -ErrorAction SilentlyContinue
-    if (-not $ev) { throw "Echoview installation directory not found" }
-    echo "Echoview installed at C:\Program Files\Echoview Software"
+    if (-not $ev) { exit 1 }
+    Write-Output "Echoview installed at C:\Program Files\Echoview Software"
   register: echoview_verify
-  failed_when: echoview_verify.rc != 0
   changed_when: false
 
 - name: Log Echoview installation success

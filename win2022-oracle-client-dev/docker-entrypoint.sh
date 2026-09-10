@@ -114,11 +114,76 @@ write_jira_bucket() {
   local now
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+  # VM status + console link
   local vm_status="not_requested"
+  local vm_console_link=""
   if [ -n "${CREATED_VM_NAME:-}" ] && [ "${CREATED_VM_NAME}" != "FAILED" ]; then
     vm_status="running"
+    vm_console_link="https://console.cloud.google.com/compute/instancesDetail/zones/${ZONE}/instances/${CREATED_VM_NAME}?project=${PROJECT_ID}"
   elif [ "${CREATED_VM_NAME:-}" = "FAILED" ]; then
     vm_status="failed"
+  fi
+
+  # Build software installed object (all flags with true/false)
+  local sw_installed
+  sw_installed=$(jq -n \
+    --arg oracle "${INSTALL_ORACLE:-false}" \
+    --arg rstudio "${INSTALL_RSTUDIO:-false}" \
+    --arg conda "${INSTALL_CONDA:-false}" \
+    --arg chrome "${INSTALL_CHROME:-false}" \
+    --arg git "${INSTALL_GIT:-false}" \
+    --arg python "${INSTALL_PYTHON:-false}" \
+    --arg jupyterlab "${INSTALL_JUPYTERLAB:-false}" \
+    --arg powershell_core "${INSTALL_POWERSHELL_CORE:-false}" \
+    --arg pycharm "${INSTALL_PYCHARM:-false}" \
+    --arg visual_studio "${INSTALL_VISUAL_STUDIO:-false}" \
+    --arg paraview "${INSTALL_PARAVIEW:-false}" \
+    --arg echoview "${INSTALL_ECHOVIEW:-false}" \
+    --arg matlab "${INSTALL_MATLAB:-false}" \
+    --arg rstudio_pro "${INSTALL_RSTUDIO_PRO:-false}" \
+    --arg positron "${INSTALL_POSITRON:-false}" \
+    --arg anaconda "${INSTALL_ANACONDA:-false}" \
+    --arg gpu_drivers "${INSTALL_GPU_DRIVERS:-false}" \
+    --arg aalibrary "${INSTALL_AALIBRARY:-false}" \
+    --arg echosms "${INSTALL_ECHOSMS:-false}" \
+    --arg echostack "${INSTALL_ECHOSTACK:-false}" \
+    --arg gcp_utilities "${INSTALL_GCP_UTILITIES:-false}" \
+    --arg excel "${INSTALL_EXCEL:-false}" \
+    '{
+      oracle_client: ($oracle == "true"),
+      rstudio: ($rstudio == "true"),
+      conda: ($conda == "true"),
+      chrome: ($chrome == "true"),
+      git: ($git == "true"),
+      python: ($python == "true"),
+      jupyterlab: ($jupyterlab == "true"),
+      powershell_core: ($powershell_core == "true"),
+      pycharm_community: ($pycharm == "true"),
+      visual_studio_community: ($visual_studio == "true"),
+      paraview: ($paraview == "true"),
+      echoview: ($echoview == "true"),
+      matlab: ($matlab == "true"),
+      rstudio_pro: ($rstudio_pro == "true"),
+      positron: ($positron == "true"),
+      anaconda: ($anaconda == "true"),
+      gpu_drivers: ($gpu_drivers == "true"),
+      aalibrary: ($aalibrary == "true"),
+      echosms: ($echosms == "true"),
+      echostack: ($echostack == "true"),
+      gcp_utilities: ($gcp_utilities == "true"),
+      excel: ($excel == "true")
+    }')
+
+  # Error details + logs link (only on failure)
+  local error_details=""
+  local logs_link=""
+  if [ "${status}" = "FAILED" ]; then
+    error_details="${extra}"
+    logs_link="https://console.cloud.google.com/run/jobs/details/${ZONE%-*}/${BUILDER_JOB_NAME:-windows-image-builder}/logs?project=${PROJECT_ID}"
+    # Grab last 10 lines from packer debug log if available
+    if [ -f /tmp/packer-debug.log ]; then
+      error_details="${extra} | Last log: $(tail -5 /tmp/packer-debug.log | tr '\n' ' ')"
+    fi
   fi
 
   local jira_json
@@ -138,10 +203,14 @@ write_jira_bucket() {
     --arg machine_type "${MACHINE_TYPE}" \
     --arg vm_name "${CREATED_VM_NAME:-none}" \
     --arg vm_status "${vm_status}" \
+    --arg vm_console_link "${vm_console_link}" \
     --arg vm_user "${WS_USERNAME:-}" \
     --arg software_fingerprint "${SOFTWARE_FINGERPRINT:-}" \
     --arg enabled_software "${ENABLED_SOFTWARE:-}" \
+    --argjson software_installed "${sw_installed}" \
     --arg message "${extra}" \
+    --arg error_details "${error_details}" \
+    --arg logs_link "${logs_link}" \
     '{
       request_id: $request_id,
       status: $status,
@@ -165,18 +234,33 @@ write_jira_bucket() {
       vm: {
         name: $vm_name,
         status: $vm_status,
+        console_link: $vm_console_link,
         zone: $zone,
         machine_type: $machine_type,
         workstation_user: $vm_user
       },
       software: {
         fingerprint: $software_fingerprint,
-        enabled: ($enabled_software | split(","))
+        enabled: ($enabled_software | split(",")),
+        installed: $software_installed
+      },
+      error: {
+        message: $error_details,
+        logs_link: $logs_link
       },
       message: $message
     }')
 
-  local dest="gs://jira-winde-bucket/builds/${REQUEST_ID:-unknown}.json"
+  # Filename: <ticket_id>_COMPLETED.json or <ticket_id>_FAILED.json
+  local file_status
+  if [ "${status}" = "COMPLETED" ]; then
+    file_status="COMPLETED"
+  else
+    file_status="FAILED"
+  fi
+  local file_id="${TICKET_ID:-${REQUEST_ID:-unknown}}"
+  local dest="gs://jira-winde-bucket/builds/${file_id}_${file_status}.json"
+
   if echo "${jira_json}" | gsutil -q cp - "${dest}"; then
     echo "[JIRA-BUCKET] JSON written → ${dest}"
   else

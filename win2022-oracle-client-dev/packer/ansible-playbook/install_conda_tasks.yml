@@ -3,62 +3,63 @@
 # install_conda_tasks.yml
 #
 # Installs Miniconda3 (conda + Python) on Windows via Chocolatey.
-# Prerequisites satisfied inline:
+# Prerequisites satisfied via shared bootstrap:
 #   1. Chocolatey bootstrap (idempotent – skipped if already present)
 #   2. Miniconda3
 #   3. PATH / CONDA_HOME env vars
 #   4. conda-forge channel added, conda updated
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── 1. Chocolatey bootstrap ────────────────────────────────────────────────────
-- name: Check if Chocolatey is already installed
-  win_stat:
-    path: "C:\\ProgramData\\chocolatey\\bin\\choco.exe"
-  register: choco_stat_conda
-
-- name: Install Chocolatey package manager
-  when: not choco_stat_conda.stat.exists
-  win_shell: |
-    Set-ExecutionPolicy Bypass -Scope Process -Force
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-  register: choco_install_conda
-  failed_when: choco_install_conda.rc != 0
-
-- name: Verify Chocolatey is available
-  win_shell: choco --version
-  register: choco_ver_conda
-  failed_when: choco_ver_conda.rc != 0
-  changed_when: false
+- name: Bootstrap Chocolatey (Conda)
+  include_tasks: bootstrap_chocolatey_tasks.yml
 
 # ── 2. Miniconda3 ─────────────────────────────────────────────────────────────
 - name: Check if Miniconda3 is already installed
-  win_stat:
-    path: "C:\\tools\\miniconda3\\Scripts\\conda.exe"
+  win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    $conda = Get-Command conda -ErrorAction SilentlyContinue
+    if ($conda) { echo "installed" } else {
+      $paths = @('C:\tools\miniconda3\Scripts\conda.exe', 'C:\ProgramData\miniconda3\Scripts\conda.exe')
+      foreach ($p in $paths) { if (Test-Path $p) { echo "installed"; exit 0 } }
+      echo "not_installed"
+    }
   register: conda_stat
+  changed_when: false
 
 - name: Install Miniconda3 via Chocolatey
-  when: not conda_stat.stat.exists
+  when: "'not_installed' in conda_stat.stdout"
   win_shell: |
-    choco install miniconda3 --yes --no-progress --limit-output `
-      --params "'/AddToPath:1 /RegisterPython:1 /InstallationType:AllUsers'"
-    if ($LASTEXITCODE -ne 0) { throw "Miniconda3 installation failed with exit code $LASTEXITCODE" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    choco install miniconda3 --yes --no-progress --limit-output --params "'/AddToPath:1 /RegisterPython:1 /InstallationType:AllUsers'"
+    if ($LASTEXITCODE -ne 0) { throw "Installation failed" }
   register: conda_install
   failed_when: conda_install.rc != 0
 
 - name: Verify conda binary exists
-  win_stat:
-    path: "C:\\tools\\miniconda3\\Scripts\\conda.exe"
+  win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    $conda = Get-Command conda -ErrorAction SilentlyContinue
+    if ($conda) { echo $conda.Source } else {
+      $paths = @('C:\tools\miniconda3\Scripts\conda.exe', 'C:\ProgramData\miniconda3\Scripts\conda.exe', 'C:\miniconda3\Scripts\conda.exe')
+      foreach ($p in $paths) { if (Test-Path $p) { echo $p; exit 0 } }
+      throw "conda.exe not found"
+    }
   register: conda_bin
-  failed_when: not conda_bin.stat.exists
+  changed_when: false
 
 # ── 3. Environment variables ──────────────────────────────────────────────────
 - name: Set CONDA_HOME machine environment variable
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     [Environment]::SetEnvironmentVariable('CONDA_HOME', 'C:\tools\miniconda3', 'Machine')
 
 - name: Add conda to system PATH (base, Scripts, Library\bin)
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $condaRoot  = "C:\tools\miniconda3"
     $addPaths   = @(
       $condaRoot,
@@ -78,28 +79,28 @@
 # ── 4. Initialise conda & add conda-forge ─────────────────────────────────────
 - name: Initialise conda shell hooks (PowerShell)
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $conda = "C:\tools\miniconda3\Scripts\conda.exe"
     & $conda init powershell --all --quiet
-  failed_when: false          # non-fatal – hooks help interactive sessions
+  failed_when: false
   changed_when: false
 
 - name: Add conda-forge channel
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $conda = "C:\tools\miniconda3\Scripts\conda.exe"
     & $conda config --system --add channels conda-forge
     & $conda config --system --set channel_priority strict
   register: conda_forge
-  failed_when: conda_forge.rc != 0
   changed_when: false
 
   # Skipped: conda update is memory-heavy during image build and failed with CondaMemoryError.
   # Miniconda installed by Chocolatey is sufficient.
 - name: Verify conda version
   win_shell: |
-    $conda = "C:\tools\miniconda3\Scripts\conda.exe"
-    & $conda --version
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    & 'C:\tools\miniconda3\Scripts\conda.exe' --version
   register: conda_version
-  failed_when: conda_version.rc != 0
   changed_when: false
 
 - name: Log conda version
@@ -108,10 +109,9 @@
 
 - name: Verify Python version bundled with conda
   win_shell: |
-    $python = "C:\tools\miniconda3\python.exe"
-    & $python --version
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    & 'C:\tools\miniconda3\python.exe' --version
   register: py_version
-  failed_when: py_version.rc != 0
   changed_when: false
 
 - name: Log Python version
@@ -119,14 +119,15 @@
     msg: "Python version: {{ py_version.stdout | trim }}"
 
 # ── 5. Cleanup ─────────────────────────────────────────────────────────────────
-- name: Clear Chocolatey download cache
+- name: Clean conda package cache
   win_shell: |
-    choco cache remove --all --yes --no-progress 2>$null
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    & "C:\tools\miniconda3\Scripts\conda.exe" clean --all --yes --quiet
   failed_when: false
   changed_when: false
 
-- name: Clean conda package cache
+- name: Clear Chocolatey download cache
   win_shell: |
-    & "C:\tools\miniconda3\Scripts\conda.exe" clean --all --yes --quiet
+    choco cache remove --all --yes --no-progress 2>$null
   failed_when: false
   changed_when: false

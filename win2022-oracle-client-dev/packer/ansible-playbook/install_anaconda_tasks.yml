@@ -1,6 +1,9 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
 # install_anaconda_tasks.yml – Full Anaconda distribution via Chocolatey
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Bootstrap Chocolatey (Anaconda)
@@ -10,14 +13,14 @@
   win_stat:
     path: "C:\\tools\\Anaconda3\\Scripts\\conda.exe"
   register: anaconda_stat
+  changed_when: false
 
 - name: Install Anaconda3 via Chocolatey
   when: not anaconda_stat.stat.exists
   win_shell: |
-    choco install anaconda3 --yes --no-progress --limit-output `
-      --params "'/AddToPath:1 /RegisterPython:0 /InstallationType:AllUsers'" `
-      --execution-timeout=3600
-    if ($LASTEXITCODE -ne 0) { throw "Anaconda3 installation failed with exit code $LASTEXITCODE" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    choco install anaconda3 --yes --no-progress --limit-output --params "'/AddToPath:1 /RegisterPython:0 /InstallationType:AllUsers'" --execution-timeout=3600
+    if ($LASTEXITCODE -ne 0) { throw "Installation failed" }
   register: anaconda_install
   failed_when: anaconda_install.rc != 0
 
@@ -25,14 +28,17 @@
   win_stat:
     path: "C:\\tools\\Anaconda3\\Scripts\\conda.exe"
   register: anaconda_bin
+  changed_when: false
   failed_when: not anaconda_bin.stat.exists
 
 - name: Set ANACONDA_HOME machine environment variable
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     [Environment]::SetEnvironmentVariable('ANACONDA_HOME', 'C:\tools\Anaconda3', 'Machine')
 
 - name: Add Anaconda to system PATH
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $anacondaRoot = "C:\tools\Anaconda3"
     $addPaths = @(
       $anacondaRoot,
@@ -51,6 +57,7 @@
 
 - name: Initialise Anaconda shell hooks (PowerShell)
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $conda = "C:\tools\Anaconda3\Scripts\conda.exe"
     & $conda init powershell --all --quiet
   failed_when: false
@@ -58,9 +65,9 @@
 
 - name: Verify Anaconda conda version
   win_shell: |
-    & "C:\tools\Anaconda3\Scripts\conda.exe" --version
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    & 'C:\tools\Anaconda3\Scripts\conda.exe' --version
   register: anaconda_version
-  failed_when: anaconda_version.rc != 0
   changed_when: false
 
 - name: Log Anaconda version

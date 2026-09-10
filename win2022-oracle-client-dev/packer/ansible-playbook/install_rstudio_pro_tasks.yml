@@ -3,6 +3,9 @@
 # install_rstudio_pro_tasks.yml – RStudio Pro / Posit Workbench (binary from GCS)
 #
 # Requires: Installer uploaded to gs://org-sec-agents-bucket/posit/
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Create Posit temp directory
@@ -12,39 +15,39 @@
 
 - name: Check if Posit Workbench is already installed
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $posit = Get-ChildItem "C:\Program Files\RStudio" -Filter "rstudio-server*" -ErrorAction SilentlyContinue
     $posit2 = Get-ChildItem "C:\Program Files\Posit" -ErrorAction SilentlyContinue
-    if ($posit -or $posit2) { echo "installed" } else { echo "not_installed" }
+    if ($posit -or $posit2) { Write-Output "installed" } else { Write-Output "not_installed" }
   register: positpro_check
   changed_when: false
 
 - name: Download Posit Workbench installer from GCS
   when: "'not_installed' in positpro_check.stdout"
   win_shell: |
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
-    & gsutil cp gs://org-sec-agents-bucket/posit/PositWorkbenchSetup.exe C:\Temp\posit\PositWorkbenchSetup.exe
-    if ($LASTEXITCODE -ne 0) { throw "Posit Workbench download failed" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    gsutil cp gs://org-sec-agents-bucket/posit/PositWorkbenchSetup.exe C:\Temp\posit\PositWorkbenchSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
   register: posit_download
-  failed_when: posit_download.rc != 0
 
 - name: Install Posit Workbench silently
   when: "'not_installed' in positpro_check.stdout"
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     Start-Process -FilePath "C:\Temp\posit\PositWorkbenchSetup.exe" -ArgumentList "/S" -Wait -NoNewWindow
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Posit Workbench installation failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Installation failed" }
   register: posit_install
-  failed_when: posit_install.rc != 0
 
 - name: Verify Posit Workbench installation
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $posit = Get-ChildItem "C:\Program Files" -Filter "rstudio*" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.exe' } | Select-Object -First 1
     if (-not $posit) {
       $posit = Get-ChildItem "C:\Program Files\Posit" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     }
-    if (-not $posit) { throw "Posit Workbench binary not found" }
-    echo $posit.FullName
+    if (-not $posit) { exit 1 }
+    Write-Output $posit.FullName
   register: posit_bin
-  failed_when: posit_bin.rc != 0
   changed_when: false
 
 - name: Log Posit Workbench installation success

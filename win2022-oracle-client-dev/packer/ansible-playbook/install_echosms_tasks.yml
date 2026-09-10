@@ -3,6 +3,9 @@
 # install_echosms_tasks.yml – EchoSMs (binary from GCS)
 #
 # Requires: Installer uploaded to gs://org-sec-agents-bucket/echosms/
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Create EchoSMs temp directory
@@ -12,39 +15,39 @@
 
 - name: Check if EchoSMs is already installed
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $es = Get-ChildItem "C:\Program Files\EchoSMs" -ErrorAction SilentlyContinue
     $es2 = Get-ChildItem "C:\Program Files (x86)\EchoSMs" -ErrorAction SilentlyContinue
-    if ($es -or $es2) { echo "installed" } else { echo "not_installed" }
+    if ($es -or $es2) { Write-Output "installed" } else { Write-Output "not_installed" }
   register: echosms_check
   changed_when: false
 
 - name: Download EchoSMs installer from GCS
   when: "'not_installed' in echosms_check.stdout"
   win_shell: |
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + $env:PATH
-    & gsutil cp gs://org-sec-agents-bucket/echosms/EchoSMsSetup.exe C:\Temp\echosms\EchoSMsSetup.exe
-    if ($LASTEXITCODE -ne 0) { throw "EchoSMs download failed" }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
+    gsutil cp gs://org-sec-agents-bucket/echosms/EchoSMsSetup.exe C:\Temp\echosms\EchoSMsSetup.exe
+    if ($LASTEXITCODE -ne 0) { throw "Download failed" }
   register: echosms_download
-  failed_when: echosms_download.rc != 0
 
 - name: Install EchoSMs silently
   when: "'not_installed' in echosms_check.stdout"
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     Start-Process -FilePath "C:\Temp\echosms\EchoSMsSetup.exe" -ArgumentList "/S" -Wait -NoNewWindow
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "EchoSMs installation failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Installation failed" }
   register: echosms_install
-  failed_when: echosms_install.rc != 0
 
 - name: Verify EchoSMs installation
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     $es = Get-ChildItem "C:\Program Files" -Filter "EchoSMs*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $es) {
       $es = Get-ChildItem "C:\Program Files (x86)" -Filter "EchoSMs*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
     }
-    if (-not $es) { throw "EchoSMs installation not found" }
-    echo "EchoSMs installed at $($es.FullName)"
+    if (-not $es) { exit 1 }
+    Write-Output "EchoSMs installed at $($es.FullName)"
   register: echosms_verify
-  failed_when: echosms_verify.rc != 0
   changed_when: false
 
 - name: Log EchoSMs installation

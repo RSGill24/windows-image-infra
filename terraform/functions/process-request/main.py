@@ -137,10 +137,27 @@ def normalize_client_json(data: dict) -> dict:
     # Build enabled software list for naming
     enabled = sorted(k for k, v in full_software.items() if v)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    sw_names = [k.replace("_", "") for k in enabled[:5]]
+    # Use short names, max 3 packages in name to stay under 63 chars
+    short_names = {
+        "oracle_client": "oracle", "rstudio": "rstudio", "conda": "conda",
+        "chrome": "chrome", "git": "git", "python": "python",
+        "jupyterlab": "jupyter", "powershell_core": "pwsh",
+        "pycharm_community": "pycharm", "visual_studio_community": "vs",
+        "paraview": "paraview", "echoview": "echoview", "matlab": "matlab",
+        "rstudio_pro": "rspro", "positron": "positron", "anaconda": "anaconda",
+        "gpu_drivers": "gpu", "aalibrary": "aalib", "echosms": "echosms",
+        "echostack": "echostack", "gcp_utilities": "gcputil", "excel": "excel",
+    }
+    sw_names = [short_names.get(k, k.replace("_", "")) for k in enabled[:3]]
     sw_part = "-".join(sw_names) if sw_names else "custom"
-    image_name = f"nmfs-windows-2025-{sw_part}-{ts}"
-    image_family = f"nmfs-windows-2025-{sw_part}"
+    if len(enabled) > 3:
+        sw_part += f"-plus{len(enabled) - 3}"
+    # Ensure total name <= 63 chars
+    prefix = "nmfs-win2025-"
+    max_sw = 63 - len(prefix) - len(ts) - 1  # -1 for dash before ts
+    sw_part = sw_part[:max_sw]
+    image_name = f"{prefix}{sw_part}-{ts}"
+    image_family = f"{prefix}{sw_part}"
 
     normalized = {
         "image_config": {

@@ -1,6 +1,9 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
 # install_powershell_core_tasks.yml – PowerShell 7+ via Chocolatey
+#
+# Standard Ansible Windows modules: win_shell, win_stat, win_copy, win_find,
+# win_file, win_command, debug
 # ──────────────────────────────────────────────────────────────────────────────
 
 - name: Bootstrap Chocolatey (PowerShell Core)
@@ -10,20 +13,23 @@
   win_stat:
     path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
   register: pwsh_stat
+  changed_when: false
 
 - name: Install PowerShell Core via Chocolatey
   when: not pwsh_stat.stat.exists
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     choco install powershell-core --yes --no-progress --limit-output
-    if ($LASTEXITCODE -ne 0) { throw "PowerShell Core installation failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "Installation failed" }
   register: pwsh_install
   failed_when: pwsh_install.rc != 0
 
 - name: Verify PowerShell Core installation
   win_shell: |
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + $env:PATH
     & "C:\Program Files\PowerShell\7\pwsh.exe" -Command '$PSVersionTable.PSVersion.ToString()'
+    if ($LASTEXITCODE -ne 0) { exit 1 }
   register: pwsh_version
-  failed_when: pwsh_version.rc != 0
   changed_when: false
 
 - name: Log PowerShell Core version

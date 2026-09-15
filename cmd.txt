@@ -1,11 +1,6 @@
-gsutil iam ch \
-  serviceAccount:YOUR_SA_EMAIL@YOUR_PROJECT.iam.gserviceaccount.com:roles/storage.objectCreator \
-  gs://jira-winde-bucket
-
-
-
-
-
+gcloud storage buckets add-iam-policy-binding gs://jira-winde-bucket \
+  --member="serviceAccount:YOUR_SA_EMAIL@YOUR_PROJECT.iam.gserviceaccount.com" \
+  --role="roles/storage.objectCreator"
 
 
 

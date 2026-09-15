@@ -1,3 +1,15 @@
+gsutil iam ch \
+  serviceAccount:YOUR_SA_EMAIL@YOUR_PROJECT.iam.gserviceaccount.com:roles/storage.objectCreator \
+  gs://jira-winde-bucket
+
+
+
+
+
+
+
+
+
 # 1. Clone the repo
 git clone <repo-url>
 cd <repo-name>

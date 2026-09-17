@@ -1,1 +1,1 @@
-cp -r win2022-software-jira-install-dev win2025-software-jira-install-dev && echo "Done - win2025-software-jira-install-dev created"
+git add win2025-software-jira-install-dev/

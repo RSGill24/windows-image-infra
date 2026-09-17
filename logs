@@ -1,1 +1,1 @@
- git push origin dev --force
+git checkout -b win2025-folder && git push origin win2025-folder

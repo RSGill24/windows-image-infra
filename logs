@@ -1,17 +1,15 @@
-mkdir -p .cloudbuild && cat > .cloudbuild/triggers.yaml << 'EOF'
-steps:
-  - name: "gcr.io/cloud-builders/docker"
-    args:
-      - "build"
-      - "-t"
-      - "us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest"
-      - "-f"
-      - "win2025-software-jira-install-dev/packer/scripts/Dockerfile"
-      - "."
-images:
-  - "us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest"
-
-options:
-  logging: CLOUD_LOGGING_ONLY
-EOF
-echo "Created .cloudbuild/triggers.yaml" && git add .cloudbuild/ && git commit -m "Add .cloudbuild/triggers.yaml" && git push origin win2025-folder
+  - name: win2025-main
+    project:
+    configFilePath: cloudbuild-win2025-main.yaml
+    eventType: push
+    includedGitRefs: ^main$
+    includedFiles: win2025-main/.*
+    serviceAccount: projects/nmfs-trusted-images/serviceAccounts/images-build-sa1@nmfs-trusted-images.iam.gserviceaccount.com
+       
+  - name: win2025-dev
+    project:-dev
+    configFilePath: cloudbuild-win2025-dev.yaml
+    eventType: push
+    includedGitRefs: ^dev$
+    includedFiles: win2025-dev/.*
+    serviceAccount: projects/nmfs-trusted-images-dev/serviceAccounts/images-build-sa1@nmfs-trusted-images-dev.iam.gserviceaccount.com

@@ -1,1 +1,1 @@
-ls win2025-software-jira-install-dev/ 2>/dev/null && echo "Folder exists" || echo "Folder missing - need to copy again"
+cp -r win2022-software-jira-install-dev win2025-software-jira-install-dev 

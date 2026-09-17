@@ -1,4 +1,1 @@
-gcloud storage buckets add-iam-policy-binding gs://nmfs-winde-packages \
-  --member=serviceAccount:vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com \
-  --role=roles/storage.objectViewer
-win2022-software-jira-install-dev
+cp -r win2022-software-jira-install-dev win2025-software-jira-install-dev && echo "Done - win2025-software-jira-install-dev created"

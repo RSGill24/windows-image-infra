@@ -1,1 +1,8 @@
-mkdir -p .cloudbuild && cp win2025-software-jira-install-dev/.cloudbuild/triggers.yaml .cloudbuild/triggers.yaml 2>/dev/null; ls .cloudbuild/
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira (nmfs-trusted-images-dev)$ cd ls
+-bash: cd: ls: No such file or directory
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira (nmfs-trusted-images-dev)$ cd nmfs-gcp-winde/
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$ ls
+cloudbuild-docker.yaml                     Drew_Beling.md  win2022-main                  win2022-software-jira-install-dev
+cloudbuild-win2022-main.yaml               README.md       win2022-oracle-client-dev     win2025-software-jira-install-dev
+cloudbuild-win2022-oracle-client-dev.yaml  terraform       win2022-software-install-dev
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$ 

@@ -1,5 +1,1 @@
- ls ~/win2022-dev1/win2022-jira/nmfs-gcp-winde/win2022-oracle-client-dev/packer/ansible-playbook/install_oracle_tasks.yml 
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/win2022-software-jira-install-dev/packer/ansible-playbook (nmfs-trusted-images-dev)$ ls
- bootstrap_chocolatey_tasks.yml   install_conda_tasks.yml      install_powershell_core_tasks.yml   install_rstudio_tasks.yml
- install_anaconda_tasks.yml       install_git_tasks.yml        install_pycharm_tasks.yml           install_visual_studio_tasks.yml
- install_chrome_tasks.yml        ' install_oracle_tasks.yml'   install_python_tasks.yml            main.yml
+mv ' install_oracle_tasks.yml' install_oracle_tasks.yml

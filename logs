@@ -1,1 +1,2 @@
 mv ' install_oracle_tasks.yml' install_oracle_tasks.yml
+gcloud builds submit --config=cloudbuild-docker.yaml --project=ggn-nmfs-winde-dev-1 . 

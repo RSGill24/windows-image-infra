@@ -1,1 +1,69 @@
-vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+#!/bin/bash
+# === Fix image naming (63 char limit) + Redeploy Cloud Function ===
+cd ~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request
+
+# Backup
+cp main.py main.py.bak
+
+# Replace the image naming block
+python3 << 'PYEOF'
+with open('main.py', 'r') as f:
+    content = f.read()
+
+old_block = '''    # Build enabled software list for naming
+    enabled = sorted(k for k, v in full_software.items() if v)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    sw_names = [k.replace("_", "") for k in enabled[:5]]
+    sw_part = "-".join(sw_names) if sw_names else "custom"
+    image_name = f"nmfs-windows-2025-{sw_part}-{ts}"
+    image_family = f"nmfs-windows-2025-{sw_part}"'''
+
+new_block = '''    # Build enabled software list for naming
+    enabled = sorted(k for k, v in full_software.items() if v)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    short_names = {
+        "oracle_client": "oracle", "rstudio": "rstudio", "conda": "conda",
+        "chrome": "chrome", "git": "git", "python": "python",
+        "jupyterlab": "jupyter", "powershell_core": "pwsh",
+        "pycharm_community": "pycharm", "visual_studio_community": "vs",
+        "paraview": "paraview", "echoview": "echoview", "matlab": "matlab",
+        "rstudio_pro": "rspro", "positron": "positron", "anaconda": "anaconda",
+        "gpu_drivers": "gpu", "aalibrary": "aalib", "echosms": "echosms",
+        "echostack": "echostack", "gcp_utilities": "gcputil", "excel": "excel",
+    }
+    sw_names = [short_names.get(k, k.replace("_", "")) for k in enabled[:3]]
+    sw_part = "-".join(sw_names) if sw_names else "custom"
+    if len(enabled) > 3:
+        sw_part += f"-plus{len(enabled) - 3}"
+    prefix = "nmfs-win2025-"
+    max_sw = 63 - len(prefix) - len(ts) - 1
+    sw_part = sw_part[:max_sw]
+    image_name = f"{prefix}{sw_part}-{ts}"
+    image_family = f"{prefix}{sw_part}"'''
+
+if old_block in content:
+    content = content.replace(old_block, new_block)
+    with open('main.py', 'w') as f:
+        f.write(content)
+    print("SUCCESS: main.py updated with short naming fix")
+else:
+    print("WARNING: Old block not found - check main.py manually")
+PYEOF
+
+echo ""
+echo "=== Verifying changes ==="
+grep -n "nmfs-win2025\|short_names\|max_sw" main.py | head -5
+
+echo ""
+echo "=== Redeploying Cloud Function ==="
+gcloud functions deploy image-builder-process-request \
+  --project=ggn-nmfs-winde-dev-1 \
+  --region=us-east4 \
+  --gen2 \
+  --runtime=python312 \
+  --entry-point=process_request \
+  --source=. \
+  --service-account=vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+
+echo ""
+echo "=== DONE ==="

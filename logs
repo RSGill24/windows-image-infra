@@ -1,1 +1,8 @@
 gsutil iam ch serviceAccount:vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com:objectViewer gs://nmfs-winde-packages
+bash: export: `/home/rajinder_gill/.bashrc': not a valid identifier
+rajinder_gill@cloudshell:~ (nmfs-trusted-images-dev)$ gsutil iam ch serviceAccount:vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com:objectViewer gs://nmfs-winde-packages
+
+Google recommends using Gcloud storage CLI (https://docs.cloud.google.com/storage/docs/discover-object-storage-gcloud) instead of gsutil. Please refer to migration guide (https://docs.cloud.google.com/storage/docs/gsutil-transition-to-gcloud) for assistance.
+ServiceException: 401 Anonymous caller does not have storage.buckets.getIamPolicy access to the Google Cloud Storage bucket. Permission 'storage.buckets.getIamPolicy' denied on resource '//storage.googleapis.com/projects/_/buckets/nmfs-winde-packages' (or it may not exist).
+rajinder_gill@cloudshell:~ (nmfs-trusted-images-dev)$ 
+rajinder_gill@cloudshell:~ (nmfs-trusted-images-dev)$ 

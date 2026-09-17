@@ -1,15 +1,269 @@
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ gcloud functions deploy image-builder-process-request   --project=ggn-nmfs-winde-dev-1   --region=us-east4   --gen2   --runtime=python312   --entry-point=process_request   --source=.   --service-account=vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
-
-The default build service account [194243189684-compute@developer.gserviceaccount.com] is missing the [roles/cloudbuild.builds.builder] 
-role. This may cause issues when deploying a function. You could fix it by running the command: 
-gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1 \
- --member=serviceAccount:194243189684-compute@developer.gserviceaccount.com \
- --role=roles/cloudbuild.builds.builder 
-For more information, please refer to: https://cloud.google.com/functions/docs/troubleshooting#build-service-account.
- Would you like to continue? (y/N)?  ^C
-
-Command killed by keyboard interrupt
-
-
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ ^C
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ 
+DEFAULT 2026-09-17T16:37:09.047263Z 2026/09/17 16:37:09.043360 [ktd watcher] KTD logging initialized.
+DEFAULT 2026-09-17T16:37:09.067729Z 2026/09/17 16:37:09.065874 [ktd watcher] Starting KTD watcher.
+DEFAULT 2026-09-17T16:37:09.139563Z Phase 2: Parameterized Windows Image Builder — Thu Sep 17 16:37:09 UTC 2026
+DEFAULT 2026-09-17T16:37:09.950399Z I0917 16:37:09.948327 851 elf_reader.cc:472] Unable to find DYNSYM section in /usr/bin/watcher
+DEFAULT 2026-09-17T16:37:09.952684Z I0917 16:37:09.949699 1 mlock.go:44] keeping C++ mlock
+DEFAULT 2026-09-17T16:37:10.045387Z I0917 16:37:10.043343 1 privacycontextdefaults.go:1811] PrivacyContext default attribute configuration validation failed: PrivacyContextDefaultConfig has no origin_product_id.
+DEFAULT 2026-09-17T16:37:10.046698Z I0917 16:37:10.043536 1 server.go:177] Got error when getting machine owner: failed to get proto for GMI path: open /etc/googlemachineidentity/live/machine_identity.pb: no such file or directory
+DEFAULT 2026-09-17T16:37:10.046705Z I0917 16:37:10.043668 1 watcher.go:319] Build CL: 789297002
+DEFAULT 2026-09-17T16:37:10.046710Z I0917 16:37:10.043695 1 watcher.go:320] Build baseline CL: 789297002
+DEFAULT 2026-09-17T16:37:10.046715Z I0917 16:37:10.043701 1 watcher.go:321] Build label: ktd_release.watcher_20250731_RC00@789297002
+DEFAULT 2026-09-17T16:37:10.046719Z I0917 16:37:10.043705 1 watcher.go:322] Build tool: Blaze, release blaze-2025.07.21-4 (mainline @785234264)
+DEFAULT 2026-09-17T16:37:10.046723Z I0917 16:37:10.043712 1 watcher.go:323] Command line arguments:
+DEFAULT 2026-09-17T16:37:10.046727Z I0917 16:37:10.043716 1 watcher.go:325] argv[0]: "/usr/bin/watcher"
+DEFAULT 2026-09-17T16:37:10.046731Z I0917 16:37:10.043722 1 watcher.go:325] argv[1]: "--backend_server=us-east4-containerthreatdetection.googleapis.com:443"
+DEFAULT 2026-09-17T16:37:10.046735Z I0917 16:37:10.043726 1 watcher.go:325] argv[2]: "--btf_file=/sys/kernel/btf/vmlinux"
+DEFAULT 2026-09-17T16:37:10.046739Z I0917 16:37:10.043730 1 watcher.go:325] argv[3]: "--deployment_id=app-engine.appserver_20260903.03_p0"
+DEFAULT 2026-09-17T16:37:10.046742Z I0917 16:37:10.043734 1 watcher.go:325] argv[4]: "--enabled_features=no_lsm_fallback,enable_krsi"
+DEFAULT 2026-09-17T16:37:10.046747Z I0917 16:37:10.043738 1 watcher.go:325] argv[5]: "--run_environment=gcp_cloud_run"
+DEFAULT 2026-09-17T16:37:10.046751Z I0917 16:37:10.043742 1 watcher.go:340] Initializing dependencies for run_environment gcp_cloud_run
+DEFAULT 2026-09-17T16:37:10.047022Z I0917 16:37:10.044816 1 watcher.go:391] Initializing ktdclient with target endpoint: us-east4-containerthreatdetection.googleapis.com:443
+DEFAULT 2026-09-17T16:37:10.051580Z I0917 16:37:10.049598 1 watcher.go:280] Using ktd ready file path from CONTAINER_WATCHER_READY_FILE_PATH: /tmp/container-watcher/ready
+DEFAULT 2026-09-17T16:37:10.051591Z I0917 16:37:10.049623 1 watcher.go:285] Using ktd token path from CONTAINER_WATCHER_TOKEN_PATH: /tmp/container-watcher/secrets/token
+DEFAULT 2026-09-17T16:37:10.051999Z I0917 16:37:10.049893 1 watcherconfigurer.go:98] KRSI is enabled
+DEFAULT 2026-09-17T16:37:10.052012Z I0917 16:37:10.049923 1 watcherconfigurer.go:29] Loading KRSI
+DEFAULT 2026-09-17T16:37:10.940971Z Packer v1.16.0
+DEFAULT 2026-09-17T16:37:12.954757Z [MODE] JSON — reading config from: gs://jira-automation-bucket/processed/CLOUD-608.json
+DEFAULT 2026-09-17T16:37:16.814308Z Copying gs://jira-automation-bucket/processed/CLOUD-608.json...
+DEFAULT 2026-09-17T16:37:16.814337Z / [0 files][ 0.0 B/ 1.4 KiB]
+DEFAULT 2026-09-17T16:37:16.909712Z / [1 files][ 1.4 KiB/ 1.4 KiB]
+DEFAULT 2026-09-17T16:37:16.911345Z Operation completed over 1 objects/1.4 KiB.
+DEFAULT 2026-09-17T16:37:17.526433Z [JSON] Machine type override: e2-standard-16
+DEFAULT 2026-09-17T16:37:17.555967Z [JSON] Disk size override: 500GB
+DEFAULT 2026-09-17T16:37:18.331053Z [JSON] Request ID : req-20260917163650-b086de
+DEFAULT 2026-09-17T16:37:18.331066Z [JSON] Requester : Drew Beling <drew.beling@noaa.gov> (OCIO)
+DEFAULT 2026-09-17T16:37:18.331072Z [JSON] Image Name : nmfs-windows-2025-chrome-conda-git-oracleclient-paraview-20260917163650
+DEFAULT 2026-09-17T16:37:18.331076Z [JSON] Create VM : true
+DEFAULT 2026-09-17T16:37:18.331080Z [JSON] Keep Image : true
+DEFAULT 2026-09-17T16:37:18.331086Z [JSON] SOFTWARE_JSON : {"aalibrary":false,"anaconda":false,"chrome":true,"conda":true,"echosms":false,"echostack":false,"echoview":false,"excel":false,"gcp_utilities":false,"git":true,"gpu_drivers":false,"jupyterlab":false,"matlab":false,"oracle_client":true,"paraview":true,"positron":false,"powershell_core":true,"pycharm_community":false,"python":true,"rstudio":true,"rstudio_pro":false,"visual_studio_community":true}
+DEFAULT 2026-09-17T16:37:20.344007Z [STATUS] RECEIVED → gs://jira-automation-bucket/status/req-20260917163650-b086de.json
+DEFAULT 2026-09-17T16:37:20.352051Z ──────────────────────────────────────────────
+DEFAULT 2026-09-17T16:37:20.352059Z Installation components:
+DEFAULT 2026-09-17T16:37:20.352064Z Oracle Client : true
+DEFAULT 2026-09-17T16:37:20.352068Z RStudio (OSS) : true
+DEFAULT 2026-09-17T16:37:20.352075Z Conda/Miniconda : true
+DEFAULT 2026-09-17T16:37:20.352080Z Chrome : true
+DEFAULT 2026-09-17T16:37:20.352084Z Git/GitHub Desk : true
+DEFAULT 2026-09-17T16:37:20.352089Z Python : true
+DEFAULT 2026-09-17T16:37:20.352093Z JupyterLab : false
+DEFAULT 2026-09-17T16:37:20.352097Z PowerShell Core : true
+DEFAULT 2026-09-17T16:37:20.352102Z PyCharm : false
+DEFAULT 2026-09-17T16:37:20.352107Z Visual Studio : true
+DEFAULT 2026-09-17T16:37:20.352112Z ParaView : true
+DEFAULT 2026-09-17T16:37:20.352118Z Echoview : false
+DEFAULT 2026-09-17T16:37:20.352122Z MATLAB : false
+DEFAULT 2026-09-17T16:37:20.352126Z RStudio Pro : false
+DEFAULT 2026-09-17T16:37:20.352130Z Positron : false
+DEFAULT 2026-09-17T16:37:20.352134Z Anaconda : false
+DEFAULT 2026-09-17T16:37:20.352138Z GPU Drivers : false
+DEFAULT 2026-09-17T16:37:20.352142Z AA-SI aalibrary : false
+DEFAULT 2026-09-17T16:37:20.352147Z EchoSMs : false
+DEFAULT 2026-09-17T16:37:20.352151Z EchoStack : false
+DEFAULT 2026-09-17T16:37:20.352155Z GCP Utilities : false
+DEFAULT 2026-09-17T16:37:20.352160Z Excel : false
+DEFAULT 2026-09-17T16:37:20.352164Z Infra:
+DEFAULT 2026-09-17T16:37:20.352168Z PROJECT_ID : ggn-nmfs-winde-dev-1
+DEFAULT 2026-09-17T16:37:20.352173Z IMAGE_FAMILY : nmfs-windows-2025-chrome-conda-git-oracleclient-paraview
+DEFAULT 2026-09-17T16:37:20.352177Z ZONE : us-east4-c
+DEFAULT 2026-09-17T16:37:20.352182Z ──────────────────────────────────────────────
+DEFAULT 2026-09-17T16:37:20.360886Z [FINGERPRINT] 21d7fa34b2797a5b (chrome,conda,git,oracle_client,paraview,powershell_core,python,rstudio,visual_studio_community)
+DEFAULT 2026-09-17T16:37:20.441899Z I0917 16:37:20.440634 1 watcherconfigurer.go:111] KRSI is enabled on X86_64.
+DEFAULT 2026-09-17T16:37:20.643236Z I0917 16:37:20.641954 36 krsieventreader.go:301] update probe enablement status (exec: true; mmap: true; exit: true; fork: true)
+DEFAULT 2026-09-17T16:37:20.643540Z I0917 16:37:20.642051 36 ktdclient.go:625] KTD Client successfully connected to KTD service
+DEFAULT 2026-09-17T16:37:21.242243Z I0917 16:37:21.240908 1 watcher.go:691] Updating Container Info...
+DEFAULT 2026-09-17T16:37:21.242548Z I0917 16:37:21.241244 1 watcher.go:699] Ready and listening
+DEFAULT 2026-09-17T16:37:21.248468Z I0917 16:37:21.247319 73 taskiterreader.go:227] EOF enumerating tasks
+DEFAULT 2026-09-17T16:37:22.342353Z I0917 16:37:22.340664 70 watcher.go:651] Reloading Cloud Run config.
+DEFAULT 2026-09-17T16:37:22.342370Z 2026/09/17 16:37:22 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
+DEFAULT 2026-09-17T16:37:22.393069Z [STATUS] IN_PROGRESS → gs://jira-automation-bucket/status/req-20260917163650-b086de.json
+DEFAULT 2026-09-17T16:37:25.592522Z Error: 2 error(s) occurred:
+DEFAULT 2026-09-17T16:37:25.592573Z * Invalid image name "nmfs-windows-2025-chrome-conda-git-oracleclient-paraview-20260917163650": The first character must be a lowercase letter, and all following characters must be a dash, lowercase letter, or digit, except the last character, which cannot be a dash
+DEFAULT 2026-09-17T16:37:25.592815Z * Invalid image name: Must not be longer than 63 characters
+DEFAULT 2026-09-17T16:37:25.592822Z on customize.pkr.hcl line 183:
+DEFAULT 2026-09-17T16:37:25.592826Z (source code not available)
+WARNING 2026-09-17T16:37:25.809786Z Container called exit(1).
+DEFAULT 2026-09-17T16:37:25.842307Z E0917 16:37:25.840683 12 saferun.go:45] goroutine signal.exit exited with error: caught signal: terminated.
+DEFAULT 2026-09-17T16:37:25.843240Z W0917 16:37:25.840812 62 saferun.go:47] goroutine se.Run exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:25.843250Z W0917 16:37:25.840822 63 saferun.go:47] goroutine pe.Run exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:25.843253Z W0917 16:37:25.840830 69 saferun.go:47] goroutine ktd.Configured exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:25.843257Z W0917 16:37:25.840841 71 saferun.go:47] goroutine signal.chld exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:25.843260Z W0917 16:37:25.840851 65 saferun.go:47] goroutine ktd.ebpf.krsi.flushloop exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:25.843263Z W0917 16:37:25.840863 67 saferun.go:47] goroutine ktd.ebpf.krsi.counters exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:25.843267Z W0917 16:37:25.841084 36 ktdclient.go:337] ktdclient connection closed unexpectedly: ktdclient receive response failed: rpc error: code = Canceled desc = context canceled
+DEFAULT 2026-09-17T16:37:25.843670Z I0917 16:37:25.841100 36 ktdclient.go:966] Disabling Collectors
+DEFAULT 2026-09-17T16:37:25.844367Z I0917 16:37:25.841117 36 krsieventreader.go:301] update probe enablement status (exec: false; mmap: false; exit: false; fork: false)
+DEFAULT 2026-09-17T16:37:25.844379Z W0917 16:37:25.841169 36 saferun.go:47] goroutine ktd.Run exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:25.942294Z W0917 16:37:25.940644 66 saferun.go:47] goroutine ktd.ebpf.krsi.eventloop exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:25.944057Z W0917 16:37:25.942654 64 saferun.go:47] goroutine fHasher.Run exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:26.267318Z W0917 16:37:26.265559 68 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:26.842973Z I0917 16:37:26.841263 70 watcher.go:651] Reloading Cloud Run config.
+DEFAULT 2026-09-17T16:37:26.842986Z 2026/09/17 16:37:26 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
+DEFAULT 2026-09-17T16:37:26.843356Z W0917 16:37:26.841507 70 saferun.go:47] goroutine signal.reload exited because context is cancelled.
+DEFAULT 2026-09-17T16:37:26.843365Z W0917 16:37:26.841533 1 watcher.go:703] One watcher thread went down, stopping: caught signal: terminated
+DEFAULT 2026-09-17T16:37:26.843681Z F0917 16:37:26.842181 1 watcher.go:273] Fatal error: caught signal: terminated
+DEFAULT 2026-09-17T16:37:26.852338Z 2026/09/17 16:37:26.850723 [ktd watcher] markExited recorded error: exit status 1
+DEFAULT 2026-09-17T16:37:26.852593Z 2026/09/17 16:37:26.851090 [ktd watcher] KTD agent process failed: exit status 1
+DEFAULT 2026-09-17T16:37:47.702174Z 2026/09/17 16:37:47.699588 [ktd watcher] KTD logging initialized.
+DEFAULT 2026-09-17T16:37:47.725557Z 2026/09/17 16:37:47.723271 [ktd watcher] Starting KTD watcher.
+DEFAULT 2026-09-17T16:37:47.784711Z Phase 2: Parameterized Windows Image Builder — Thu Sep 17 16:37:47 UTC 2026
+DEFAULT 2026-09-17T16:37:48.442602Z I0917 16:37:48.440289 849 elf_reader.cc:472] Unable to find DYNSYM section in /usr/bin/watcher
+DEFAULT 2026-09-17T16:37:48.443536Z I0917 16:37:48.441492 1 mlock.go:44] keeping C++ mlock
+DEFAULT 2026-09-17T16:37:48.446469Z I0917 16:37:48.443962 1 privacycontextdefaults.go:1811] PrivacyContext default attribute configuration validation failed: PrivacyContextDefaultConfig has no origin_product_id.
+DEFAULT 2026-09-17T16:37:48.446748Z I0917 16:37:48.444041 1 server.go:177] Got error when getting machine owner: failed to get proto for GMI path: open /etc/googlemachineidentity/live/machine_identity.pb: no such file or directory
+DEFAULT 2026-09-17T16:37:48.446756Z I0917 16:37:48.444144 1 watcher.go:319] Build CL: 789297002
+DEFAULT 2026-09-17T16:37:48.446760Z I0917 16:37:48.444180 1 watcher.go:320] Build baseline CL: 789297002
+DEFAULT 2026-09-17T16:37:48.446766Z I0917 16:37:48.444186 1 watcher.go:321] Build label: ktd_release.watcher_20250731_RC00@789297002
+DEFAULT 2026-09-17T16:37:48.446770Z I0917 16:37:48.444190 1 watcher.go:322] Build tool: Blaze, release blaze-2025.07.21-4 (mainline @785234264)
+DEFAULT 2026-09-17T16:37:48.446775Z I0917 16:37:48.444195 1 watcher.go:323] Command line arguments:
+DEFAULT 2026-09-17T16:37:48.446782Z I0917 16:37:48.444200 1 watcher.go:325] argv[0]: "/usr/bin/watcher"
+DEFAULT 2026-09-17T16:37:48.446786Z I0917 16:37:48.444206 1 watcher.go:325] argv[1]: "--backend_server=us-east4-containerthreatdetection.googleapis.com:443"
+DEFAULT 2026-09-17T16:37:48.446791Z I0917 16:37:48.444212 1 watcher.go:325] argv[2]: "--btf_file=/sys/kernel/btf/vmlinux"
+DEFAULT 2026-09-17T16:37:48.446796Z I0917 16:37:48.444215 1 watcher.go:325] argv[3]: "--deployment_id=app-engine.appserver_20260903.03_p0"
+DEFAULT 2026-09-17T16:37:48.446801Z I0917 16:37:48.444219 1 watcher.go:325] argv[4]: "--enabled_features=no_lsm_fallback,enable_krsi"
+DEFAULT 2026-09-17T16:37:48.446805Z I0917 16:37:48.444222 1 watcher.go:325] argv[5]: "--run_environment=gcp_cloud_run"
+DEFAULT 2026-09-17T16:37:48.446809Z I0917 16:37:48.444226 1 watcher.go:340] Initializing dependencies for run_environment gcp_cloud_run
+DEFAULT 2026-09-17T16:37:48.538662Z I0917 16:37:48.536429 1 watcher.go:391] Initializing ktdclient with target endpoint: us-east4-containerthreatdetection.googleapis.com:443
+DEFAULT 2026-09-17T16:37:48.543945Z I0917 16:37:48.541835 1 watcher.go:280] Using ktd ready file path from CONTAINER_WATCHER_READY_FILE_PATH: /tmp/container-watcher/ready
+DEFAULT 2026-09-17T16:37:48.543958Z I0917 16:37:48.541859 1 watcher.go:285] Using ktd token path from CONTAINER_WATCHER_TOKEN_PATH: /tmp/container-watcher/secrets/token
+DEFAULT 2026-09-17T16:37:48.544287Z I0917 16:37:48.542057 1 watcherconfigurer.go:98] KRSI is enabled
+DEFAULT 2026-09-17T16:37:48.544296Z I0917 16:37:48.542076 1 watcherconfigurer.go:29] Loading KRSI
+DEFAULT 2026-09-17T16:37:48.931204Z Packer v1.16.0
+DEFAULT 2026-09-17T16:37:50.943614Z [MODE] JSON — reading config from: gs://jira-automation-bucket/processed/CLOUD-608.json
+DEFAULT 2026-09-17T16:37:55.134392Z Copying gs://jira-automation-bucket/processed/CLOUD-608.json...
+DEFAULT 2026-09-17T16:37:55.134425Z / [0 files][ 0.0 B/ 1.4 KiB]
+DEFAULT 2026-09-17T16:37:55.192468Z / [1 files][ 1.4 KiB/ 1.4 KiB]
+DEFAULT 2026-09-17T16:37:55.194301Z Operation completed over 1 objects/1.4 KiB.
+DEFAULT 2026-09-17T16:37:55.822816Z [JSON] Machine type override: e2-standard-16
+DEFAULT 2026-09-17T16:37:55.854804Z [JSON] Disk size override: 500GB
+DEFAULT 2026-09-17T16:37:56.689927Z [JSON] Request ID : req-20260917163650-b086de
+DEFAULT 2026-09-17T16:37:56.689947Z [JSON] Requester : Drew Beling <drew.beling@noaa.gov> (OCIO)
+DEFAULT 2026-09-17T16:37:56.689954Z [JSON] Image Name : nmfs-windows-2025-chrome-conda-git-oracleclient-paraview-20260917163650
+DEFAULT 2026-09-17T16:37:56.689960Z [JSON] Create VM : true
+DEFAULT 2026-09-17T16:37:56.689966Z [JSON] Keep Image : true
+DEFAULT 2026-09-17T16:37:56.689973Z [JSON] SOFTWARE_JSON : {"aalibrary":false,"anaconda":false,"chrome":true,"conda":true,"echosms":false,"echostack":false,"echoview":false,"excel":false,"gcp_utilities":false,"git":true,"gpu_drivers":false,"jupyterlab":false,"matlab":false,"oracle_client":true,"paraview":true,"positron":false,"powershell_core":true,"pycharm_community":false,"python":true,"rstudio":true,"rstudio_pro":false,"visual_studio_community":true}
+DEFAULT 2026-09-17T16:37:58.824457Z [STATUS] RECEIVED → gs://jira-automation-bucket/status/req-20260917163650-b086de.json
+DEFAULT 2026-09-17T16:37:58.824479Z ──────────────────────────────────────────────
+DEFAULT 2026-09-17T16:37:58.824486Z Installation components:
+DEFAULT 2026-09-17T16:37:58.824493Z Oracle Client : true
+DEFAULT 2026-09-17T16:37:58.824499Z RStudio (OSS) : true
+DEFAULT 2026-09-17T16:37:58.824506Z Conda/Miniconda : true
+DEFAULT 2026-09-17T16:37:58.824511Z Chrome : true
+DEFAULT 2026-09-17T16:37:58.824516Z Git/GitHub Desk : true
+DEFAULT 2026-09-17T16:37:58.824522Z Python : true
+DEFAULT 2026-09-17T16:37:58.824529Z JupyterLab : false
+DEFAULT 2026-09-17T16:37:58.824534Z PowerShell Core : true
+DEFAULT 2026-09-17T16:37:58.824540Z PyCharm : false
+DEFAULT 2026-09-17T16:37:58.824545Z Visual Studio : true
+DEFAULT 2026-09-17T16:37:58.824551Z ParaView : true
+DEFAULT 2026-09-17T16:37:58.824556Z Echoview : false
+DEFAULT 2026-09-17T16:37:58.824561Z MATLAB : false
+DEFAULT 2026-09-17T16:37:58.824584Z RStudio Pro : false
+DEFAULT 2026-09-17T16:37:58.824590Z Positron : false
+DEFAULT 2026-09-17T16:37:58.824595Z Anaconda : false
+DEFAULT 2026-09-17T16:37:58.824600Z GPU Drivers : false
+DEFAULT 2026-09-17T16:37:58.824611Z AA-SI aalibrary : false
+DEFAULT 2026-09-17T16:37:58.824617Z EchoSMs : false
+DEFAULT 2026-09-17T16:37:58.824622Z EchoStack : false
+DEFAULT 2026-09-17T16:37:58.824628Z GCP Utilities : false
+DEFAULT 2026-09-17T16:37:58.824633Z Excel : false
+DEFAULT 2026-09-17T16:37:58.824639Z Infra:
+DEFAULT 2026-09-17T16:37:58.824644Z PROJECT_ID : ggn-nmfs-winde-dev-1
+DEFAULT 2026-09-17T16:37:58.824650Z IMAGE_FAMILY : nmfs-windows-2025-chrome-conda-git-oracleclient-paraview
+DEFAULT 2026-09-17T16:37:58.824656Z ZONE : us-east4-c
+DEFAULT 2026-09-17T16:37:58.824662Z ──────────────────────────────────────────────
+DEFAULT 2026-09-17T16:37:58.829036Z [FINGERPRINT] 21d7fa34b2797a5b (chrome,conda,git,oracle_client,paraview,powershell_core,python,rstudio,visual_studio_community)
+  {
+    "textPayload": "[FINGERPRINT] 21d7fa34b2797a5b (chrome,conda,git,oracle_client,paraview,powershell_core,python,rstudio,visual_studio_community)",
+    "insertId": "6aac1766000ca66c35da4bfc",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "job_name": "windows-image-builder-jira",
+        "project_id": "ggn-nmfs-winde-dev-1",
+        "location": "us-east4"
+      }
+    },
+    "timestamp": "2026-09-17T16:37:58.829036Z",
+    "labels": {
+      "run.googleapis.com/task_attempt": "1",
+      "instanceId": "00a41e8c1ddd859486d554eafbe206821c24e85965ce46d81f8f85fb40b289f4a05dd111a725152cb6128b5fac9e71b9cfdaaef31ab07d43781d22de29863e59cfd3fa5fecce552fb7d5985cce6fc69ecdbfc4619e8baf64e46b",
+      "run.googleapis.com/task_index": "0",
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-lzxlj"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-09-17T16:37:59.118631845Z"
+  }
+DEFAULT 2026-09-17T16:37:59.651697Z I0917 16:37:59.650335 1 watcherconfigurer.go:111] KRSI is enabled on X86_64.
+DEFAULT 2026-09-17T16:37:59.812503Z I0917 16:37:59.811137 43 krsieventreader.go:301] update probe enablement status (exec: true; mmap: true; exit: true; fork: true)
+DEFAULT 2026-09-17T16:37:59.815212Z I0917 16:37:59.811241 43 ktdclient.go:625] KTD Client successfully connected to KTD service
+DEFAULT 2026-09-17T16:37:59.947149Z I0917 16:37:59.945689 1 watcher.go:691] Updating Container Info...
+DEFAULT 2026-09-17T16:37:59.947459Z I0917 16:37:59.945871 1 watcher.go:699] Ready and listening
+DEFAULT 2026-09-17T16:38:00.243159Z I0917 16:38:00.241787 73 taskiterreader.go:227] EOF enumerating tasks
+DEFAULT 2026-09-17T16:38:00.867896Z [STATUS] IN_PROGRESS → gs://jira-automation-bucket/status/req-20260917163650-b086de.json
+DEFAULT 2026-09-17T16:38:01.038020Z I0917 16:38:01.036282 58 watcher.go:651] Reloading Cloud Run config.
+DEFAULT 2026-09-17T16:38:01.038400Z 2026/09/17 16:38:01 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
+  {
+    "textPayload": "2026/09/17 16:38:01 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb",
+    "insertId": "6aac176900009600861d70e5",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "location": "us-east4",
+        "job_name": "windows-image-builder-jira",
+        "project_id": "ggn-nmfs-winde-dev-1"
+      }
+    },
+    "timestamp": "2026-09-17T16:38:01.038400Z",
+    "labels": {
+      "instanceId": "00a41e8c1ddd859486d554eafbe206821c24e85965ce46d81f8f85fb40b289f4a05dd111a725152cb6128b5fac9e71b9cfdaaef31ab07d43781d22de29863e59cfd3fa5fecce552fb7d5985cce6fc69ecdbfc4619e8baf64e46b",
+      "run.googleapis.com/task_attempt": "1",
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-lzxlj",
+      "run.googleapis.com/task_index": "0"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fwatcher_log",
+    "receiveTimestamp": "2026-09-17T16:38:01.368330637Z"
+  }
+DEFAULT 2026-09-17T16:38:03.960967Z Error: 2 error(s) occurred:
+  {
+    "textPayload": "Error: 2 error(s) occurred:",
+    "insertId": "6aac176b000ea9c7dbb8c04a",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "job_name": "windows-image-builder-jira",
+        "location": "us-east4",
+        "project_id": "ggn-nmfs-winde-dev-1"
+      }
+    },
+    "timestamp": "2026-09-17T16:38:03.960967Z",
+    "labels": {
+      "instanceId": "00a41e8c1ddd859486d554eafbe206821c24e85965ce46d81f8f85fb40b289f4a05dd111a725152cb6128b5fac9e71b9cfdaaef31ab07d43781d22de29863e59cfd3fa5fecce552fb7d5985cce6fc69ecdbfc4619e8baf64e46b",
+      "run.googleapis.com/task_index": "0",
+      "run.googleapis.com/task_attempt": "1",
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-lzxlj"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-09-17T16:38:04.109702954Z"
+  }
+DEFAULT 2026-09-17T16:38:04.656372Z W0917 16:38:04.654530 56 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.
+  {
+    "textPayload": "W0917 16:38:04.654530      56 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.",
+    "insertId": "6aac176c000a03f4bdc19fb9",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "job_name": "windows-image-builder-jira",
+        "project_id": "ggn-nmfs-winde-dev-1",
+        "location": "us-east4"
+      }
+    },
+    "timestamp": "2026-09-17T16:38:04.656372Z",
+    "labels": {
+      "run.googleapis.com/task_attempt": "1",
+      "instanceId": "00a41e8c1ddd859486d554eafbe206821c24e85965ce46d81f8f85fb40b289f4a05dd111a725152cb6128b5fac9e71b9cfdaaef31ab07d43781d22de29863e59cfd3fa5fecce552fb7d5985cce6fc69ecdbfc4619e8baf64e46b",
+      "run.googleapis.com/task_index": "0",
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-lzxlj"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fwatcher_log",
+    "receiveTimestamp": "2026-09-17T16:38:04.704219717Z"
+  }

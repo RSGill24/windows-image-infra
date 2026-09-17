@@ -11,4 +11,4 @@ gcloud functions deploy image-builder-process-request \
   --service-account=packer-win-sa@<PROJECT_ID>.iam.gserviceaccount.com
 
 
-Git, Chrome, Python, PowerShell Core, PyCharm Community, Visual Studio Community, ParaView, RStudio, Conda, Oracle Drivers
+Git,Chrome,Python,PowerShell,Visual Studio,ParaView,RStudio,Oracle

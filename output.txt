@@ -1,22 +1,15 @@
-gcloud config set auth/impersonate_service_account images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com && terraform apply
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ gcloud functions deploy image-builder-process-request   --project=ggn-nmfs-winde-dev-1   --region=us-east4   --gen2   --runtime=python312   --entry-point=process_request   --source=.   --service-account=vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+
+The default build service account [194243189684-compute@developer.gserviceaccount.com] is missing the [roles/cloudbuild.builds.builder] 
+role. This may cause issues when deploying a function. You could fix it by running the command: 
+gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1 \
+ --member=serviceAccount:194243189684-compute@developer.gserviceaccount.com \
+ --role=roles/cloudbuild.builds.builder 
+For more information, please refer to: https://cloud.google.com/functions/docs/troubleshooting#build-service-account.
+ Would you like to continue? (y/N)?  ^C
+
+Command killed by keyboard interrupt
 
 
-SA :
-  - roles/cloudfunctions.developer
-  - roles/eventarc.admin                      
-  - roles/eventarc.eventReceiver          
-  - roles/iam.serviceAccountUser              
-  - roles/compute.admin                                                                                                   
-  - roles/storage.admin
-  - roles/secretmanager.secretAccessor                                                                                    
-  - roles/artifactregistry.writer                                                                                       
-  - roles/cloudbuild.builds.builder                                                                                       
-  - roles/run.developer                                                                                                 
-                                              
-  User (rajinder.gill@noaa.gov) :
-  - roles/cloudfunctions.developer
-  - roles/eventarc.admin                                                                                                  
-  - roles/iam.serviceAccountUser
-
-
-gcloud iam service-accounts add-iam-policy-binding vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com --member="user:rajinder.gill@noaa.gov" --role="roles/iam.serviceAccountUser"
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ ^C
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ 

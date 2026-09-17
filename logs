@@ -1,1 +1,19 @@
- git config credential.helper gcloud.sh
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$  git config credential.helper gcloud.sh
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$ git push origin dev
+git: 'credential-glcoud.sh' is not a git command. See 'git --help'.
+
+The most similar command is
+        credential-gcloud.sh
+git: 'credential-glcoud.sh' is not a git command. See 'git --help'.
+
+The most similar command is
+        credential-gcloud.sh
+To https://ops-ssm-1-538861448533-git.us-central1.sourcemanager.dev/nmfs-ops-source/nmfs-gcp-winde.git
+ ! [rejected]        dev -> dev (fetch first)
+error: failed to push some refs to 'https://ops-ssm-1-538861448533-git.us-central1.sourcemanager.dev/nmfs-ops-source/nmfs-gcp-winde.git'
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally. This is usually caused by another repository pushing to
+hint: the same ref. If you want to integrate the remote changes, use
+hint: 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$  git config credential.helper gcloud.sh

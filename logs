@@ -1,1 +1,2 @@
-git add win2025-software-jira-install-dev/
+git commit -m "Add win2025-software-jira-install-dev folder" 
+git push origin dev 

@@ -1,14 +1,1 @@
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$ git checkout dev
-M       terraform/cloud_run_job.tf
-M       terraform/eventarc.tf
-M       terraform/functions/process-request/main.py
-M       terraform/terraform.tfvars
-M       terraform/variables.tf
-M       win2022-software-jira-install-dev/cloudbuild-win2022-customizer.yaml
-M       win2022-software-jira-install-dev/docker-entrypoint.sh
-D       win2022-software-jira-install-dev/packer/ansible-playbook/ install_oracle_tasks.yml
-M       win2022-software-jira-install-dev/packer/customize.pkr.hcl
-M       win2022-software-jira-install-dev/packer/scripts/Dockerfile
-branch 'dev' set up to track 'origin/dev'.
-Switched to a new branch 'dev'
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$ 
+git add win2025-software-jira-install-dev/ && git commit -m "Add win2025-software-jira-install-dev folder" && git push origin dev

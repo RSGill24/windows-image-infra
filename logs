@@ -1,8 +1,17 @@
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira (nmfs-trusted-images-dev)$ cd ls
--bash: cd: ls: No such file or directory
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira (nmfs-trusted-images-dev)$ cd nmfs-gcp-winde/
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$ ls
-cloudbuild-docker.yaml                     Drew_Beling.md  win2022-main                  win2022-software-jira-install-dev
-cloudbuild-win2022-main.yaml               README.md       win2022-oracle-client-dev     win2025-software-jira-install-dev
-cloudbuild-win2022-oracle-client-dev.yaml  terraform       win2022-software-install-dev
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$ 
+mkdir -p .cloudbuild && cat > .cloudbuild/triggers.yaml << 'EOF'
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest"
+      - "-f"
+      - "win2025-software-jira-install-dev/packer/scripts/Dockerfile"
+      - "."
+images:
+  - "us-east4-docker.pkg.dev/$PROJECT_ID/packer-images/windows-packer-builder:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+EOF
+echo "Created .cloudbuild/triggers.yaml" && git add .cloudbuild/ && git commit -m "Add .cloudbuild/triggers.yaml" && git push origin win2025-folder

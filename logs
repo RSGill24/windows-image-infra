@@ -4,12 +4,11 @@
     eventType: push
     includedGitRefs: ^main$
     includedFiles: win2025-software-jira-install-dev/.*
-    serviceAccount: projects/ggn-nmfs-winde-dev-1/serviceAccounts/vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
-
+    serviceAccount: projects/ggn-nmfs-winde-dev-1/serviceAccounts/images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
   - name: win2025-software-jira-install-dev
     project: ggn-nmfs-winde-dev-1
     configFilePath: win2025-software-jira-install-dev/cloudbuild-docker.yaml
     eventType: push
     includedGitRefs: ^dev$
     includedFiles: win2025-software-jira-install-dev/.*
-    serviceAccount: projects/ggn-nmfs-winde-dev-1/serviceAccounts/vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
+    serviceAccount: projects/ggn-nmfs-winde-dev-1/serviceAccounts/images-build-sa1@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com

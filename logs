@@ -1,2 +1,1 @@
-git add win2025-software-jira-install-dev/ && git commit -m "Add win2025-software-jira-install-dev folder" && git push origin dev
-nmfs-win2025-chrome-conda-git-plus5-20260917184547-202609171
+ls win2025-software-jira-install-dev/ 2>/dev/null && echo "Folder exists" || echo "Folder missing - need to copy again"

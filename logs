@@ -1,1 +1,1 @@
-git checkout -b win2025-folder && git push origin win2025-folder
+cp -r win2022-software-jira-install-dev/.cloudbuild win2025-software-jira-install-dev/.cloudbuild 2>/dev/null && ls win2025-software-jira-install-dev/.cloudbuild/ && git add win2025-software-jira-install-dev/.cloudbuild/ && git commit -m "Add .cloudbuild folder to win2025" && git push origin win2025-folder

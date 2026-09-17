@@ -1,2 +1,31 @@
 git commit -m "Add win2025-software-jira-install-dev folder" 
 git push origin dev 
+rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde (nmfs-trusted-images-dev)$ git commit -m "Add win2025-software-jira-install-dev folder" 
+git push origin dev 
+[dev faafdef] Add win2025-software-jira-install-dev folder
+ 20 files changed, 2248 insertions(+)
+ create mode 100644 win2025-software-jira-install-dev/.cloudbuild-win2022-customizer.yaml.swp
+ create mode 100644 win2025-software-jira-install-dev/.gcloudignore
+ create mode 100644 win2025-software-jira-install-dev/.gitignore
+ create mode 100644 win2025-software-jira-install-dev/cloudbuild-docker.yaml
+ create mode 100644 win2025-software-jira-install-dev/cloudbuild-win2022-customizer.yaml
+ create mode 100644 win2025-software-jira-install-dev/docker-entrypoint.sh
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/bootstrap_chocolatey_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_anaconda_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_chrome_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_conda_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_git_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_oracle_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_powershell_core_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_pycharm_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_python_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_rstudio_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/install_visual_studio_tasks.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/ansible-playbook/main.yml
+ create mode 100644 win2025-software-jira-install-dev/packer/customize.pkr.hcl
+ create mode 100644 win2025-software-jira-install-dev/packer/scripts/Dockerfile
+git: 'credential-glcoud.sh' is not a git command. See 'git --help'.
+
+The most similar command is
+        credential-gcloud.sh
+Username for 'https://ops-ssm-1-538861448533-git.us-central1.sourcemanager.dev': 

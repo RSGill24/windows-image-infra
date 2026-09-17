@@ -1,123 +1,214 @@
-DEFAULT 2026-09-16T18:26:05.797591Z 2026/09/16 18:26:05.795613 [ktd watcher] KTD logging initialized.
-DEFAULT 2026-09-16T18:26:05.825519Z 2026/09/16 18:26:05.823737 [ktd watcher] Starting KTD watcher.
-DEFAULT 2026-09-16T18:26:05.902039Z Phase 2: Parameterized Windows Image Builder — Wed Sep 16 18:26:05 UTC 2026
-DEFAULT 2026-09-16T18:26:06.621161Z I0916 18:26:06.619392 851 elf_reader.cc:472] Unable to find DYNSYM section in /usr/bin/watcher
-DEFAULT 2026-09-16T18:26:06.623201Z I0916 18:26:06.621707 1 mlock.go:44] keeping C++ mlock
-DEFAULT 2026-09-16T18:26:06.626895Z I0916 18:26:06.625063 1 privacycontextdefaults.go:1811] PrivacyContext default attribute configuration validation failed: PrivacyContextDefaultConfig has no origin_product_id.
-DEFAULT 2026-09-16T18:26:06.629041Z I0916 18:26:06.625142 1 server.go:177] Got error when getting machine owner: failed to get proto for GMI path: open /etc/googlemachineidentity/live/machine_identity.pb: no such file or directory
-DEFAULT 2026-09-16T18:26:06.629048Z I0916 18:26:06.625253 1 watcher.go:319] Build CL: 789297002
-DEFAULT 2026-09-16T18:26:06.629053Z I0916 18:26:06.625281 1 watcher.go:320] Build baseline CL: 789297002
-DEFAULT 2026-09-16T18:26:06.629058Z I0916 18:26:06.625286 1 watcher.go:321] Build label: ktd_release.watcher_20250731_RC00@789297002
-DEFAULT 2026-09-16T18:26:06.629062Z I0916 18:26:06.625291 1 watcher.go:322] Build tool: Blaze, release blaze-2025.07.21-4 (mainline @785234264)
-DEFAULT 2026-09-16T18:26:06.629067Z I0916 18:26:06.625295 1 watcher.go:323] Command line arguments:
-DEFAULT 2026-09-16T18:26:06.629071Z I0916 18:26:06.625300 1 watcher.go:325] argv[0]: "/usr/bin/watcher"
-DEFAULT 2026-09-16T18:26:06.629075Z I0916 18:26:06.625306 1 watcher.go:325] argv[1]: "--backend_server=us-east4-containerthreatdetection.googleapis.com:443"
-DEFAULT 2026-09-16T18:26:06.629079Z I0916 18:26:06.625311 1 watcher.go:325] argv[2]: "--btf_file=/sys/kernel/btf/vmlinux"
-DEFAULT 2026-09-16T18:26:06.629084Z I0916 18:26:06.625314 1 watcher.go:325] argv[3]: "--deployment_id=app-engine.appserver_20260903.03_p0"
-DEFAULT 2026-09-16T18:26:06.629089Z I0916 18:26:06.625318 1 watcher.go:325] argv[4]: "--enabled_features=no_lsm_fallback,enable_krsi"
-DEFAULT 2026-09-16T18:26:06.629093Z I0916 18:26:06.625321 1 watcher.go:325] argv[5]: "--run_environment=gcp_cloud_run"
-DEFAULT 2026-09-16T18:26:06.629097Z I0916 18:26:06.625325 1 watcher.go:340] Initializing dependencies for run_environment gcp_cloud_run
-DEFAULT 2026-09-16T18:26:06.720462Z I0916 18:26:06.718515 1 watcher.go:391] Initializing ktdclient with target endpoint: us-east4-containerthreatdetection.googleapis.com:443
-DEFAULT 2026-09-16T18:26:06.724692Z I0916 18:26:06.722775 1 watcher.go:280] Using ktd ready file path from CONTAINER_WATCHER_READY_FILE_PATH: /tmp/container-watcher/ready
-DEFAULT 2026-09-16T18:26:06.724704Z I0916 18:26:06.722828 1 watcher.go:285] Using ktd token path from CONTAINER_WATCHER_TOKEN_PATH: /tmp/container-watcher/secrets/token
-DEFAULT 2026-09-16T18:26:06.725067Z I0916 18:26:06.723073 1 watcherconfigurer.go:98] KRSI is enabled
-DEFAULT 2026-09-16T18:26:06.725078Z I0916 18:26:06.723093 1 watcherconfigurer.go:29] Loading KRSI
-DEFAULT 2026-09-16T18:26:07.255358Z Packer v1.16.0
-DEFAULT 2026-09-16T18:26:09.272250Z [MODE] JSON — reading config from: gs://jira-automation-bucket/processed/CLOUD-606.json
-DEFAULT 2026-09-16T18:26:13.689604Z Copying gs://jira-automation-bucket/processed/CLOUD-606.json...
-DEFAULT 2026-09-16T18:26:13.689837Z / [0 files][ 0.0 B/ 1.4 KiB]
-DEFAULT 2026-09-16T18:26:13.868124Z / [1 files][ 1.4 KiB/ 1.4 KiB]
-DEFAULT 2026-09-16T18:26:13.870072Z Operation completed over 1 objects/1.4 KiB.
-DEFAULT 2026-09-16T18:26:14.574486Z [JSON] Machine type override: e2-standard-16
-DEFAULT 2026-09-16T18:26:14.608328Z [JSON] Disk size override: 500GB
-DEFAULT 2026-09-16T18:26:15.515626Z [JSON] Request ID : req-20260916182538-47b75a
-DEFAULT 2026-09-16T18:26:15.515646Z [JSON] Requester : Drew Beling <drew.beling@noaa.gov> (OCIO)
-DEFAULT 2026-09-16T18:26:15.515653Z [JSON] Image Name : nmfs-windows-2022-git-20260814161612
-DEFAULT 2026-09-16T18:26:15.515660Z [JSON] Create VM : true
-DEFAULT 2026-09-16T18:26:15.515666Z [JSON] Keep Image : true
-DEFAULT 2026-09-16T18:26:15.515678Z [JSON] SOFTWARE_JSON : {"aalibrary":false,"anaconda":false,"chrome":false,"conda":false,"echosms":false,"echostack":false,"echoview":false,"excel":false,"gcp_utilities":false,"git":true,"gpu_drivers":false,"jupyterlab":false,"matlab":false,"oracle_client":false,"paraview":false,"positron":false,"powershell_core":false,"pycharm_community":false,"python":false,"rstudio":false,"rstudio_pro":false,"visual_studio_community":false}
-DEFAULT 2026-09-16T18:26:17.771989Z [STATUS] RECEIVED → gs://jira-automation-bucket/status/req-20260916182538-47b75a.json
-DEFAULT 2026-09-16T18:26:17.772106Z ──────────────────────────────────────────────
-DEFAULT 2026-09-16T18:26:17.772115Z Installation components:
-DEFAULT 2026-09-16T18:26:17.772123Z Oracle Client : false
-DEFAULT 2026-09-16T18:26:17.772129Z RStudio (OSS) : false
-DEFAULT 2026-09-16T18:26:17.772148Z Conda/Miniconda : false
-DEFAULT 2026-09-16T18:26:17.772154Z Chrome : false
-DEFAULT 2026-09-16T18:26:17.772164Z Git/GitHub Desk : true
-DEFAULT 2026-09-16T18:26:17.772169Z Python : false
-DEFAULT 2026-09-16T18:26:17.772174Z JupyterLab : false
-DEFAULT 2026-09-16T18:26:17.772179Z PowerShell Core : false
-DEFAULT 2026-09-16T18:26:17.772184Z PyCharm : false
-DEFAULT 2026-09-16T18:26:17.772189Z Visual Studio : false
-DEFAULT 2026-09-16T18:26:17.772196Z ParaView : false
-DEFAULT 2026-09-16T18:26:17.772202Z Echoview : false
-DEFAULT 2026-09-16T18:26:17.772207Z MATLAB : false
-DEFAULT 2026-09-16T18:26:17.772211Z RStudio Pro : false
-DEFAULT 2026-09-16T18:26:17.772214Z Positron : false
-DEFAULT 2026-09-16T18:26:17.772218Z Anaconda : false
-DEFAULT 2026-09-16T18:26:17.772222Z GPU Drivers : false
-DEFAULT 2026-09-16T18:26:17.772227Z AA-SI aalibrary : false
-DEFAULT 2026-09-16T18:26:17.772325Z EchoSMs : false
-DEFAULT 2026-09-16T18:26:17.772337Z EchoStack : false
-DEFAULT 2026-09-16T18:26:17.772342Z GCP Utilities : false
-DEFAULT 2026-09-16T18:26:17.772347Z Excel : false
-DEFAULT 2026-09-16T18:26:17.772352Z Infra:
-DEFAULT 2026-09-16T18:26:17.772371Z PROJECT_ID : ggn-nmfs-winde-dev-1
-DEFAULT 2026-09-16T18:26:17.772376Z IMAGE_FAMILY : nmfs-windows-2022-git
-DEFAULT 2026-09-16T18:26:17.772380Z ZONE : us-east4-c
-DEFAULT 2026-09-16T18:26:17.772385Z ──────────────────────────────────────────────
-DEFAULT 2026-09-16T18:26:17.782792Z [FINGERPRINT] 9a881b9b9f238494 (git)
-DEFAULT 2026-09-16T18:26:18.718867Z I0916 18:26:18.717531 1 watcherconfigurer.go:111] KRSI is enabled on X86_64.
-DEFAULT 2026-09-16T18:26:18.877178Z I0916 18:26:18.875985 31 krsieventreader.go:301] update probe enablement status (exec: true; mmap: true; exit: true; fork: true)
-DEFAULT 2026-09-16T18:26:18.877563Z I0916 18:26:18.876088 31 ktdclient.go:625] KTD Client successfully connected to KTD service
-DEFAULT 2026-09-16T18:26:19.419190Z I0916 18:26:19.418065 1 watcher.go:691] Updating Container Info...
-DEFAULT 2026-09-16T18:26:19.419729Z I0916 18:26:19.418394 1 watcher.go:699] Ready and listening
-DEFAULT 2026-09-16T18:26:19.520650Z I0916 18:26:19.519376 64 taskiterreader.go:227] EOF enumerating tasks
-DEFAULT 2026-09-16T18:26:19.919443Z [STATUS] IN_PROGRESS → gs://jira-automation-bucket/status/req-20260916182538-47b75a.json
-DEFAULT 2026-09-16T18:26:20.420230Z I0916 18:26:20.418921 61 watcher.go:651] Reloading Cloud Run config.
-DEFAULT 2026-09-16T18:26:20.420245Z 2026/09/16 18:26:20 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
-DEFAULT 2026-09-16T18:26:23.680545Z The configuration is valid.
-DEFAULT 2026-09-16T18:26:24.691090Z [SKIP] Image already exists — skipping Packer build, proceeding to VM creation
-DEFAULT 2026-09-16T18:26:24.691105Z [SKIP] Using existing image: nmfs-windows-2022-git-20260814161612
-DEFAULT 2026-09-16T18:26:24.694907Z [VM] Creating VM from image: nmfs-windows-2022-git-20260814161612
-DEFAULT 2026-09-16T18:26:24.760715Z [VM] Workstation user: drew_beling
-DEFAULT 2026-09-16T18:27:00.858406Z Created [https://www.googleapis.com/compute/v1/projects/ggn-nmfs-winde-dev-1/zones/us-east4-c/instances/nmfs-windows-2022-git-20260814161612-2026091618].
-DEFAULT 2026-09-16T18:27:00.967892Z WARNING: Some requests generated warnings:
-DEFAULT 2026-09-16T18:27:00.967916Z - Disk size: '500 GB' is larger than image size: '250 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
-DEFAULT 2026-09-16T18:27:00.967921Z - The resource 'projects/ggn-nmfs-winde-dev-1/global/images/nmfs-windows-2022-git-20260814161612' is deprecated. A suggested replacement is 'projects/ggn-nmfs-winde-dev-1/global/images/nmfs-windows-2022-git-20260915202352'.
-DEFAULT 2026-09-16T18:27:00.967927Z - You are creating a global DNS VM. VM instances using global DNS are vulnerable to cross-regional outages. To reduce the risk of widespread service disruption, use zonal DNS instead. Learn more at https://cloud.google.com/compute/docs/networking/zonal-dns?utm_id=vm-insert
-DEFAULT 2026-09-16T18:27:01.136464Z NAME ZONE MACHINE_TYPE PREEMPTIBLE INTERNAL_IP EXTERNAL_IP STATUS
-DEFAULT 2026-09-16T18:27:01.136485Z nmfs-windows-2022-git-20260814161612-2026091618 us-east4-c e2-standard-16 10.150.0.63 RUNNING
-DEFAULT 2026-09-16T18:27:01.686867Z [VM] VM created successfully: nmfs-windows-2022-git-20260814161612-2026091618
-DEFAULT 2026-09-16T18:27:03.912656Z [STATUS] COMPLETED → gs://jira-automation-bucket/status/req-20260916182538-47b75a.json
-DEFAULT 2026-09-16T18:27:05.986815Z [JIRA-BUCKET] JSON written → gs://windows-pipeline-jira-status/builds/CLOUD-606_COMPLETED.json
-DEFAULT 2026-09-16T18:27:05.986890Z ══════════════════════════════════════════════════════════════
-DEFAULT 2026-09-16T18:27:05.986897Z BUILD COMPLETE
-DEFAULT 2026-09-16T18:27:05.986902Z Image : nmfs-windows-2022-git-20260814161612
-DEFAULT 2026-09-16T18:27:05.986909Z VM : nmfs-windows-2022-git-20260814161612-2026091618
-DEFAULT 2026-09-16T18:27:05.986914Z Request ID : req-20260916182538-47b75a
-DEFAULT 2026-09-16T18:27:05.986918Z Requester : Drew Beling <drew.beling@noaa.gov>
-DEFAULT 2026-09-16T18:27:05.986922Z ══════════════════════════════════════════════════════════════
-DEFAULT 2026-09-16T18:27:06.881410Z [EMAIL] WARNING: Could not fetch app password from secret 'gmail-app-password'
-INFO 2026-09-16T18:27:06.912224Z Container called exit(0).
-DEFAULT 2026-09-16T18:27:06.913969Z E0916 18:27:06.912218 34 saferun.go:45] goroutine signal.exit exited with error: caught signal: terminated.
-DEFAULT 2026-09-16T18:27:06.914578Z W0916 18:27:06.912268 66 saferun.go:47] goroutine ktd.ebpf.krsi.flushloop exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:06.914589Z W0916 18:27:06.912267 62 saferun.go:47] goroutine signal.chld exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:06.914594Z W0916 18:27:06.912381 48 saferun.go:47] goroutine pe.Run exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:06.914599Z W0916 18:27:06.912388 47 saferun.go:47] goroutine se.Run exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:06.914604Z W0916 18:27:06.912414 49 saferun.go:47] goroutine fHasher.Run exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:06.914609Z W0916 18:27:06.912479 60 saferun.go:47] goroutine ktd.Configured exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:06.914614Z W0916 18:27:06.912585 68 saferun.go:47] goroutine ktd.ebpf.krsi.counters exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:06.915498Z W0916 18:27:06.912878 31 ktdclient.go:337] ktdclient connection closed unexpectedly: ktdclient receive response failed: rpc error: code = Canceled desc = context canceled
-DEFAULT 2026-09-16T18:27:06.915507Z I0916 18:27:06.912898 31 ktdclient.go:966] Disabling Collectors
-DEFAULT 2026-09-16T18:27:06.915512Z I0916 18:27:06.912916 31 krsieventreader.go:301] update probe enablement status (exec: false; mmap: false; exit: false; fork: false)
-DEFAULT 2026-09-16T18:27:06.915517Z W0916 18:27:06.912968 31 saferun.go:47] goroutine ktd.Run exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:06.981335Z W0916 18:27:06.979372 67 saferun.go:47] goroutine ktd.ebpf.krsi.eventloop exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:07.333369Z W0916 18:27:07.331342 59 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:07.894033Z I0916 18:27:07.891800 61 watcher.go:651] Reloading Cloud Run config.
-DEFAULT 2026-09-16T18:27:07.894046Z 2026/09/16 18:27:07 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
-DEFAULT 2026-09-16T18:27:07.894050Z W0916 18:27:07.891960 61 saferun.go:47] goroutine signal.reload exited because context is cancelled.
-DEFAULT 2026-09-16T18:27:07.894403Z W0916 18:27:07.891993 1 watcher.go:703] One watcher thread went down, stopping: caught signal: terminated
-DEFAULT 2026-09-16T18:27:07.894407Z F0916 18:27:07.892379 1 watcher.go:273] Fatal error: caught signal: terminated
-DEFAULT 2026-09-16T18:27:07.901814Z 2026/09/16 18:27:07.900241 [ktd watcher] markExited recorded error: exit status 1
-DEFAULT 2026-09-16T18:27:07.902089Z 2026/09/16 18:27:07.900467 [ktd watcher] KTD agent process failed: exit status 1
+DEFAULT 2026-09-17T17:26:00.133254Z [1;32m==> googlecompute.customize_windows: "stderr_lines": [],[0m
+DEFAULT 2026-09-17T17:26:00.133983Z [1;32m==> googlecompute.customize_windows: "stdout": "Chocolatey v2.7.4\r\nCache cleanup\r\nRemoved 19 cached items in 'C:\\ProgramData\\ChocolateyHttpCache'.\r\nDirectory 'C:\\Users\\packer_user\\.chocolatey\\http-cache' does not exist.\r\nNo cached items available to be removed in 'C:\\Users\\packer_user\\.chocolatey\\http-cache'.\r\n",[0m
+DEFAULT 2026-09-17T17:26:00.134134Z [1;32m==> googlecompute.customize_windows: "stdout_lines": [[0m
+DEFAULT 2026-09-17T17:26:00.134553Z [1;32m==> googlecompute.customize_windows: "Chocolatey v2.7.4",[0m
+DEFAULT 2026-09-17T17:26:00.135003Z [1;32m==> googlecompute.customize_windows: "Cache cleanup",[0m
+DEFAULT 2026-09-17T17:26:00.135501Z [1;32m==> googlecompute.customize_windows: "Removed 19 cached items in 'C:\\ProgramData\\ChocolateyHttpCache'.",[0m
+DEFAULT 2026-09-17T17:26:00.135829Z [1;32m==> googlecompute.customize_windows: "Directory 'C:\\Users\\packer_user\\.chocolatey\\http-cache' does not exist.",[0m
+DEFAULT 2026-09-17T17:26:00.136252Z [1;32m==> googlecompute.customize_windows: "No cached items available to be removed in 'C:\\Users\\packer_user\\.chocolatey\\http-cache'."[0m
+DEFAULT 2026-09-17T17:26:00.136573Z [1;32m==> googlecompute.customize_windows: ][0m
+DEFAULT 2026-09-17T17:26:00.136993Z [1;32m==> googlecompute.customize_windows: }[0m
+DEFAULT 2026-09-17T17:26:00.137456Z [1;32m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:00.139229Z [1;32m==> googlecompute.customize_windows: TASK [Install ParaView] ********************************************************[0m
+DEFAULT 2026-09-17T17:26:00.139235Z [1;32m==> googlecompute.customize_windows: task path: /workspace/ansible-playbook/main.yml:76[0m
+DEFAULT 2026-09-17T17:26:00.149059Z [1;31m==> googlecompute.customize_windows: [ERROR]: Could not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller: Unable to retrieve file contents.[0m
+DEFAULT 2026-09-17T17:26:00.149432Z [1;31m==> googlecompute.customize_windows: Could not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller.[0m
+DEFAULT 2026-09-17T17:26:00.149987Z [1;31m==> googlecompute.customize_windows: If you are using a module and expect the file to exist on the remote, see the remote_src option: [Errno 2] No such file or directory: '/workspace/ansible-playbook/install_paraview_tasks.yml'[0m
+DEFAULT 2026-09-17T17:26:00.150401Z [1;31m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:00.150959Z [1;32m==> googlecompute.customize_windows: fatal: [winrm_target]: FAILED! => {[0m
+DEFAULT 2026-09-17T17:26:00.151468Z [1;32m==> googlecompute.customize_windows: "changed": false,[0m
+DEFAULT 2026-09-17T17:26:00.152015Z [1;32m==> googlecompute.customize_windows: "include": "install_paraview_tasks.yml",[0m
+DEFAULT 2026-09-17T17:26:00.152957Z [1;32m==> googlecompute.customize_windows: "reason": "Could not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller: Unable to retrieve file contents.\nCould not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller.\nIf you are using a module and expect the file to exist on the remote, see the remote_src option: [Errno 2] No such file or directory: '/workspace/ansible-playbook/install_paraview_tasks.yml'"[0m
+DEFAULT 2026-09-17T17:26:00.152964Z [1;32m==> googlecompute.customize_windows: }[0m
+DEFAULT 2026-09-17T17:26:00.153349Z [1;32m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:00.153933Z [1;32m==> googlecompute.customize_windows: PLAY RECAP *********************************************************************[0m
+DEFAULT 2026-09-17T17:26:00.154528Z [1;32m==> googlecompute.customize_windows: winrm_target : ok=59 changed=6 unreachable=0 failed=1 skipped=8 rescued=0 ignored=0[0m
+DEFAULT 2026-09-17T17:26:00.154919Z [1;32m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:00.268636Z [1;32m==> googlecompute.customize_windows: Provisioning step had errors: Running the cleanup provisioner, if present...[0m
+DEFAULT 2026-09-17T17:26:00.269370Z [1;32m==> googlecompute.customize_windows: Deleting instance...[0m
+DEFAULT 2026-09-17T17:26:36.274915Z [1;32m==> googlecompute.customize_windows: Instance has been deleted![0m
+DEFAULT 2026-09-17T17:26:36.275138Z [1;32m==> googlecompute.customize_windows: Deleting disk...[0m
+DEFAULT 2026-09-17T17:26:36.705884Z [1;32m==> googlecompute.customize_windows: Disk has been deleted![0m
+DEFAULT 2026-09-17T17:26:36.706060Z [1;31mBuild 'googlecompute.customize_windows' errored after 10 minutes 26 seconds: Script exited with non-zero exit status: 2. Allowed exit codes are: [0][0m
+DEFAULT 2026-09-17T17:26:36.706068Z ==> Wait completed after 10 minutes 26 seconds
+DEFAULT 2026-09-17T17:26:36.706104Z ==> Some builds didn't complete successfully and had errors:
+DEFAULT 2026-09-17T17:26:36.706188Z --> googlecompute.customize_windows: Script exited with non-zero exit status: 2. Allowed exit codes are: [0]
+DEFAULT 2026-09-17T17:26:36.706279Z ==> Builds finished but no artifacts were created.
+DEFAULT 2026-09-17T17:26:36.942662Z [ERROR] Packer build failed
+DEFAULT 2026-09-17T17:26:36.947447Z 2026/09/17 17:25:56 ui: [1;32m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:36.947458Z 2026/09/17 17:25:56 ui: [1;32m==> googlecompute.customize_windows: TASK [Clear Chocolatey download cache] *****************************************[0m
+DEFAULT 2026-09-17T17:26:36.947466Z 2026/09/17 17:25:56 ui: [1;32m==> googlecompute.customize_windows: task path: /workspace/ansible-playbook/install_visual_studio_tasks.yml:37[0m
+DEFAULT 2026-09-17T17:26:36.947470Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: redirecting (type: modules) ansible.builtin.win_shell to ansible.windows.win_shell[0m
+DEFAULT 2026-09-17T17:26:36.947475Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: redirecting (type: modules) ansible.builtin.win_shell to ansible.windows.win_shell[0m
+DEFAULT 2026-09-17T17:26:36.947479Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: redirecting (type: modules) ansible.builtin.win_shell to ansible.windows.win_shell[0m
+DEFAULT 2026-09-17T17:26:36.947483Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: Using module file /usr/share/ansible/collections/ansible_collections/ansible/windows/plugins/modules/win_shell.ps1[0m
+DEFAULT 2026-09-17T17:26:36.947487Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: Pipelining is enabled.[0m
+DEFAULT 2026-09-17T17:26:36.947492Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: <127.0.0.1> ESTABLISH WINRM CONNECTION FOR USER: packer_user on PORT 8602 TO 127.0.0.1[0m
+DEFAULT 2026-09-17T17:26:36.947495Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: EXEC (via pipeline wrapper)[0m
+DEFAULT 2026-09-17T17:26:36.947499Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: ok: [winrm_target] => {[0m
+DEFAULT 2026-09-17T17:26:36.947502Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "changed": false,[0m
+DEFAULT 2026-09-17T17:26:36.947506Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "cmd": "choco cache remove --all --yes --no-progress 2>$null",[0m
+DEFAULT 2026-09-17T17:26:36.947512Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "delta": "0:00:01.667062",[0m
+DEFAULT 2026-09-17T17:26:36.947516Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "end": "2026-09-17 17:26:00.015598",[0m
+DEFAULT 2026-09-17T17:26:36.947519Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "failed_when_result": false,[0m
+DEFAULT 2026-09-17T17:26:36.947526Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "invocation": {[0m
+DEFAULT 2026-09-17T17:26:36.947529Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "module_args": {[0m
+DEFAULT 2026-09-17T17:26:36.947545Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "_raw_params": "choco cache remove --all --yes --no-progress 2>$null\n",[0m
+DEFAULT 2026-09-17T17:26:36.947549Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "chdir": null,[0m
+DEFAULT 2026-09-17T17:26:36.947552Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "cmd": "choco cache remove --all --yes --no-progress 2>$null\n",[0m
+DEFAULT 2026-09-17T17:26:36.947556Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "creates": null,[0m
+DEFAULT 2026-09-17T17:26:36.947559Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "executable": null,[0m
+DEFAULT 2026-09-17T17:26:36.947562Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "no_profile": false,[0m
+DEFAULT 2026-09-17T17:26:36.947565Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "output_encoding_override": null,[0m
+DEFAULT 2026-09-17T17:26:36.947569Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "removes": null,[0m
+DEFAULT 2026-09-17T17:26:36.947572Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "stdin": null[0m
+DEFAULT 2026-09-17T17:26:36.947576Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: }[0m
+DEFAULT 2026-09-17T17:26:36.947579Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: },[0m
+DEFAULT 2026-09-17T17:26:36.947583Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "rc": 0,[0m
+DEFAULT 2026-09-17T17:26:36.947587Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "start": "2026-09-17 17:25:58.348536",[0m
+DEFAULT 2026-09-17T17:26:36.947590Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "stderr": "",[0m
+DEFAULT 2026-09-17T17:26:36.947594Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "stderr_lines": [],[0m
+DEFAULT 2026-09-17T17:26:36.947599Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "stdout": "Chocolatey v2.7.4\r\nCache cleanup\r\nRemoved 19 cached items in 'C:\\ProgramData\\ChocolateyHttpCache'.\r\nDirectory 'C:\\Users\\packer_user\\.chocolatey\\http-cache' does not exist.\r\nNo cached items available to be removed in 'C:\\Users\\packer_user\\.chocolatey\\http-cache'.\r\n",[0m
+DEFAULT 2026-09-17T17:26:36.947602Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "stdout_lines": [[0m
+DEFAULT 2026-09-17T17:26:36.947605Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "Chocolatey v2.7.4",[0m
+DEFAULT 2026-09-17T17:26:36.947609Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "Cache cleanup",[0m
+DEFAULT 2026-09-17T17:26:36.947612Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "Removed 19 cached items in 'C:\\ProgramData\\ChocolateyHttpCache'.",[0m
+DEFAULT 2026-09-17T17:26:36.947616Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "Directory 'C:\\Users\\packer_user\\.chocolatey\\http-cache' does not exist.",[0m
+DEFAULT 2026-09-17T17:26:36.947627Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "No cached items available to be removed in 'C:\\Users\\packer_user\\.chocolatey\\http-cache'."[0m
+DEFAULT 2026-09-17T17:26:36.947631Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: ][0m
+DEFAULT 2026-09-17T17:26:36.947634Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: }[0m
+DEFAULT 2026-09-17T17:26:36.947638Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:36.947641Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: TASK [Install ParaView] ********************************************************[0m
+DEFAULT 2026-09-17T17:26:36.947645Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: task path: /workspace/ansible-playbook/main.yml:76[0m
+DEFAULT 2026-09-17T17:26:36.947649Z 2026/09/17 17:26:00 ui error: [1;31m==> googlecompute.customize_windows: [ERROR]: Could not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller: Unable to retrieve file contents.[0m
+DEFAULT 2026-09-17T17:26:36.947653Z 2026/09/17 17:26:00 ui error: [1;31m==> googlecompute.customize_windows: Could not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller.[0m
+  {
+    "textPayload": "2026/09/17 17:26:00 ui error: \u001b[1;31m==> googlecompute.customize_windows: Could not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller.\u001b[0m",
+    "insertId": "6aac22cc000e75c5e7f20028",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "job_name": "windows-image-builder-jira",
+        "project_id": "ggn-nmfs-winde-dev-1",
+        "location": "us-east4"
+      }
+    },
+    "timestamp": "2026-09-17T17:26:36.947653Z",
+    "labels": {
+      "instanceId": "00a41e8c1d016f7a7875efbb0eab771cbfc94216298f1b39f0f127ea0f4071c52ff7bfbca96a351cd7447424792278f0c3895300d26882d6e2573812af17d446b8b248ce4867508334e1de30bb1b747cbc0e4de370c353599920",
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-5cn74",
+      "run.googleapis.com/task_attempt": "1",
+      "run.googleapis.com/task_index": "0"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-09-17T17:26:37.283141047Z"
+  }
+DEFAULT 2026-09-17T17:26:36.947657Z 2026/09/17 17:26:00 ui error: [1;31m==> googlecompute.customize_windows: If you are using a module and expect the file to exist on the remote, see the remote_src option: [Errno 2] No such file or directory: '/workspace/ansible-playbook/install_paraview_tasks.yml'[0m
+DEFAULT 2026-09-17T17:26:36.947660Z 2026/09/17 17:26:00 ui error: [1;31m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:36.947663Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: fatal: [winrm_target]: FAILED! => {[0m
+DEFAULT 2026-09-17T17:26:36.947670Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "changed": false,[0m
+DEFAULT 2026-09-17T17:26:36.947673Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "include": "install_paraview_tasks.yml",[0m
+DEFAULT 2026-09-17T17:26:36.947678Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: "reason": "Could not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller: Unable to retrieve file contents.\nCould not find or access '/workspace/ansible-playbook/install_paraview_tasks.yml' on the Ansible Controller.\nIf you are using a module and expect the file to exist on the remote, see the remote_src option: [Errno 2] No such file or directory: '/workspace/ansible-playbook/install_paraview_tasks.yml'"[0m
+DEFAULT 2026-09-17T17:26:36.947682Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: }[0m
+DEFAULT 2026-09-17T17:26:36.947685Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:36.947689Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: PLAY RECAP *********************************************************************[0m
+DEFAULT 2026-09-17T17:26:36.947693Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: winrm_target : ok=59 changed=6 unreachable=0 failed=1 skipped=8 rescued=0 ignored=0[0m
+DEFAULT 2026-09-17T17:26:36.947697Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows:[0m
+DEFAULT 2026-09-17T17:26:36.947700Z 2026/09/17 17:26:00 [INFO] (telemetry) ending shell-local
+DEFAULT 2026-09-17T17:26:36.947704Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: Provisioning step had errors: Running the cleanup provisioner, if present...[0m
+DEFAULT 2026-09-17T17:26:36.947707Z 2026/09/17 17:26:00 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:00 Cleaning up the IAP tunnel...
+DEFAULT 2026-09-17T17:26:36.947710Z 2026/09/17 17:26:00 ui: [1;32m==> googlecompute.customize_windows: Deleting instance...[0m
+DEFAULT 2026-09-17T17:26:36.947714Z 2026/09/17 17:26:00 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:00 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947718Z 2026/09/17 17:26:02 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:02 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947721Z 2026/09/17 17:26:04 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:04 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947725Z 2026/09/17 17:26:06 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:06 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947729Z 2026/09/17 17:26:09 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:09 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947732Z 2026/09/17 17:26:11 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:11 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947736Z 2026/09/17 17:26:13 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:13 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947740Z 2026/09/17 17:26:15 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:15 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947743Z 2026/09/17 17:26:17 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:17 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947747Z 2026/09/17 17:26:19 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:19 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947750Z 2026/09/17 17:26:21 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:21 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947754Z 2026/09/17 17:26:23 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:23 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947757Z 2026/09/17 17:26:25 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:25 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947761Z 2026/09/17 17:26:27 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:27 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947765Z 2026/09/17 17:26:30 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:30 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947768Z 2026/09/17 17:26:32 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:32 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947771Z 2026/09/17 17:26:34 packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64 plugin: 2026/09/17 17:26:34 Retryable error: retrying for state DONE, got RUNNING
+DEFAULT 2026-09-17T17:26:36.947775Z 2026/09/17 17:26:36 ui: [1;32m==> googlecompute.customize_windows: Instance has been deleted![0m
+DEFAULT 2026-09-17T17:26:36.947778Z 2026/09/17 17:26:36 ui: [1;32m==> googlecompute.customize_windows: Deleting disk...[0m
+DEFAULT 2026-09-17T17:26:36.947782Z 2026/09/17 17:26:36 ui: [1;32m==> googlecompute.customize_windows: Disk has been deleted![0m
+DEFAULT 2026-09-17T17:26:36.947785Z 2026/09/17 17:26:36 [INFO] (telemetry) ending googlecompute.customize_windows
+DEFAULT 2026-09-17T17:26:36.947789Z 2026/09/17 17:26:36 ui error: [1;31mBuild 'googlecompute.customize_windows' errored after 10 minutes 26 seconds: Script exited with non-zero exit status: 2. Allowed exit codes are: [0][0m
+  {
+    "textPayload": "2026/09/17 17:26:36 ui error: \u001b[1;31mBuild 'googlecompute.customize_windows' errored after 10 minutes 26 seconds: Script exited with non-zero exit status: 2. Allowed exit codes are: [0]\u001b[0m",
+    "insertId": "6aac22cc000e764d31530c62",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "location": "us-east4",
+        "project_id": "ggn-nmfs-winde-dev-1",
+        "job_name": "windows-image-builder-jira"
+      }
+    },
+    "timestamp": "2026-09-17T17:26:36.947789Z",
+    "labels": {
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-5cn74",
+      "instanceId": "00a41e8c1d016f7a7875efbb0eab771cbfc94216298f1b39f0f127ea0f4071c52ff7bfbca96a351cd7447424792278f0c3895300d26882d6e2573812af17d446b8b248ce4867508334e1de30bb1b747cbc0e4de370c353599920",
+      "run.googleapis.com/task_index": "0",
+      "run.googleapis.com/task_attempt": "1"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-09-17T17:26:37.283141047Z"
+  }
+DEFAULT 2026-09-17T17:26:36.947792Z 2026/09/17 17:26:36 ui:
+DEFAULT 2026-09-17T17:26:36.947796Z ==> Wait completed after 10 minutes 26 seconds
+DEFAULT 2026-09-17T17:26:36.947799Z 2026/09/17 17:26:36 machine readable: error-count []string{"1"}
+  {
+    "textPayload": "2026/09/17 17:26:36 machine readable: error-count []string{\"1\"}",
+    "insertId": "6aac22cc000e765777929dbb",
+    "resource": {
+      "type": "cloud_run_job",
+      "labels": {
+        "project_id": "ggn-nmfs-winde-dev-1",
+        "location": "us-east4",
+        "job_name": "windows-image-builder-jira"
+      }
+    },
+    "timestamp": "2026-09-17T17:26:36.947799Z",
+    "labels": {
+      "run.googleapis.com/task_index": "0",
+      "run.googleapis.com/task_attempt": "1",
+      "run.googleapis.com/execution_name": "windows-image-builder-jira-5cn74",
+      "instanceId": "00a41e8c1d016f7a7875efbb0eab771cbfc94216298f1b39f0f127ea0f4071c52ff7bfbca96a351cd7447424792278f0c3895300d26882d6e2573812af17d446b8b248ce4867508334e1de30bb1b747cbc0e4de370c353599920"
+    },
+    "logName": "projects/ggn-nmfs-winde-dev-1/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-09-17T17:26:37.283141047Z"
+  }
+DEFAULT 2026-09-17T17:26:36.947803Z 2026/09/17 17:26:36 ui error:
+DEFAULT 2026-09-17T17:26:36.947806Z ==> Some builds didn't complete successfully and had errors:
+DEFAULT 2026-09-17T17:26:36.947810Z 2026/09/17 17:26:36 machine readable: googlecompute.customize_windows,error []string{"Script exited with non-zero exit status: 2. Allowed exit codes are: [0]"}
+DEFAULT 2026-09-17T17:26:36.947813Z 2026/09/17 17:26:36 ui error: --> googlecompute.customize_windows: Script exited with non-zero exit status: 2. Allowed exit codes are: [0]
+DEFAULT 2026-09-17T17:26:36.947817Z 2026/09/17 17:26:36 ui:
+DEFAULT 2026-09-17T17:26:36.947820Z ==> Builds finished but no artifacts were created.
+DEFAULT 2026-09-17T17:26:36.947824Z 2026/09/17 17:26:36 [INFO] (telemetry) Finalizing.
+DEFAULT 2026-09-17T17:26:36.947827Z 2026/09/17 17:26:36 waiting for all plugin processes to complete...
+DEFAULT 2026-09-17T17:26:36.947831Z 2026/09/17 17:26:36 /usr/local/bin/packer: plugin process exited
+DEFAULT 2026-09-17T17:26:36.947834Z 2026/09/17 17:26:36 /usr/local/bin/packer: plugin process exited
+DEFAULT 2026-09-17T17:26:36.947838Z 2026/09/17 17:26:36 /root/.config/packer/plugins/github.com/hashicorp/googlecompute/packer-plugin-googlecompute_v1.2.7_x5.0_linux_amd64: plugin process exited
+DEFAULT 2026-09-17T17:26:36.947841Z 2026/09/17 17:26:36 /usr/local/bin/packer: plugin process exited
+DEFAULT 2026-09-17T17:26:36.947844Z 2026/09/17 17:26:36 /usr/local/bin/packer: plugin process exited
+DEFAULT 2026-09-17T17:26:39.228008Z [STATUS] FAILED → gs://jira-automation-bucket/status/req-20260917170346-f9bfc5.json
+DEFAULT 2026-09-17T17:26:41.216059Z [JIRA-BUCKET] JSON written → gs://windows-pipeline-jira-status/builds/CLOUD-609_FAILED.json
+WARNING 2026-09-17T17:26:41.265841Z Container called exit(1).
+DEFAULT 2026-09-17T17:26:41.267031Z E0917 17:26:41.265727 15 saferun.go:45] goroutine signal.exit exited with error: caught signal: terminated.
+DEFAULT 2026-09-17T17:26:41.267648Z W0917 17:26:41.265987 66 saferun.go:47] goroutine se.Run exited because context is cancelled.
+DEFAULT 2026-09-17T17:26:41.267657Z W0917 17:26:41.266033 71 saferun.go:47] goroutine ktd.ebpf.krsi.counters exited because context is cancelled.
+DEFAULT 2026-09-17T17:26:41.683456Z W0917 17:26:41.682279 56 saferun.go:47] goroutine eventwatchers.Run exited because context is cancelled.
+DEFAULT 2026-09-17T17:26:42.228676Z I0917 17:26:42.227148 58 watcher.go:651] Reloading Cloud Run config.
+DEFAULT 2026-09-17T17:26:42.228688Z 2026/09/17 17:26:42 Loading config defined in CONTAINER_WATCHER_CONFIG_PATH as /tmp/container-watcher/config.pb
+DEFAULT 2026-09-17T17:26:42.228691Z W0917 17:26:42.227283 58 saferun.go:47] goroutine signal.reload exited because context is cancelled.
+DEFAULT 2026-09-17T17:26:42.228694Z W0917 17:26:42.227316 1 watcher.go:703] One watcher thread went down, stopping: caught signal: terminated
+DEFAULT 2026-09-17T17:26:42.229033Z F0917 17:26:42.227804 1 watcher.go:273] Fatal error: caught signal: terminated
+DEFAULT 2026-09-17T17:26:42.235440Z 2026/09/17 17:26:42.234420 [ktd watcher] markExited recorded error: exit status 1
+DEFAULT 2026-09-17T17:26:42.235671Z 2026/09/17 17:26:42.234727 [ktd watcher] KTD agent process failed: exit status 1

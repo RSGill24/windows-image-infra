@@ -1,1026 +1,724 @@
-"""
-Author: Jon Headley
-
-This script pulls tenable finding data from a RDS DB that is used to store
-Tenable data and ingests it into Service Now
-"""
-
+from lib import set_file_handler, set_stream_handler, execute_timer, concat_dfs
 import os
+import datetime
+import requests
+from requests.auth import HTTPBasicAuth
+from requests.adapters import HTTPAdapter
+import time
+import json
 import logging
 import polars as pl
-import warnings
-from lib import LOG_DIR, LOG_LEVEL, get_unstable_logger, set_unstable, IS_MAIN_BRANCH, RotatingFileHandler
-from snow_helpers import *
-from functools import cache
+from polars import Schema, String, Struct
+cs = pl.selectors
+import base64
+from html import unescape
+import concurrent.futures as cf
+from requests.exceptions import JSONDecodeError, ContentDecodingError, RequestException
+from functools import wraps
+from urllib3.util import Retry
 import tempfile
-from sara_tenable_findings import tenable_vm, tenable_vm_standard_filters as tvsf
-from tenable.io import TenableIO
-from tenable.io.exports.iterator import ExportsIterator
-# import axonius_api_client as axonapi
-import axonius_api_v2_client as axonapi_v2
 
-for obj in [TenableIO, ExportsIterator]:
-    tio_logger = logging.getLogger(f'{obj.__module__}.{obj.__name__}')
-    stream_handlers = [h for h in tio_logger.handlers if type(h) is logging.StreamHandler]
-    if not stream_handlers:
-        set_stream_handler(tio_logger)
-    for h in stream_handlers:
-        h.setLevel(LOG_LEVEL)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    file_handlers = [h for h in tio_logger.handlers if isinstance(h, logging.FileHandler)]
-    if not file_handlers:
-        set_file_handler(tio_logger, "tenable_io.log")
+MAX_THREADS = 8
 
-tempfile.tempdir = tempfile.gettempdir()
+SNOW_AUTH = HTTPBasicAuth(os.environ['SNOW_USER'], os.environ['SNOW_PASS'])
 
-warnings.simplefilter(action="ignore", category=FutureWarning)
-warnings.simplefilter(action="ignore", category=UserWarning)
-
-logging.getLogger("urllib3.connectionpool").setLevel(logging.CRITICAL)
-
-TENABLE_TIME_FORMAT = '%m/%d/%Y'
-
-DRYRUN = False
-
-REPORTS_SCHEMA = "vaft"
-if not IS_MAIN_BRANCH:
-    REPORTS_SCHEMA = "vaft_dev"
-
-_name = 'snow_ingest_findings'
-logger = logging.getLogger(_name)
+logger = logging.getLogger('snow_ingest')
 logger.propagate = False
 logger.setLevel(logging.DEBUG)
 
-logger = set_file_handler(logger, f"{_name}.log")
+logger = set_file_handler(logger, "snow_ingest.log")
 logger = set_stream_handler(logger)
 
-unstable_logger, unstable_fn_path = get_unstable_logger(_name)
+SNOW_LINK_DTYPE = pl.Struct({'link': pl.String, 'value': pl.String})
 
-CM_WITH_GPO = pl.Series(
-    [
-        'SQL6-D0-008300', 'WN10-00-000005', 'WN10-00-000030', 'WN10-00-000040', 'WN10-00-000050', 'WN10-00-000090', 'WN10-00-000100', 'WN10-00-000110',
-        'WN10-00-000115', 'WN10-00-000120', 'WN10-00-000145', 'WN10-00-000150', 'WN10-00-000155', 'WN10-00-000160', 'WN10-00-000165', 'WN10-00-000170',
-        'WN10-00-000175', 'WN10-AC-000005', 'WN10-AC-000010', 'WN10-AC-000015', 'WN10-AC-000020', 'WN10-AC-000025', 'WN10-AC-000030', 'WN10-AC-000035',
-        'WN10-AC-000040', 'WN10-AC-000045', 'WN10-AU-000005', 'WN10-AU-000010', 'WN10-AU-000030', 'WN10-AU-000035', 'WN10-AU-000040', 'WN10-AU-000050',
-        'WN10-AU-000054', 'WN10-AU-000065', 'WN10-AU-000070', 'WN10-AU-000075', 'WN10-AU-000080', 'WN10-AU-000081', 'WN10-AU-000082', 'WN10-AU-000083',
-        'WN10-AU-000084', 'WN10-AU-000100', 'WN10-AU-000105', 'WN10-AU-000107', 'WN10-AU-000110', 'WN10-AU-000115', 'WN10-AU-000120', 'WN10-AU-000130',
-        'WN10-AU-000135', 'WN10-AU-000140', 'WN10-AU-000150', 'WN10-AU-000155', 'WN10-AU-000160', 'WN10-AU-000500', 'WN10-AU-000505', 'WN10-AU-000510',
-        'WN10-AU-000515', 'WN10-AU-000520', 'WN10-AU-000525', 'WN10-AU-000555', 'WN10-AU-000560', 'WN10-AU-000565', 'WN10-AU-000570', 'WN10-AU-000575',
-        'WN10-AU-000580', 'WN10-AU-000585', 'WN10-CC-000010', 'WN10-CC-000020', 'WN10-CC-000025', 'WN10-CC-000030', 'WN10-CC-000035', 'WN10-CC-000037',
-        'WN10-CC-000038', 'WN10-CC-000039', 'WN10-CC-000040', 'WN10-CC-000044', 'WN10-CC-000050', 'WN10-CC-000055', 'WN10-CC-000060', 'WN10-CC-000065',
-        'WN10-CC-000066', 'WN10-CC-000068', 'WN10-CC-000075', 'WN10-CC-000085', 'WN10-CC-000090', 'WN10-CC-000100', 'WN10-CC-000105', 'WN10-CC-000110',
-        'WN10-CC-000115', 'WN10-CC-000120', 'WN10-CC-000130', 'WN10-CC-000145', 'WN10-CC-000150', 'WN10-CC-000155', 'WN10-CC-000165', 'WN10-CC-000170',
-        'WN10-CC-000175', 'WN10-CC-000180', 'WN10-CC-000185', 'WN10-CC-000190', 'WN10-CC-000195', 'WN10-CC-000197', 'WN10-CC-000200', 'WN10-CC-000204',
-        'WN10-CC-000205', 'WN10-CC-000206', 'WN10-CC-000210', 'WN10-CC-000215', 'WN10-CC-000220', 'WN10-CC-000225', 'WN10-CC-000230', 'WN10-CC-000235',
-        'WN10-CC-000238', 'WN10-CC-000245', 'WN10-CC-000250', 'WN10-CC-000252', 'WN10-CC-000260', 'WN10-CC-000270', 'WN10-CC-000275', 'WN10-CC-000280',
-        'WN10-CC-000285', 'WN10-CC-000290', 'WN10-CC-000295', 'WN10-CC-000300', 'WN10-CC-000305', 'WN10-CC-000310', 'WN10-CC-000315', 'WN10-CC-000320',
-        'WN10-CC-000325', 'WN10-CC-000326', 'WN10-CC-000327', 'WN10-CC-000330', 'WN10-CC-000335', 'WN10-CC-000345', 'WN10-CC-000350', 'WN10-CC-000355',
-        'WN10-CC-000360', 'WN10-CC-000370', 'WN10-CC-000385', 'WN10-CC-000391', 'WN10-PK-000010', 'WN10-SO-000005', 'WN10-SO-000010', 'WN10-SO-000015',
-        'WN10-SO-000020', 'WN10-SO-000025', 'WN10-SO-000030', 'WN10-SO-000035', 'WN10-SO-000040', 'WN10-SO-000045', 'WN10-SO-000050', 'WN10-SO-000055',
-        'WN10-SO-000060', 'WN10-SO-000070', 'WN10-SO-000085', 'WN10-SO-000095', 'WN10-SO-000100', 'WN10-SO-000110', 'WN10-SO-000120', 'WN10-SO-000145',
-        'WN10-SO-000150', 'WN10-SO-000160', 'WN10-SO-000165', 'WN10-SO-000167', 'WN10-SO-000180', 'WN10-SO-000185', 'WN10-SO-000190', 'WN10-SO-000195',
-        'WN10-SO-000205', 'WN10-SO-000210', 'WN10-SO-000215', 'WN10-SO-000220', 'WN10-SO-000230', 'WN10-SO-000240', 'WN10-SO-000245', 'WN10-SO-000250',
-        'WN10-SO-000251', 'WN10-SO-000255', 'WN10-SO-000260', 'WN10-SO-000265', 'WN10-SO-000270', 'WN10-SO-000275', 'WN10-UR-000005', 'WN10-UR-000010',
-        'WN10-UR-000015', 'WN10-UR-000025', 'WN10-UR-000030', 'WN10-UR-000035', 'WN10-UR-000040', 'WN10-UR-000045', 'WN10-UR-000050', 'WN10-UR-000055',
-        'WN10-UR-000060', 'WN10-UR-000065', 'WN10-UR-000070', 'WN10-UR-000075', 'WN10-UR-000080', 'WN10-UR-000085', 'WN10-UR-000090', 'WN10-UR-000095',
-        'WN10-UR-000100', 'WN10-UR-000110', 'WN10-UR-000120', 'WN10-UR-000125', 'WN10-UR-000130', 'WN10-UR-000140', 'WN10-UR-000145', 'WN10-UR-000150',
-        'WN10-UR-000165', 'WN11-00-000005', 'WN11-00-000030', 'WN11-00-000031', 'WN11-00-000032', 'WN11-00-000040', 'WN11-00-000050', 'WN11-00-000100',
-        'WN11-00-000110', 'WN11-00-000115', 'WN11-00-000120', 'WN11-00-000145', 'WN11-00-000150', 'WN11-00-000155', 'WN11-00-000160', 'WN11-00-000165',
-        'WN11-00-000170', 'WN11-00-000175', 'WN11-AC-000005', 'WN11-AC-000010', 'WN11-AC-000015', 'WN11-AC-000020', 'WN11-AC-000025', 'WN11-AC-000030',
-        'WN11-AC-000035', 'WN11-AC-000040', 'WN11-AC-000045', 'WN11-AU-000005', 'WN11-AU-000010', 'WN11-AU-000030', 'WN11-AU-000035', 'WN11-AU-000040',
-        'WN11-AU-000050', 'WN11-AU-000054', 'WN11-AU-000065', 'WN11-AU-000070', 'WN11-AU-000075', 'WN11-AU-000080', 'WN11-AU-000081', 'WN11-AU-000082',
-        'WN11-AU-000083', 'WN11-AU-000084', 'WN11-AU-000100', 'WN11-AU-000105', 'WN11-AU-000107', 'WN11-AU-000110', 'WN11-AU-000115', 'WN11-AU-000120',
-        'WN11-AU-000130', 'WN11-AU-000135', 'WN11-AU-000140', 'WN11-AU-000150', 'WN11-AU-000155', 'WN11-AU-000160', 'WN11-AU-000500', 'WN11-AU-000505',
-        'WN11-AU-000510', 'WN11-AU-000515', 'WN11-AU-000520', 'WN11-AU-000525', 'WN11-AU-000550', 'WN11-AU-000555', 'WN11-AU-000560', 'WN11-AU-000565',
-        'WN11-AU-000570', 'WN11-AU-000575', 'WN11-AU-000580', 'WN11-AU-000585', 'WN11-CC-000010', 'WN11-CC-000020', 'WN11-CC-000025', 'WN11-CC-000030',
-        'WN11-CC-000035', 'WN11-CC-000037', 'WN11-CC-000038', 'WN11-CC-000039', 'WN11-CC-000040', 'WN11-CC-000044', 'WN11-CC-000050', 'WN11-CC-000055',
-        'WN11-CC-000060', 'WN11-CC-000065', 'WN11-CC-000066', 'WN11-CC-000068', 'WN11-CC-000085', 'WN11-CC-000090', 'WN11-CC-000100', 'WN11-CC-000105',
-        'WN11-CC-000110', 'WN11-CC-000115', 'WN11-CC-000120', 'WN11-CC-000130', 'WN11-CC-000145', 'WN11-CC-000150', 'WN11-CC-000155', 'WN11-CC-000165',
-        'WN11-CC-000170', 'WN11-CC-000175', 'WN11-CC-000180', 'WN11-CC-000185', 'WN11-CC-000190', 'WN11-CC-000195', 'WN11-CC-000197', 'WN11-CC-000200',
-        'WN11-CC-000205', 'WN11-CC-000206', 'WN11-CC-000210', 'WN11-CC-000215', 'WN11-CC-000220', 'WN11-CC-000225', 'WN11-CC-000252', 'WN11-CC-000255',
-        'WN11-CC-000260', 'WN11-CC-000270', 'WN11-CC-000275', 'WN11-CC-000280', 'WN11-CC-000285', 'WN11-CC-000290', 'WN11-CC-000295', 'WN11-CC-000300',
-        'WN11-CC-000305', 'WN11-CC-000310', 'WN11-CC-000315', 'WN11-CC-000320', 'WN11-CC-000325', 'WN11-CC-000326', 'WN11-CC-000327', 'WN11-CC-000330',
-        'WN11-CC-000335', 'WN11-CC-000345', 'WN11-CC-000350', 'WN11-CC-000355', 'WN11-CC-000360', 'WN11-CC-000365', 'WN11-CC-000370', 'WN11-CC-000385',
-        'WN11-CC-000391', 'WN11-EP-000310', 'WN11-SO-000005', 'WN11-SO-000010', 'WN11-SO-000015', 'WN11-SO-000020', 'WN11-SO-000025', 'WN11-SO-000030',
-        'WN11-SO-000035', 'WN11-SO-000040', 'WN11-SO-000045', 'WN11-SO-000050', 'WN11-SO-000055', 'WN11-SO-000060', 'WN11-SO-000070', 'WN11-SO-000085',
-        'WN11-SO-000095', 'WN11-SO-000100', 'WN11-SO-000110', 'WN11-SO-000120', 'WN11-SO-000145', 'WN11-SO-000150', 'WN11-SO-000160', 'WN11-SO-000165',
-        'WN11-SO-000167', 'WN11-SO-000180', 'WN11-SO-000185', 'WN11-SO-000190', 'WN11-SO-000195', 'WN11-SO-000205', 'WN11-SO-000210', 'WN11-SO-000215',
-        'WN11-SO-000220', 'WN11-SO-000230', 'WN11-SO-000240', 'WN11-SO-000245', 'WN11-SO-000250', 'WN11-SO-000251', 'WN11-SO-000255', 'WN11-SO-000260',
-        'WN11-SO-000265', 'WN11-SO-000270', 'WN11-SO-000275', 'WN11-UR-000005', 'WN11-UR-000010', 'WN11-UR-000015', 'WN11-UR-000025', 'WN11-UR-000030',
-        'WN11-UR-000035', 'WN11-UR-000040', 'WN11-UR-000045', 'WN11-UR-000050', 'WN11-UR-000055', 'WN11-UR-000060', 'WN11-UR-000065', 'WN11-UR-000070',
-        'WN11-UR-000075', 'WN11-UR-000080', 'WN11-UR-000085', 'WN11-UR-000090', 'WN11-UR-000095', 'WN11-UR-000100', 'WN11-UR-000110', 'WN11-UR-000120',
-        'WN11-UR-000125', 'WN11-UR-000130', 'WN11-UR-000140', 'WN11-UR-000145', 'WN11-UR-000150', 'WN11-UR-000160', 'WN11-UR-000165', 'WN16-00-000411',
-        'WN16-AC-000010', 'WN16-AC-000020', 'WN16-AC-000030', 'WN16-AC-000040', 'WN16-AC-000050', 'WN16-AC-000070', 'WN16-AC-000080', 'WN16-AU-000030',
-        'WN16-AU-000040', 'WN16-AU-000050', 'WN16-AU-000070', 'WN16-AU-000080', 'WN16-AU-000100', 'WN16-AU-000110', 'WN16-AU-000120', 'WN16-AU-000150',
-        'WN16-AU-000260', 'WN16-AU-000270', 'WN16-AU-000280', 'WN16-AU-000285', 'WN16-AU-000286', 'WN16-AU-000310', 'WN16-AU-000320', 'WN16-AU-000330',
-        'WN16-AU-000350', 'WN16-AU-000360', 'WN16-AU-000370', 'WN16-AU-000390', 'WN16-AU-000400', 'WN16-AU-000410', 'WN16-AU-000420', 'WN16-AU-000440',
-        'WN16-CC-000010', 'WN16-CC-000030', 'WN16-CC-000040', 'WN16-CC-000050', 'WN16-CC-000060', 'WN16-CC-000070', 'WN16-CC-000080', 'WN16-CC-000090',
-        'WN16-CC-000100', 'WN16-CC-000110', 'WN16-CC-000150', 'WN16-CC-000160', 'WN16-CC-000170', 'WN16-CC-000180', 'WN16-CC-000210', 'WN16-CC-000220',
-        'WN16-CC-000240', 'WN16-CC-000250', 'WN16-CC-000260', 'WN16-CC-000270', 'WN16-CC-000280', 'WN16-CC-000290', 'WN16-CC-000300', 'WN16-CC-000310',
-        'WN16-CC-000320', 'WN16-CC-000330', 'WN16-CC-000340', 'WN16-CC-000350', 'WN16-CC-000360', 'WN16-CC-000370', 'WN16-CC-000390', 'WN16-CC-000400',
-        'WN16-CC-000410', 'WN16-CC-000420', 'WN16-CC-000421', 'WN16-CC-000440', 'WN16-CC-000450', 'WN16-CC-000460', 'WN16-CC-000470', 'WN16-CC-000480',
-        'WN16-CC-000490', 'WN16-CC-000500', 'WN16-CC-000520', 'WN16-CC-000530', 'WN16-CC-000550', 'WN16-MS-000020', 'WN16-MS-000030', 'WN16-MS-000040',
-        'WN16-MS-000050', 'WN16-MS-000140', 'WN16-MS-000310', 'WN16-MS-000340', 'WN16-MS-000370', 'WN16-MS-000380', 'WN16-MS-000390', 'WN16-MS-000400',
-        'WN16-MS-000410', 'WN16-MS-000420', 'WN16-SO-000010', 'WN16-SO-000020', 'WN16-SO-000030', 'WN16-SO-000040', 'WN16-SO-000080', 'WN16-SO-000090',
-        'WN16-SO-000100', 'WN16-SO-000110', 'WN16-SO-000120', 'WN16-SO-000130', 'WN16-SO-000140', 'WN16-SO-000150', 'WN16-SO-000180', 'WN16-SO-000190',
-        'WN16-SO-000200', 'WN16-SO-000210', 'WN16-SO-000230', 'WN16-SO-000240', 'WN16-SO-000260', 'WN16-SO-000270', 'WN16-SO-000290', 'WN16-SO-000300',
-        'WN16-SO-000320', 'WN16-SO-000330', 'WN16-SO-000340', 'WN16-SO-000350', 'WN16-SO-000360', 'WN16-SO-000380', 'WN16-SO-000390', 'WN16-SO-000400',
-        'WN16-SO-000410', 'WN16-SO-000420', 'WN16-SO-000430', 'WN16-SO-000450', 'WN16-SO-000460', 'WN16-SO-000470', 'WN16-SO-000480', 'WN16-SO-000490',
-        'WN16-SO-000500', 'WN16-SO-000510', 'WN16-SO-000520', 'WN16-SO-000530', 'WN16-UR-000010', 'WN16-UR-000030', 'WN16-UR-000050', 'WN16-UR-000070',
-        'WN16-UR-000080', 'WN16-UR-000090', 'WN16-UR-000100', 'WN16-UR-000110', 'WN16-UR-000120', 'WN16-UR-000200', 'WN16-UR-000210', 'WN16-UR-000220',
-        'WN16-UR-000230', 'WN16-UR-000240', 'WN16-UR-000250', 'WN16-UR-000260', 'WN16-UR-000270', 'WN16-UR-000280', 'WN16-UR-000290', 'WN16-UR-000300',
-        'WN16-UR-000310', 'WN19-00-000020', 'WN19-00-000390', 'WN19-AC-000010', 'WN19-AC-000020', 'WN19-AC-000030', 'WN19-AC-000040', 'WN19-AC-000050',
-        'WN19-AC-000070', 'WN19-AC-000080', 'WN19-AU-000030', 'WN19-AU-000040', 'WN19-AU-000050', 'WN19-AU-000070', 'WN19-AU-000080', 'WN19-AU-000090',
-        'WN19-AU-000100', 'WN19-AU-000110', 'WN19-AU-000150', 'WN19-AU-000180', 'WN19-AU-000200', 'WN19-AU-000210', 'WN19-AU-000220', 'WN19-AU-000230',
-        'WN19-AU-000260', 'WN19-AU-000270', 'WN19-AU-000280', 'WN19-AU-000300', 'WN19-AU-000310', 'WN19-AU-000320', 'WN19-AU-000340', 'WN19-AU-000350',
-        'WN19-AU-000360', 'WN19-AU-000370', 'WN19-AU-000380', 'WN19-CC-000010', 'WN19-CC-000020', 'WN19-CC-000030', 'WN19-CC-000040', 'WN19-CC-000050',
-        'WN19-CC-000060', 'WN19-CC-000070', 'WN19-CC-000080', 'WN19-CC-000090', 'WN19-CC-000100', 'WN19-CC-000110', 'WN19-CC-000140', 'WN19-CC-000150',
-        'WN19-CC-000160', 'WN19-CC-000170', 'WN19-CC-000180', 'WN19-CC-000190', 'WN19-CC-000200', 'WN19-CC-000210', 'WN19-CC-000220', 'WN19-CC-000230',
-        'WN19-CC-000240', 'WN19-CC-000250', 'WN19-CC-000260', 'WN19-CC-000270', 'WN19-CC-000280', 'WN19-CC-000290', 'WN19-CC-000300', 'WN19-CC-000310',
-        'WN19-CC-000320', 'WN19-CC-000330', 'WN19-CC-000340', 'WN19-CC-000360', 'WN19-CC-000370', 'WN19-CC-000380', 'WN19-CC-000390', 'WN19-CC-000410',
-        'WN19-CC-000420', 'WN19-CC-000430', 'WN19-CC-000440', 'WN19-CC-000450', 'WN19-CC-000451', 'WN19-CC-000460', 'WN19-CC-000470', 'WN19-CC-000490',
-        'WN19-CC-000500', 'WN19-CC-000520', 'WN19-MS-000020', 'WN19-MS-000030', 'WN19-MS-000040', 'WN19-MS-000050', 'WN19-MS-000060', 'WN19-MS-000070',
-        'WN19-MS-000080', 'WN19-MS-000090', 'WN19-MS-000100', 'WN19-MS-000110', 'WN19-MS-000120', 'WN19-MS-000130', 'WN19-MS-000140', 'WN19-SO-000010',
-        'WN19-SO-000020', 'WN19-SO-000030', 'WN19-SO-000040', 'WN19-SO-000060', 'WN19-SO-000070', 'WN19-SO-000080', 'WN19-SO-000090', 'WN19-SO-000100',
-        'WN19-SO-000110', 'WN19-SO-000120', 'WN19-SO-000130', 'WN19-SO-000150', 'WN19-SO-000160', 'WN19-SO-000170', 'WN19-SO-000180', 'WN19-SO-000190',
-        'WN19-SO-000200', 'WN19-SO-000220', 'WN19-SO-000230', 'WN19-SO-000240', 'WN19-SO-000250', 'WN19-SO-000260', 'WN19-SO-000270', 'WN19-SO-000280',
-        'WN19-SO-000290', 'WN19-SO-000300', 'WN19-SO-000310', 'WN19-SO-000320', 'WN19-SO-000330', 'WN19-SO-000340', 'WN19-SO-000350', 'WN19-SO-000360',
-        'WN19-SO-000370', 'WN19-SO-000380', 'WN19-SO-000390', 'WN19-SO-000400', 'WN19-SO-000410', 'WN19-SO-000420', 'WN19-SO-000430', 'WN19-SO-000440',
-        'WN19-SO-000450', 'WN19-UR-000010', 'WN19-UR-000020', 'WN19-UR-000030', 'WN19-UR-000040', 'WN19-UR-000050', 'WN19-UR-000060', 'WN19-UR-000070',
-        'WN19-UR-000080', 'WN19-UR-000090', 'WN19-UR-000110', 'WN19-UR-000120', 'WN19-UR-000130', 'WN19-UR-000140', 'WN19-UR-000150', 'WN19-UR-000160',
-        'WN19-UR-000170', 'WN19-UR-000180', 'WN19-UR-000190', 'WN19-UR-000200', 'WN19-UR-000210', 'WN19-UR-000220', 'WN22-00-000020', 'WN22-00-000390',
-        'WN22-AC-000010', 'WN22-AC-000020', 'WN22-AC-000030', 'WN22-AC-000040', 'WN22-AC-000050', 'WN22-AC-000070', 'WN22-AC-000080', 'WN22-AU-000030',
-        'WN22-AU-000040', 'WN22-AU-000050', 'WN22-AU-000070', 'WN22-AU-000080', 'WN22-AU-000090', 'WN22-AU-000100', 'WN22-AU-000110', 'WN22-AU-000150',
-        'WN22-AU-000180', 'WN22-AU-000200', 'WN22-AU-000210', 'WN22-AU-000220', 'WN22-AU-000230', 'WN22-AU-000260', 'WN22-AU-000270', 'WN22-AU-000280',
-        'WN22-AU-000300', 'WN22-AU-000310', 'WN22-AU-000320', 'WN22-AU-000340', 'WN22-AU-000350', 'WN22-AU-000360', 'WN22-AU-000370', 'WN22-AU-000380',
-        'WN22-CC-000010', 'WN22-CC-000020', 'WN22-CC-000030', 'WN22-CC-000040', 'WN22-CC-000050', 'WN22-CC-000060', 'WN22-CC-000070', 'WN22-CC-000080',
-        'WN22-CC-000090', 'WN22-CC-000100', 'WN22-CC-000110', 'WN22-CC-000140', 'WN22-CC-000150', 'WN22-CC-000160', 'WN22-CC-000170', 'WN22-CC-000180',
-        'WN22-CC-000190', 'WN22-CC-000200', 'WN22-CC-000210', 'WN22-CC-000220', 'WN22-CC-000230', 'WN22-CC-000240', 'WN22-CC-000250', 'WN22-CC-000260',
-        'WN22-CC-000270', 'WN22-CC-000280', 'WN22-CC-000290', 'WN22-CC-000300', 'WN22-CC-000310', 'WN22-CC-000320', 'WN22-CC-000330', 'WN22-CC-000340',
-        'WN22-CC-000360', 'WN22-CC-000370', 'WN22-CC-000380', 'WN22-CC-000390', 'WN22-CC-000410', 'WN22-CC-000420', 'WN22-CC-000430', 'WN22-CC-000440',
-        'WN22-CC-000450', 'WN22-CC-000451', 'WN22-CC-000460', 'WN22-CC-000470', 'WN22-CC-000490', 'WN22-CC-000500', 'WN22-CC-000520', 'WN22-MS-000020',
-        'WN22-MS-000030', 'WN22-MS-000040', 'WN22-MS-000050', 'WN22-MS-000060', 'WN22-MS-000070', 'WN22-MS-000080', 'WN22-MS-000090', 'WN22-MS-000100',
-        'WN22-MS-000110', 'WN22-MS-000120', 'WN22-MS-000130', 'WN22-MS-000140', 'WN22-SO-000010', 'WN22-SO-000020', 'WN22-SO-000030', 'WN22-SO-000040',
-        'WN22-SO-000060', 'WN22-SO-000070', 'WN22-SO-000080', 'WN22-SO-000090', 'WN22-SO-000100', 'WN22-SO-000110', 'WN22-SO-000120', 'WN22-SO-000130',
-        'WN22-SO-000150', 'WN22-SO-000160', 'WN22-SO-000170', 'WN22-SO-000180', 'WN22-SO-000190', 'WN22-SO-000200', 'WN22-SO-000220', 'WN22-SO-000230',
-        'WN22-SO-000240', 'WN22-SO-000250', 'WN22-SO-000260', 'WN22-SO-000270', 'WN22-SO-000280', 'WN22-SO-000290', 'WN22-SO-000300', 'WN22-SO-000310',
-        'WN22-SO-000320', 'WN22-SO-000330', 'WN22-SO-000340', 'WN22-SO-000350', 'WN22-SO-000360', 'WN22-SO-000370', 'WN22-SO-000380', 'WN22-SO-000390',
-        'WN22-SO-000400', 'WN22-SO-000410', 'WN22-SO-000420', 'WN22-SO-000430', 'WN22-SO-000440', 'WN22-SO-000450', 'WN22-UR-000010', 'WN22-UR-000020',
-        'WN22-UR-000030', 'WN22-UR-000040', 'WN22-UR-000050', 'WN22-UR-000060', 'WN22-UR-000070', 'WN22-UR-000080', 'WN22-UR-000090', 'WN22-UR-000110',
-        'WN22-UR-000120', 'WN22-UR-000130', 'WN22-UR-000140', 'WN22-UR-000150', 'WN22-UR-000160', 'WN22-UR-000170', 'WN22-UR-000180', 'WN22-UR-000190',
-        'WN22-UR-000200', 'WN22-UR-000210', 'WN22-UR-000220', 'WN25-00-000020',
-    ]
+def get_avg_time(start, end, num_findings):
+    return num_findings / (end - start).total_seconds()
+
+SNOW_TIME_FORMAT = "%Y-%m-%d"
+
+SNOW_FINDINGS_TABLE_NAME = "x_g_dh5_poam_findings"
+SNOW_FINDINGS_STAGING_TABLE_NAME = "x_g_dh5_poam_findings_import"
+SNOW_WEAKNESS_TRACKING_TABLE_NAME = "x_g_dh5_poam_weakness_tracking"
+SNOW_MILESTONE_TABLE_NAME = "x_g_dh5_poam_pre_poam_draft_milestone"
+SNOW_USERS_TABLE_NAME = "sys_user"
+SNOW_POAM_TABLE_NAME = 'x_g_dh5_poam_csam_poam_data'
+SNOW_FISMA_INVENTORY_NAME = "u_fisma_inventory"
+SNOW_ISVM_TABLE_NAME = "x_g_dh5_poam_isvm"
+
+SNOW_FINDINGS_STAGING_COLS = [
+    "sys_class_name",
+    "sys_created_by",
+    "sys_created_on",
+    "sys_id",
+    "sys_import_row",
+    "sys_import_state",
+    "sys_import_state_comment",
+    "sys_mod_count",
+    "sys_tags",
+    "sys_target_sys_id",
+    "sys_target_table",
+    "sys_updated_by",
+    "sys_updated_on",
+    "template_import_log",
+    "u_800_53_controls",
+    "u_actual_value",
+    "u_audit_file", 
+    "u_additional_comments",
+    "u_cat",
+    "u_check_name",
+    "u_common_platform_enum",
+    "u_cpe_product",
+    "u_cpe_type_vendor",
+    "u_cpe_version",
+    "u_cross_references",
+    "u_cve",
+    "u_days_since_discover",
+    "u_description",
+    "u_dns_name",
+    "u_error_details",
+    "u_finding_type",
+    "u_first_discovered",
+    "u_fisma_system",
+    "u_fix_type",
+    "u_id",
+    "u_information",
+    "u_ip_address",
+    "u_kev",
+    "u_kev_due_date",
+    "u_last_observed",
+    "u_netbios_name",
+    "u_note",
+    "u_operating_system",
+    "u_plugin",
+    "u_plugin_name",
+    "u_plugin_output",
+    "u_poa_m_required",
+    "u_policy_value",
+    "u_port",
+    "u_repository",
+    "u_result",
+    "u_scan_id",
+    "u_see_also",
+    "u_severity",
+    "u_soar_isvm_id",
+    "u_solution",
+    "u_state",
+    "u_stig_cis_benchmark",
+    "u_stig_id",
+    "u_synopsis",
+    "u_weakness_tracking",
+    "u_work_notes"
+]
+
+TENABLE_VM_SNOW_FINDINGS_STAGING_COLS_MAPPING = {
+    'u_800_53_controls': 'u_800_53_controls',
+    'actual_value': 'u_actual_value',
+    'audit_file': 'u_audit_file',
+    'cat': 'u_cat',
+    'check_name': 'u_check_name',
+    'cpe': 'u_common_platform_enum',
+    'cpe_product': 'u_cpe_product',
+    'cpe_type_vendor': 'u_cpe_type_vendor',
+    'cpe_version': 'u_cpe_version',
+    'xref': 'u_cross_references',
+    'cve': 'u_cve',
+    'plugin_description': 'u_description',
+    'dns_name': 'u_dns_name',
+    'check_error': 'u_error_details',
+    'finding_type': 'u_finding_type',
+    'first_discovered': 'u_first_discovered',
+    'fisma_system': 'u_fisma_system',
+    # 'u_id',
+    'check_info': 'u_information',
+    'ip_address': 'u_ip_address',
+    # 'u_isvms',
+    'kev': 'u_kev',
+    # 'u_kev_due_date',
+    'last_observed': 'u_last_observed',
+    'netbios_name': 'u_netbios_name',
+    # 'u_note',
+    'operating_system': 'u_operating_system',
+    'plugin_id': 'u_plugin',
+    'plugin_name': 'u_plugin_name',
+    'output': 'u_plugin_output',
+    'expected_value': 'u_policy_value',
+    'port_port': 'u_port',
+    'status': 'u_result',
+    "finding_id": 'u_scan_id',
+    'see_also': 'u_see_also',
+    'severity': 'u_severity',
+    # 'u_soar_isvm_id',
+    'solution': 'u_solution',
+    'stig_cis_benchmark': 'u_stig_cis_benchmark',
+    'stig_id': 'u_stig_id',
+    'plugin_synopsis': 'u_synopsis',
+}
+
+branch = os.environ['BRANCH_NAME'].strip()
+is_main_branch = branch == "main"
+if not is_main_branch:
+    if branch == "dev" or "SAB-" in branch:
+        SUB_DOMAIN = "iceserviceportaldev"
+    elif branch == "test" or branch.startswith("PR-"):
+        SUB_DOMAIN = "iceserviceportaltest"
+    # elif branch =="sandbox":
+        # SUB_DOMAIN = "dhsicetest"
+    # elif branch == "uat":
+        # SUB_DOMAIN = "iceserviceportaluat"
+    else:
+        SUB_DOMAIN = "iceserviceportaldev"
+else:
+    SUB_DOMAIN = "iceserviceportal"
+
+SNOW_URL_BASE = f"https://{SUB_DOMAIN}.servicenowservices.com"
+API_SUFFIX = "/api/now"
+SNOW_API = SNOW_URL_BASE+API_SUFFIX
+UI_SUFFIX = "/now/nav/ui/classic/params/target"
+
+RETRY = Retry(
+    total=5,
+    backoff_factor=0.2
 )
+SNOW_REQUESTS_SESSION = requests.Session()
+SNOW_REQUESTS_SESSION.auth = SNOW_AUTH
+SNOW_REQUESTS_SESSION.headers['Content-Type'] = "application/json"
+SNOW_REQUESTS_SESSION.verify = False
+SNOW_REQUESTS_SESSION.mount("https://", HTTPAdapter(max_retries=RETRY))
 
-@cache
-def get_timestamp(ts: str) -> str:
-    """Parse Timestamp from tenable into a format that excel can read"""
-    try:
-        return datetime.datetime.fromtimestamp(int(ts)).strftime('%x %X')
-    except:
-        return ''
-    
-def vm_datetime_conv(col_name):
-    """VM datetime is in ISO 8601 format. This converts to %m/%d/%Y"""
-    return pl.col(col_name).str.to_datetime("%+").dt.to_string(TENABLE_TIME_FORMAT)
-
-def get_axon_data():
-
-    fields = [
-    'adapters_data.gui.custom_enrichment_fisma_id',
-    'specific_data.data.network_interfaces.net_bios_options',
-    'specific_data.data.hostname_fqdn_preferred',
-    'adapters_data.tenable_io_adapter.asset_uuid',
-    'specific_data.data.uuid'
+FINDINGS_TABLE_FIELDS = [
+    "actual_value",
+    "additional_comments",
+    "cat",
+    "check_name",
+    "common_platform_enum",
+    "cross_references",
+    "days_since_discover",
+    "description",
+    "dns_name",
+    "error_details",
+    "finding_type",
+    "first_discovered",
+    "fisma_system",
+    "fix_type",
+    "id",
+    "information",
+    "ip_address",
+    "kev",
+    "last_observed",
+    "netbios_name",
+    "note",
+    "operating_system",
+    "plugin",
+    "plugin_name",
+    "plugin_output",
+    "poa_m_required",
+    "policy_value",
+    "port",
+    "repository",
+    "result",
+    "scan_id",
+    "see_also",
+    "severity",
+    "solution",
+    "state",
+    "stig_cis_benchmark",
+    "stig_id",
+    "synopsis",
+    "sys_created_by",
+    "sys_created_on",
+    "sys_id",
+    "sys_mod_count",
+    "sys_updated_by",
+    "sys_updated_on",
+    "u_800_53_controls",
+    "weakness_tracking",
+    "work_notes",
 ]
-    fparq = f'ax_devs_raw.parquet'
-    if os.path.exists(fparq):
-        return pl.scan_parquet(fparq)
 
-    configuration = axonapi_v2.Configuration(
-        host = 'https://axonius.ice.dhs.gov/api',
-        api_key={
-            'ApiKeyAuth': os.environ['AX_KEY'],
-            'ApiSecretAuth': os.environ['AX_SECRET']
-        },
-    )
+def requests_error_handler(func):
+    """decorator to handle errors and retries callables"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        counter = 0
+        while True:
+            try:
+                res = func(*args, **kwargs)
+                res.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                return res
+            except RequestException as e:
+                counter += 1
+                logger.error("%s exception thrown when executing %s. Attempt %s, retrying...", e.__class__.__name__, func.__name__, counter)
+                time.sleep(5)
+            else:
+                return res
+    return wrapper
 
-    api_client = axonapi_v2.ApiClient(configuration)
-    assets_api = axonapi_v2.AssetsApi(api_client)
-    
-    asset_schema = axonapi_v2.AssetRequestSchema(
-        query='(("adapters_data.tenable_io_adapter.asset_uuid" == ({"$exists":true,"$ne":""})))',
-        fields=fields,
-        include_details=False
-    )
-    axdevs_raw_v2 = assets_api.post_assets_by_asset_type('devices', asset_schema, _request_timeout=300)
-    axdevs_raw_v2 = axdevs_raw_v2.to_dict()['assets']
+@requests_error_handler
+def get_snow_table(table_name, api_url, limit=0, offset=0, **kwargs) -> dict:
+    """return SNOW FISMA Inventory Table"""
+    url = f"{api_url}/table/{table_name}"
+    params = kwargs
+    if limit:
+        params['sysparm_limit'] = limit
+    if offset:
+        params['sysparm_offset'] = offset
+    res = SNOW_REQUESTS_SESSION.get(url, params=params, timeout=600)
+    return res
 
-    from collections import defaultdict
-    f_dtype = defaultdict(set)
-    for res in axdevs_raw_v2:
-        for k, v in res.items():
-            f_dtype[k].add(type(v))
-    modified = []
-    to_check = [k for k,v in f_dtype.items() if len(v) > 1]
-    for res in axdevs_raw_v2:
-        for f in to_check:
-            if f not in res:
-                continue
-            # if isinstance(res[f], str):
-            if list in f_dtype[f] and type(res[f]) != list:
-                res[f] = [res[f]]
-        modified.append(res)
-    df = pl.LazyFrame(modified, infer_schema_length=None)
-    df.sink_parquet(fparq)
-    return df
-
-def prep_tenable_assets(df: pl.LazyFrame) -> pl.LazyFrame:
-    """There are some field manipulations that are common with all export types, compiling those here"""
-
-    axon_data = get_axon_data()
-
-    axon_tvm_uuid = axon_data.select('adapters_data.tenable_io_adapter.asset_uuid').collect().get_column('adapters_data.tenable_io_adapter.asset_uuid').explode().drop_nulls().implode()
-
-    # get asset information
-    df = df.with_columns(
-        # vuln/compliance exports return a list of ipv4 addresses with no way to identify
-        # which is the address for the asset. Example, L3 Switch with many IPs on IP ports,
-        # but only 1 is the ip for the asset. last_scan_target seems to identify the specific
-        # ip for the asset
-        # if scan_target is an fqdn, leave ip_address blank
-        pl.when(
-            pl.col('network_asset').struct.field('ipv4s').list.len() == 1
-        ).then(
-            pl.col('network_asset').struct.field('ipv4s').list.first()
-        )
-        .when(
-            pl.col('scan_asset').struct.field('last_scan_target').str.contains(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
-        ).then(
-            pl.col('scan_asset').struct.field('last_scan_target')
-        )
-        .otherwise(None)
-        .alias('ip_address'),
-        pl.col('network_asset').struct.field('netbios_names').list.eval(pl.element().str.to_lowercase()).list.join(',').alias('netbios_name'),
-        pl.col('network_asset').struct.field('fqdns').list.eval(
-            pl.element().filter(
-                ~pl.element().str.starts_with('ip')
-            )
-        ).list.join(',').alias('dns_name'),
-        pl.col('network_asset').struct.field('hostnames').list.sort().list.join(',').alias('hostnames'),
-        pl.col('operating_systems_asset').list.join(',').alias('operating_system'),
-        )
-
-    # the VAT updates the FISMA ID tag in Tenable to AXONIUS FISMA ID. Also there are other tags like "TACCOM"
-    # that seem to have FISMA ID like values. Updated this filter to ensure we're only pulling
-    # exact matches on the FISMA ID format from axonius tags, and any fisma id from other tags.
-    fisma_id_format = r"ICE\-\d{5}\-\w*\-\d{5}"
-
-    # this should capture any tag key with "fisma" in the name. So tags like "FISMA ID" or "AXONIUS FISMA ID" with match
-    axon_tag_fisma_id_expr = pl.element().struct.field('key').str.to_lowercase().str.contains('fisma')
-
-    # this regex is to match exact FISMA ID since that's what we expect from axonius.
-    # example: 'ICE-08351-MAJ-08351-EIRTS' will be skipped
-    axon_fisma_id_proper_format_expr =  pl.element().struct.field('value').str.strip_chars().str.extract(rf"^({fisma_id_format})$", 1)
-    
-    # For tags not from axonius, we just want to parse out the fisma id, so this is less strict
-    # example ICE-06568-MAJ-06568-appliance
-    non_axon_fisma_id_expr = pl.element().struct.field("value").str.extract(rf"({fisma_id_format})", 1)
-
-    df = (
-        df.with_columns(
-            pl.when(
-                # if the list of tags has any keys with "fisma" in them
-                pl.col('tags_asset').list.filter(axon_tag_fisma_id_expr).list.len().ne(0)
-            )
-            .then(
-                pl.col('tags_asset').list.filter(axon_tag_fisma_id_expr).list.agg(axon_fisma_id_proper_format_expr)
-            )
-            .otherwise(
-                # if no tags with "fisma" in the key, parse out any fisma id like structures from other keys
-                pl.col('tags_asset').list.agg(non_axon_fisma_id_expr)
-            )
-            .list.unique()
-            .list.drop_nulls()
-            .alias("fisma_system")
-        )
-    )
-
-    # removing assets that are not in axonius anymore
-    asset_not_in_axonius_mask = ~pl.col('id_asset').is_in(axon_tvm_uuid)
-    asset_not_in_axonius = df.filter(asset_not_in_axonius_mask)
-    logger.info("Removing Assets not found in Axonius")
-    df = df.filter(~asset_not_in_axonius_mask)
-
-    asset_multi_fisma_tag = df.filter(pl.col('fisma_system').list.len()>1)
-
-    asset_null_fisma_tag = df.filter(pl.col('fisma_system').list.len()==0)
-
-    df = df.filter(pl.col('fisma_system').list.len()==1).explode('fisma_system')
-
-    fisma_inventory_ids = (
-        get_latest_snow_table(SNOW_FISMA_INVENTORY_NAME, SNOW_API, sysparm_fields=['u_fisma_id'])
-        .with_columns(
-            pl.col('u_fisma_id')
-            # strip since some fisma ids have erroneous whitespace
-            .str.strip_chars().name.keep())
-            # there are some empty fisma ids, or "NO FISMA ID". this ensures we only pull valid FISMA IDs
-            .filter(pl.col('u_fisma_id').str.starts_with("ICE-")
-        )
-        .collect()
-        .get_column('u_fisma_id')
-        .implode()
-    )
-
-    asset_invalid_fisma_id_mask = (~pl.col('fisma_system').is_in(fisma_inventory_ids))
-    asset_invalid_fisma_id = df.filter(asset_invalid_fisma_id_mask)
-    logger.info("Removing invalid FISMA IDs from Tenable Data")
-    df = df.filter(~asset_invalid_fisma_id_mask)
-    
-    return df, asset_multi_fisma_tag, asset_null_fisma_tag, asset_invalid_fisma_id, asset_not_in_axonius
-
-def parse_cve(xref_col):
-    """
-    This parses 'plugin_xrefs' which are a list of structs. 
-    need to loop and find the "type" that equals "CVE"
-
-    a CVE is in the format `CVE-1999-0524`, however VM output separates
-    `CVE` and the cve number, this fixes that
-
-    shape: (2,)
-    Series: '' [struct[2]]
-    [
-        {"CVE","1999-0524"}
-        {"CWE","200"}
-    ]
-
-    [{'type': 'CVE', 'id': '1999-0524'}, {'type': 'CWE', 'id': '200'}]
-    """
-    return (
-        pl.col(xref_col)
-        .list.eval(
-            pl.when(
-                pl.element().struct.field("type").eq("CVE")
-            ).then(
-                pl.element().struct.field('type')+"-"+pl.element().struct.field('id')
-            ).otherwise(None)
-        )
-        .list.join(',')
-        .alias('cve')
-    )
-
-def vuln_xref_to_sc_format(col_name):
-    """
-    The format for VM cross references is a list of key/value pairs. This function takes that and
-    reformats into the SC format. This for backwards compatibility of the WTT.
-    CVEs are formatted slightly differently
-    """
-    return (
-        pl.col(col_name)
-        .list.eval(
-            pl.when(
-                pl.element().struct.field("type").eq("CVE")
-            ).then(
-                None
-            ).otherwise(
-                pl.element().struct.field('type')+" #"+pl.element().struct.field('id')
-            )
-        )
-        .list.drop_nulls()
-        .list.join(',')
-        .alias('xref')
-    )
-
-def compliance_ref_to_sc_format(col_name):
-    """
-    The format for VM cross references is a list of key/value pairs. This function takes that and
-    reformats into the SC format. This for backwards compatibility of the WTT.
-    CVEs are formatted slightly differently
-
-    ex.
-    {'framework': '800-171', 'control': '3.3.1'}
-    """
-    return (
-        pl.col(col_name)
-        .list.eval(
-            pl.element().struct.field('framework')+" #"+pl.element().struct.field('control')
-        )
-        .list.drop_nulls()
-        .list.join(',')
-        .alias('xref')
-    )
-
-def get_composite_key(asset_id, find_key):
-    return (
-        pl.concat_list(
-                    [
-                        pl.col(asset_id).str.replace_all('-', "").str.to_lowercase(), 
-                        pl.col(find_key).str.replace_all('-', "").str.to_lowercase()
-                    ]
-                )
-                # .list.sort()
-                .list.join('').alias('finding_id')
-    )
-
-def prep_tenable_vuln(df: pl.LazyFrame) -> pl.LazyFrame:
-
-    # df = df.with_columns(get_composite_key('id_asset', 'finding_id'))
-    df = df.with_columns(
-        (
-            pl.col('id_asset').str.replace_all('-', "").str.to_lowercase()
-            +pl.col('plugin_id').cast(pl.String)
-            +pl.col('port_port').cast(pl.String)
-            +pl.col('port_protocol')
-        )
-        .alias('finding_id')
-    )
-
-    df = df.with_columns(parse_cve('plugin_xrefs'))
-
-    # set finding_type
-    df = df.with_columns(
-        pl
-        .when(pl.col('plugin_family').eq("Databases") & ~pl.col('plugin_name').str.to_lowercase().str.contains('pgadmin'))
-        .then(pl.lit("db_vuln").alias("finding_type"))
-
-        .otherwise(pl.lit("os_vuln").alias('finding_type'))
-    )
-
-    df = df.with_columns(
-        vm_datetime_conv('last_found').alias('last_observed'),
-        vm_datetime_conv('first_found').alias('first_discovered'),
-    ) 
-
-    df = df.with_columns(vuln_xref_to_sc_format("plugin_xrefs"))
-
-    # find if kev
-    df = df.with_columns(
-        pl.col('xref').str.contains("CISA-KNOWN-EXPLOITED").alias('kev').cast(pl.String, strict=False)
-    )
-
-    df = df.rename({"plugin_cpe": "cpe", 'plugin_solution': 'solution'})
-
-    # parse cpe, cpe_type_vendor, cpe_product, cpe_version
-    cpe_xprs = [
-        (
-            pl.col('cpe').list.eval(
-                    pl.element().str.split(":").list.slice(1,2).list.join(":")
-                ).list.unique().list.sort().list.join(",").alias("cpe_type_vendor")
-        ),
-        (
-            pl.col('cpe').list.eval(
-                    pl.element().str.split(":").list.slice(3,1).list.join("-").str.replace("/", "")
-                ).list.unique().list.sort().list.join(",").str.replace("_", " ").str.to_titlecase().alias("cpe_product")
-        ),
-        (
-            pl.col('cpe').list.eval(
-                pl.when(
-                    pl.element().str.starts_with("cpe")).then(
-                    pl.element().str.split(":").list.slice(4,1).list.unique().list.join(',')).otherwise(pl.lit(None))
-            ).list.unique().list.sort().list.join(",").alias('cpe_version')
-        ),
-        (
-            pl.col('cpe').list.join('\n').name.keep()
-        )
-]
-    df = df.with_columns(cpe_xprs)
-
-    return df
-
-def get_stig_cis_benchmark_name(df):
-    df = df.with_columns(
-            (pl.col('compliance_benchmark_name') + " v" + pl.col('compliance_benchmark_version'))
-            .alias("stig_cis_benchmark")
-        )
-    return df
-
-def prep_tenable_compliance_detail(df):
-    df: pl.DataFrame
-
-    # audit findings don't use plugin IDs. what is inputted is a generic
-    # plugin representing a compliance scan. Dropping so we don't confuse
-    # things with an "erroneous" plugin id
-    df = df.drop('plugin_id')
-
-    # Tenable VM exports.compliance doesn't seem to return the finding ID
-    # concating asset id and compliance control id seems to be unique enough...
-    # df = df.with_columns(get_composite_key('id_asset', 'compliance_full_id'))
-    df = df.with_columns((pl.col('id_asset').str.replace_all('-', "").str.to_lowercase()+pl.col('compliance_full_id')).alias('finding_id'))
-
-    df = df.with_columns(
-        vm_datetime_conv('last_seen').alias('last_observed'),
-        vm_datetime_conv('first_seen').alias('first_discovered'),
-    ) 
-
-    df = df.with_columns(compliance_ref_to_sc_format('reference'))
-    
-    #parse 800 53 controls 
-    df = df.with_columns(
-        pl.col("xref").str.extract_all(r"800-53\w* #.*?,")
-        .list.eval(
-            pl.element().str.split("#")
-            .list.last()
-            .str.replace(",", "")
-        )
-        .list.unique()
-        .list.join(', ')
-        .alias("u_800_53_controls")
-    )
-
-
-    # From SC, Plugin Name is the same as Check Name. copying here for backwards compatibility with 
-    # current ingest and other automations
-    df = df.with_columns(pl.col('check_name').alias("plugin_name"))
-
-    # compliance doens't have kevs, defaulting to false
-    df = df.with_columns(pl.lit('false').alias("kev"))
-
-    df = get_stig_cis_benchmark_name(df)
-
-    # set finding_type
-    # todo: to evaluate and ensure this is accureate. for database compliance with a stig,
-    # how to parse those??
-    db_substrings = ["MongoDB", 'SQL', 'Cassandra', 'Oracle', 'Database', 'DB', "Postgre"]
-    df = df.with_columns(
-        pl
-        # looking for db substrings
-        .when(
-            pl.col('compliance_benchmark_name').str.contains(f"({'|'.join(db_substrings)})")
-        ).then(pl.lit("db_compliance"))
-
-        # if for some reason it doesn't start with DISA or CIS, this is suspect and we need to figure out what's up
-        .when (
-            ~pl.col("stig_cis_benchmark").str.starts_with("DISA") & ~pl.col("stig_cis_benchmark").str.starts_with("CIS") 
-        ).then(None)
-
-        # this should only happen if compliance_benchmark_name is null, which is a problem
-        .when(
-            pl.col("stig_cis_benchmark").is_null()
-        ).then(None)
-
-        # anything else is most likely OS
-        .otherwise(pl.lit("os_compliance"))
-        .alias('finding_type')
-    )
-
-    df = df.with_columns(
-        # grab STIG ID from reference
-        pl.col('reference').list.eval(
-            pl.when(
-                pl.element().struct.field('framework').eq('STIG-ID')
-            ).then(
-                pl.element().struct.field('control')
-            ).otherwise(None)
-        )
-        .list.drop_nulls()
-        .list.first()
-        .alias('stig_id'),
-
-        # grab CAT level from reference
-        pl.col('reference').list.eval(
-            pl.when(
-                pl.element().struct.field('framework').eq('CAT')
-            ).then(
-                pl.element().struct.field('control')
-            ).otherwise(None)
-        )
-        .list.drop_nulls()
-        .list.first()
-        .alias("cat")
-    )
-
-    # some stig checks are potentially remediated by GPO. Prepend this note to the solution
-    gpo_note = "GPO Present - If Domain joined, submit ticket to ADEX to apply GPO - https://confluence.ice.dhs.gov/pages/viewpage.action?spaceKey=ADEX&title=STIG+Group+Policies" 
-    df = df.with_columns(
-        pl.when(
-            pl.col('stig_id').is_in(CM_WITH_GPO.implode())
-        )
-        .then(pl.concat_str([pl.lit(gpo_note), pl.col('solution')], separator="\n\n"))
-        .otherwise(pl.col('solution'))
-        .alias("solution")
-    )
-
-    df = df.with_columns(pl.col('cat').cast(pl.String).replace({"I":"high", "II":"medium", "III": "low"}).alias('severity'))
-
-    # For CIS bench marks and others that don't have a CAT specified in the xref, default severity to medium
-    df = df.with_columns(pl.col('severity').fill_null('medium'))
-
-    return df
-
-
-def prep_tenable_failed(df):
-    """placeholder til this is implemented"""
-    # po = pl.col('pluginText')
-    # plugin = pl.col("pluginID")
-    # pos_mask_19506 = (plugin.eq(19506) & po.str.contains("Credentialed checks : yes"))
-    # db_19506_no = (plugin.eq(19506) & po.str.contains("Credentialed checks : no") & po.str.contains(r"(?i)database\b"))
-    # df = df.filter(~pos_mask_19506 & ~db_19506_no).sort(plugin)
-    # return df
+class BadCreds(Exception):
     pass
 
 @execute_timer(logger=logger)
-def main():
+def insert_multiple(df, table_name, api_url=SNOW_API, rows_per_chunk=6000):
+    cooloff = 30
+    if rows_per_chunk <= 0:
+        raise Exception("Rows per chunk reduced too low")
 
-    logger.info("Fetching latest Findings table from ServiceNOW: %s", SNOW_API)
-
-    import_cols = {x for x in SNOW_FINDINGS_STAGING_COLS if x.startswith("u_")}
-
-    # Looks for a pre-existing Parquet file, if not found call SNow API to GET latest findings and write results to Parquet. 
-    # Parquet is used when working locally or in situations where we want to reference a prior API GET call from SNow.
-    latest_findings_tmp_file = f'{SUB_DOMAIN}_latest_findings_trimmed.parquet'
-    if os.path.exists(latest_findings_tmp_file):
-        logger.info("Pre-existing Findings Table data found. Reading Parquet file %s", latest_findings_tmp_file)
-        latest_findings = pl.scan_parquet(latest_findings_tmp_file, low_memory=True)
-    else:
-        logger.info("No pre-existing Findings Table data found. Performing GET call to ServiceNow %s endpoint for latest Finding Table data", SUB_DOMAIN)
-        latest_findings = get_latest_snow_table(SNOW_FINDINGS_TABLE_NAME, SNOW_API, sysparm_fields=['sys_id', 'scan_id', 'state'])#, sysparm_query=f"state!=mitigated") #sysparm_fields="sys_id,scan_id,id,state,days_since_discover,first_discovered,last_observed,poa_m_required,solution,finding_type".split(','))
-
-        if latest_findings.select(pl.len()).collect(engine="streaming").item():
-            logger.info("Writing data to Parquet file: %s", latest_findings_tmp_file)
-            latest_findings.sink_parquet(latest_findings_tmp_file)
-
-    # This check is to ensure there is a dataframe containing the appropriate schema. This was originally created to account for 
-    # development interations of the SNOW Finding Table (i.e. at times the SNow table was cleared resulting in no values returned. 
-    # This allows polars to hold the empty dataframe with the correct schema to continue debug efforts. 
-    if not latest_findings.select(pl.len()).collect(engine="streaming").item():
-        logger.info("Findings Table is EMPTY")
-        latest_findings = pl.LazyFrame(schema=Schema([("sys_id", String),("scan_id", String),("state", String)]))
-
-    ak = os.environ['TENABLE_VM_ACCESS_KEY']
-    sk = os.environ['TENABLE_VM_SECRET_KEY']
-    tio = tenable_vm.get_io_api_client(ak, sk)
-
-    # Need to query only findings that have last_seen less than 45 days.
-    # API expects an timestamp (seconds)
-    _45_days_ago = int((datetime.datetime.today() - datetime.timedelta(days=45)).timestamp())
-
-    to_do = [
-        # scan analysis vulns
-        {
-            "query_method": tenable_vm.get_vulns_exports,
-            "filters": {
-                            "severity": list(tvsf.VulnSeverity)[1:],
-                            "last_found": _45_days_ago
-                            # "state": list(tvsf.VulnStates)
-                            # "plugin_type": 'active' # looks like the available types are combined,local,remote,summary, or null...
-                        },
-            "kwargs": {
-                "no_nnm": True,
-                "flatten": True
-            },
-            'finding_type': "tenable_vuln",
-            "prep": [prep_tenable_vuln],
-        },
-        # compliance
-        {
-            "query_method": tenable_vm.get_compliance_exports,
-            "filters": {
-                            # "state": list(tvsf.VulnStates),
-                            "compliance_results": [tvsf.ComplianceResults.FAILED], #, tvsf.ComplianceResults.PASSED] #tvsf.ComplianceResults.ERROR, ] do we want error? #, tvsf.ComplianceResults.WARNING] don't want manchecks
-                            "last_seen": _45_days_ago
-                        },
-            "kwargs": {
-                "flatten": True
-            },
-            'finding_type': "tenable_compliance",
-            "prep": [prep_tenable_compliance_detail],
+    for start_idx in range(0, len(df), rows_per_chunk):
+        _df =  df.slice(start_idx, rows_per_chunk)
+        to_send = {
+            "records": []
         }
-    ]
+        for idx, record in enumerate(_df.to_dicts()):
+            if idx % 1000 == 0:
+                logger.debug("Processed %s to send to insertMultiple", idx)
+            to_send['records'].append({k:unescape(v) for k,v in record.items() if v})
+        while True:
+            start = datetime.datetime.now(datetime.timezone.utc)
 
-    if os.path.exists((fn:="assets.parquet")):
-        assets = pl.scan_parquet(fn, low_memory=True)
-    else:
-        assets = tenable_vm.get_assets(tio, filter_null_tags=False)
-        assets.sink_parquet(fn)
-    assets = assets.rename({x:x+"_asset" for x in assets.collect_schema().names()})
+            try:
+                res = SNOW_REQUESTS_SESSION.post(api_url+f"/import/{table_name}/insertMultiple", json=to_send, timeout=300)
+            except RequestException as e:
+                cooloff = 30
+                logger.exception("Running %s cooloff, then retrying %s-%s", cooloff, start_idx, start_idx+rows_per_chunk)
+                time.sleep(cooloff)
+                continue
 
-    # filter out assets with no tags, and save to log dir for upload
-    null_tag_mask = pl.col('tags_asset').is_null()
-    assets_null_tags = assets.filter(null_tag_mask).collect(engine='streaming')
-    logger.debug("%s assets from assets export with null tags. Saving to log dir for s3 upload", len(assets_null_tags))
-    fn = os.path.join(LOG_DIR, "null_tags.parquet")
-    assets_null_tags.write_parquet(fn)
-    assets = assets.filter(~null_tag_mask)
+            if not res.ok:
+                logger.debug("%s %s %s", res, res.reason, res.text)
+                if str(res.status_code)[0] == '5' and "Transaction cancelled: maximum execution time exceeded" in res.text:
+                    new_rows_per_chunk = rows_per_chunk-1000
+                    logger.debug("Ran into issues with rows_per_chunk=%s, reducing to %s and trying again", rows_per_chunk, new_rows_per_chunk)
+                    # slicing the original df. (start_idx, None) slices the full df from start_idx
+                    # this way we aren't resending what's already been sent 
+                    _df = df.slice(start_idx, None)
+                    # recursively calling the function adjusting the rows_per_chunk
+                    return insert_multiple(_df, table_name, api_url=SNOW_API, rows_per_chunk=new_rows_per_chunk)
+                else:
+                    logger.exception("Running %s cooloff, then retrying %s-%s", cooloff, start_idx, start_idx+rows_per_chunk)
+                    time.sleep(cooloff)
+                    continue
 
-    assets, assets_with_multiple_FISMA_ID_tags, assets_with_null_fisma_tag, assets_with_invalid_fisma_id, assets_not_in_axonius = prep_tenable_assets(assets)
+            end = datetime.datetime.now(datetime.timezone.utc)
+            logger.debug("Sent %s to %s. Elapsed time %s", start_idx+rows_per_chunk, api_url+f"/import/{table_name}/insertMultiple", end-start)
+            break
 
-    vm_cols = list(TENABLE_VM_SNOW_FINDINGS_STAGING_COLS_MAPPING.keys())
-    vm_cols = vm_cols + ['asset_uuid', 'plugin_xrefs', 'last_found', 'first_found', 'plugin_cpe', 'plugin_solution', 'compliance_full_id', 'compliance_benchmark_name', 'compliance_benchmark_version', 'last_seen', 'first_seen', 'reference', 'plugin_family', 'port_port', 'port_protocol']
+@execute_timer(logger=logger)
+def insert_multiple_threaded(df, table_name, api_url=SNOW_API, rows_per_chunk=500):
 
-    logger.info("Fetching latest Tenable Findings from %s", tio._url)
-    tenable_df = pl.LazyFrame()
-    for query in to_do:
-        finding_type = query['finding_type']
-        if os.path.exists((fn:=f"{finding_type}.parquet")):
-            _df = pl.scan_parquet(fn, low_memory=True)
-        else:
-            query_method = query['query_method']
-            _df = query_method(tio, query['filters'], **query['kwargs'])
-            _df.sink_parquet(fn)
+    def send(to_send, start_idx, rows_per_chunk):
+        url = api_url+f"/import/{table_name}/insertMultiple"
+        logger.debug('Sending %s-%s to %s', start_idx, start_idx+rows_per_chunk, url)
+        start = datetime.datetime.now(datetime.timezone.utc)
+        retry_count = 10
+        while True:
+            if not retry_count:
+                raise Exception("Max retries hit")
+            
+            try:
+                res = SNOW_REQUESTS_SESSION.post(url, json=to_send, timeout=300)
+            except RequestException as e:
+                cooloff = 30
+                logger.exception("Running %s cooloff, then retrying %s-%s", cooloff, start_idx, start_idx+rows_per_chunk)
+                time.sleep(cooloff)
+                continue
 
-        # only load these columns to save mem
-        to_select = [col for col in _df.collect_schema() if col in vm_cols]
-        _df = _df.select(to_select)
+            if not res.ok:
+                retry_count -= 1
+                logger.debug("%s %s %s", res, res.reason, res.text)
+                logger.debug('Retry Sending %s-%s to %s. Retries left: %s', start_idx, start_idx+rows_per_chunk, url, retry_count)
+                time.sleep(300)
+                continue
+            break
+        end = datetime.datetime.now(datetime.timezone.utc)
+        logger.debug("Sent %s to %s. Elapsed time %s", start_idx+rows_per_chunk, api_url+f"/import/{table_name}/insertMultiple", end-start)
+        return
 
-        _df = _df.rename({"asset_uuid": "id_asset"})
+    futures = []
+    with cf.ThreadPoolExecutor(max_workers=MAX_THREADS) as executer:
+        for start_idx in range(0, len(df), rows_per_chunk):
+            _df =  df.slice(start_idx, rows_per_chunk)
+            to_send = {
+                "records": []
+            }
+            for idx, record in enumerate(_df.to_dicts()):
+                # if idx % 1000 == 0:
+                    # logger.debug("Processed %s to send to insertMultiple", idx)
+                to_send['records'].append({k:unescape(v) for k,v in record.items() if v})
+            futures.append(executer.submit(send, to_send, start_idx, rows_per_chunk))
+    exceptions = [f.exception() for f in futures if f.exception()]
+    if exceptions:
+        for e in exceptions:
+            try:
+                raise e
+            except:
+                logger.exception("Thread failed:")
+        raise ExceptionGroup(f"One or more threads failed insert in {api_url}", exceptions)
+ 
+@execute_timer(logger=logger)
+def send_to_snow(df, table_name, batch_limit_size=(9.8*(1024**2)), row_limit=200, max_threads=MAX_THREADS):
+    """
+    Function to send results from a dataframe to ServiceNow
 
-        _df = _df.with_columns(pl.lit(finding_type).alias('finding_type'))
-        # _df = prep_tenable_assets(_df)
-        for to_prep in query['prep']:
-            logger.debug("applying %s to data.", to_prep.__name__)
-            _df = to_prep(_df)
+    params:
+    df: the dataframe to send
+    table_name: name of the ServiceNow table we're sending to
+    batch_limit_size: the ServiceNOW Batch API has limits (5MB) on the size batch queries. Default: 4MB to ensur we're under that threshold to avoid errors: https://docs.servicenow.com/bundle/vancouver-api-reference/page/integrate/inbound-rest/concept/batch-api.html
+    row_limit: default=5000. Similar to batch_limit_size, more than 5000 seems to illicit unexpected behavior
+    """
+    s = datetime.datetime.now()
+    total_to_send = len(df)
 
-        tenable_df = pl.concat([tenable_df, _df], how='diagonal')
-        del _df
-
-    # grab total findings to calculate unstable later
-    total_tenable_findings = tenable_df.select(pl.col('id_asset')).collect()
-
-    # join assets, and remove any asset data the vuln/comp export returns
-    # there's too much of a discrepancy between how vuln and comp exports
-    # treat asset information
-    # default 'how' is inner, therefore this will necessarily filter out any findings
-    # where the asset has NO tags (i.e. can't determine FISMA ID)
-    tenable_df = tenable_df.join(assets, on='id_asset')
-    tenable_df = tenable_df.drop(pl.col('^asset_.*$'))
-
-    # find duplicates before we send off
-    # this can happen when the same asset is scanned with multiple audit files
-    # example: 
-        # 'ICE_DISA_STIG_Microsoft_Windows_11_v2r3.audit_1'
-        # 'ICE_DISA_STIG_Microsoft_Windows_11_v2r3.audit'
-    logger.info("Removing duplicate finding_id's from Tenable Data.")
-    tenable_df = tenable_df.sort(pl.col('last_observed').str.to_datetime(TENABLE_TIME_FORMAT), descending=True).unique(subset='finding_id', keep='first', maintain_order=True)
+    if df.is_empty():
+        return
     
-    # drop columns we don't need:
-    to_drop = [col for col in tenable_df.collect_schema().names() if col not in TENABLE_VM_SNOW_FINDINGS_STAGING_COLS_MAPPING.keys()]
-    tenable_df = tenable_df.drop(to_drop)
-
-    # Some things need to be filtered out
-    # audit file findings
-    audit_mask = pl.col('plugin_name').str.contains(".audit", literal=True)
-    # disa = tenable_df.filter(disa_mask)
-    logger.info("Removing %s findings are audit file related", tenable_df.filter(audit_mask).select(pl.len()).collect(engine="streaming").item())
-    tenable_df = tenable_df.filter(~audit_mask)
-
-    # add logic to turn type as DB vuln based on plugin family == "databases" <- plural
-
-    no_cis_benchmark_expr = pl.col('finding_type').str.contains("compliance") & pl.col("stig_cis_benchmark").is_null()
-    no_cis_benchmark = tenable_df.filter(no_cis_benchmark_expr)
-    logger.info("Removing findings that are missing stig_cis_benchmark")
-    tenable_df = tenable_df.filter(~no_cis_benchmark_expr)
-
-    no_finding_type_expr = pl.col('finding_type').is_null()
-    no_finding_type = tenable_df.filter(no_finding_type_expr)
-    logger.info("Removing findings that are missing 'finding_type'")
-    tenable_df = tenable_df.filter(~no_finding_type_expr)
-
-    # we need first_discovered, and last_observed to have a proper FT 
-    # to be properly grouped into a WT. if not included, need to filter out
-    to_check = {
-        'first_discovered': None,
-        'last_observed': None
-    }
-    for col in to_check:
-        tenable_df = tenable_df.with_columns(
-            pl.when(pl.col(col).str.len_chars() == 0)
-            .then(None)
-            .otherwise(pl.col(col))
-            .name.keep()
-        )
-        to_check[col] = tenable_df.filter(pl.col(col).is_null()).select(pl.len()).collect(engine="streaming").item()
-        logger.info("Removing %s findings that have null value for %s", to_check[col], col)
-        tenable_df = tenable_df.drop_nulls(subset=col)
-
-    mask = pl.col('fisma_system').str.starts_with("ICE")
-    # non_ICE = tenable_df.filter(~mask)
-    logger.info("Dropping rows with FISMA ID not starting with 'ICE'")
-    tenable_df = tenable_df.filter(mask)
-    
-
-    # Sort oldest to newest. needed to ensure date grouping is proper in WT table
-    tenable_df = tenable_df.sort(by=pl.col("first_discovered").str.to_date(TENABLE_TIME_FORMAT))
-    tenable_df = tenable_df.rename(TENABLE_VM_SNOW_FINDINGS_STAGING_COLS_MAPPING)
-
-    mskb = pl.col("u_cross_references").str.contains("MSKB")   
-    ssl = pl.col('u_plugin').is_in([51192, 45411, 57582, 15901, 56284, 69551, 35291])
-    # if MSKB or ssl, we want to nullify the cpe data since CPE checks in the business rule could query MSKB or ssl WTs
-    # that have cpe data
-    tenable_df = tenable_df.with_columns(
-            pl.when(mskb | ssl)
-            .then(pl.lit(None))
-            .otherwise(pl.col("^u_cpe.*$")).name.keep()
-        )
-   
-    # ISVM Applicability Code
-    # Takes the Tenable dataframe and filters on vuln findings where CVE exists and removes duplicate plugins
-    # Result is a dataframe that is sorted by CVE listing all plugins associated
-
-    isvm_df = get_latest_snow_table(SNOW_ISVM_TABLE_NAME, SNOW_API)
-    if not isvm_df.select(pl.len()).collect(engine="streaming").item():
-        pass
-    else:
-        tenable_cve_plugin_map_df = (
-            # filter tenable_df where cve data is available, only applies to vuln data
-            tenable_df.filter(pl.col('u_cve').is_not_null())
-            # find unique Tenable plugins so we can have CVE's related to each plugin
-            .unique(subset='u_plugin').select(pl.col('u_plugin'), pl.col('u_cve')).sort(pl.col('u_plugin'))
-            # Split str cve data into a list and explode so we have 1for1 plugin/cve data
-            .with_columns(pl.col('u_cve').str.split(',').alias('u_cve')).explode('u_cve')
-            # agg plugins so we're left with CVEs and all Plugins that have that CVE
-            .group_by(pl.col('u_cve')).agg(pl.col('u_plugin')).sort(pl.col('u_cve'))
-        )
-
-        isvm_cve_soar_map_df = (
-            isvm_df
-            .with_columns(
-                # ISVM table CVE data is a stringyfied list, need to remove brackets
-                pl.col('cve_number').str.replace(r"\[","").str.replace(r"\]","")
-                # split str on comma, and strip each element of whitespace
-                .str.split(',').list.eval(pl.element().str.strip_chars())
-            )
-            # only need these columns
-            .select(['soar_isvm_id', 'cve_number'])
-            # explode cve_numer to get 1to1 mapping with soar_isvm_id
-            .explode('cve_number')
-            # some ISVMs do not have any CVEs, filter those out
-            .filter(pl.col('cve_number').str.len_chars().ne(0))
-            # agg soar_isvm_id so we're left with distinct CVEs and all soar_ids that have that CVE
-            .group_by(pl.col('cve_number')).agg(pl.col('soar_isvm_id').alias('u_soar_isvm_id'))
-            .sort(pl.col('cve_number'))
-        )
-
-        applicable_df = (
-            tenable_cve_plugin_map_df
-            # join on cve which yields all plugins and soar_ids per cve
-            .join(
-                isvm_cve_soar_map_df, left_on="u_cve", right_on="cve_number", how='inner'
-            )
-            # explode so we have single plugins and associated soar_ids
-            .explode('u_plugin')
-            # since multiplie CVEs could tie several soar_ids to a plugin,
-            # need to group plugin IDs and aggregate all ISVMs associated to that pluginc
-            .group_by("u_plugin").agg(
-                pl.col('u_soar_isvm_id')
-                # need to explode, else we're left with a list[list[str]], we just want a list[str]
-                .explode()
-                # multiple CVEs could duplicate associating an ISV with a plugin, find unique
-                .unique()
-            )
-            # convert list[str] to string since u_soar_ivsm_id in FIND table expects str
-            .with_columns(pl.col("u_soar_isvm_id").list.join(","))
-            .sort('u_plugin')
-        )
-        
-        # add applicable isvm ids to tenable_df
-        tenable_df = tenable_df.join(applicable_df, on="u_plugin", how='left')
-        # transform map ignores null or empty strings. if we need to update and the field is empty, add a white space
-        # to force it to transform
-        tenable_df = tenable_df.with_columns(
-            pl.when(pl.col('u_soar_isvm_id').is_null() | pl.col('u_soar_isvm_id').str.len_chars().eq(0))
-            .then(pl.lit(' '))
-            .otherwise(pl.col('u_soar_isvm_id'))
-            .name.keep()
-        )
-
-    # prep tenable data for ingest into snow table
-    tenable_df = (
-        tenable_df.drop(pl.col(SNOW_LINK_DTYPE))
+    df = (
+        df.drop(pl.col(SNOW_LINK_DTYPE))
         .cast(pl.String)
         .with_columns(pl.all().str.slice(0,4000)) # max char length for SNOW is 4000
     )
 
-    vm_count = tenable_df.select(pl.len()).collect(engine='streaming').item()
-    logger.debug("Total VM Findings ready to POST/PATCH: %s", vm_count)
-    
-    start = datetime.datetime.now()
+    def is_to_retry(_fail):
+        """helper function to determine if a response from the API warants retrying"""
 
-    scan_mask = pl.col('u_scan_id').is_in(latest_findings.select(pl.col('scan_id')).collect(engine="streaming")['scan_id'].implode())
-    to_post = tenable_df.filter(~scan_mask).collect(engine='streaming')
-
-    logger.info("Total of %s findings ready to be created (POST)", len(to_post))
-    fn = os.path.join(LOG_DIR, "new_findings.parquet")
-    if DRYRUN:
-        logger.info("DryRun var set to 'True', skipping %s findings to be created (POST)", len(to_post))
-    if not DRYRUN and not to_post.is_empty():
-        logger.info("Sending %s findings to be created (POST)", len(to_post))
-        try:
-            insert_multiple(to_post, table_name=SNOW_FINDINGS_STAGING_TABLE_NAME)
-            logger.info("Finished sending %s findings to POST", len(to_post))
-            pass
-        except BadCreds as e:
-            logger.exception("%s", str(e))
-            raise e
-
-    suffix = '_fromsnow'
-
-
-    logger.debug("Joining latest tenable df with latest findings df")
-    # todo: need to check pl.col('state).alias('u_state'). 'state' will be from latest_findings since tenable_df
-    to_patch = (
-        tenable_df
-        .join(
-            latest_findings, 
-            suffix=suffix, left_on = 'u_scan_id', right_on='scan_id', how='inner')
-
-    ).select(*[pl.col(col) for col in tenable_df.collect_schema().names()], pl.col('state').alias('u_state')).collect(engine='streaming')
-
-    # need to hardcode to remove first_discovered field. for reconciled sc findings, we need to persist that value
-    # otherwise the patch will update that field with tvm first_discovered
-    to_patch = to_patch.drop('u_first_discovered')
-
-    total = len(to_patch)
-    logger.info("%s findings to PATCH, (total pre-existing records in SNow: %s)", len(to_patch), total)
-
-    # SNow returns reference links. we don't want to inadvertently update these, so dropping
-    to_patch = to_patch.drop(pl.col(Struct({'link': String, 'value': String})))
-
-    logger.debug("Updated states that should be revived")
-    to_patch  = to_patch.with_columns(
-        (
-            pl.when(pl.col('u_state') != "mitigated")
-            .then(pl.col('u_state'))
-            .otherwise(pl.lit("revived"))
-        )
-    )
-    revived = to_patch.filter(pl.col('u_state')=="revived")
-    logger.info("%s findings have been revived", len(revived))
-    logger.info("Total of %s findings ready to be updated (PATCH)", len(to_patch))
-
-    to_patch = to_patch.drop([x for x in to_patch.collect_schema().names() if x not in import_cols])
-
-    fn = os.path.join(LOG_DIR, "update_findings.parquet")
-    if DRYRUN:
-        logger.info("DryRun var set to 'True', skipping %s findings to be updated (PATCH)", len(to_patch))
-    if not DRYRUN and not to_patch.is_empty():
-        logger.info("Sending %s findings to be updated (PATCH)", len(to_patch))
-        try:
-            insert_multiple_threaded(to_patch, table_name=SNOW_FINDINGS_STAGING_TABLE_NAME)
-            logger.info("Finished sending %s findings to PATCH", len(to_patch))
-            pass
-        except BadCreds as e:
-            logger.exception("%s", str(e))
-            raise e
-
-    mitigated = latest_findings.filter(
-        # if what's in SNOW is NOT in the scan_ids_from_tenable that's currenlty in Tenable
-        # AND the state is NOT mitigated...then these findings have been mitigated and need to have state updated.
-        ~(pl.col('scan_id').is_in(tenable_df.select('u_scan_id').collect(engine="streaming")['u_scan_id'].implode())) & ~(pl.col('state')=="mitigated")
-    )
-
-    # if scan_id has a ',', means it's from SC data. we don't want to mitigate these at this time
-    mitigated = mitigated.filter(~pl.col('scan_id').str.contains(','))
-
-    mitigated = mitigated.with_columns(
-            pl.lit("mitigated").alias('state'),
-        ).select(pl.col('scan_id').alias('u_scan_id'), pl.col('state').alias('u_state')).collect(engine='streaming')
-
-    logger.info("Total of %s findings to update state to 'mitigated'", len(mitigated))
-    fn = os.path.join(LOG_DIR, "mitigated_findings.parquet")
-    if DRYRUN:
-        logger.info("DryRun var set to 'True', skipping %s findings to update state to 'mitigated'", len(mitigated))
-    if not DRYRUN and not mitigated.is_empty():
-        try:
-            insert_multiple_threaded(mitigated, table_name=SNOW_FINDINGS_STAGING_TABLE_NAME)
-            logger.info("Finished sending %s findings to change state to 'mitigated'", len(mitigated))
-            pass
-        except BadCreds as e:
-            logger.exception("%s", str(e))
-            raise e
-
-    logger.info("Push to SNow elapsed time %s", datetime.datetime.now() - start)
-
-    for col, num in to_check.items():
-        if num:
-            unstable_logger.info('%s of Tenable VM records missing %s', num, col)
-
-    if not (no_cis_benchmark:=no_cis_benchmark.collect(engine="streaming")).is_empty():
-        unstable_logger.info(f"Missing CIS Mapping: {no_cis_benchmark['see_also'].unique().to_list()}. Update cis_mapping in {get_stig_cis_benchmark_name.__name__} function")
-    if not (no_finding_type:=no_finding_type.collect(engine="streaming")).is_empty():
-        unstable_logger.info(f"Missing Finding Types for {len(no_finding_type_expr)}")
-
-    unstable_data = [
-        assets_with_multiple_FISMA_ID_tags,
-        assets_with_null_fisma_tag,
-        assets_with_invalid_fisma_id,
-        assets_not_in_axonius
-    ]
-
-    for data in unstable_data:
-        if not (_assets_affected:=data.select("id_asset").unique().collect(engine="streaming")).is_empty():
-            local_vars = locals().copy()
-            _name = [name for name, val in local_vars.items() if val is data and name != 'data'][0]
-            finds_affected = len(total_tenable_findings.filter(pl.col('id_asset').is_in(_assets_affected['id_asset'].implode())))
-            unstable_logger.debug("%s TVM %s affecting %s findings", len(_assets_affected), _name, finds_affected)
+        # obviously any server errors
+        if str(_fail['status_code'])[0]=="5":
+            return True
         
-    set_unstable(unstable_logger, unstable_fn_path)
+        body = json.loads(base64.b64decode(_fail['body']))
+        try:
+            # sometimes are 200 is returned, but there is an `error` 
+            detail = body['error']['detail']
+            if detail and "Transaction cancelled: maximum execution time exceeded" in detail:
+                return True
+        except KeyError:
+            # typically if it's not a server error it's a 403, which indicates an issue with the body.
+            # this can include a finding that's already submitted which SNOW is filtering out
+            logger.debug("WONT RETRY: %s", body)
+            return False
+        logger.debug("WONT RETRY: %s", body)
+        return False
+
+    def chunk_records(df, size=batch_limit_size, row_limit=row_limit):
+        """helper function to chunk the larger dataframe into manageable chunks that SNOW can handle"""
+
+        # need to estimate the memory each row in the dataframe is occupying.
+        # determine what's the largest occupier, and use it 
+        df = df.with_columns(est_size=pl.Series([pl.Series(x).estimated_size() for x in df.iter_rows()], dtype=pl.UInt16))
+        largest_row_mem = df['est_size'].max()
+        df = df.drop('est_size')
+
+        # calculate rows and how many rows per chunk
+        rows = int(size // largest_row_mem)
+        rows_per_chunk = rows if rows < row_limit else row_limit
+        # rows_per_chunk = row_limit
+        for start in range(0, len(df), rows_per_chunk):
+            yield df.slice(start, rows_per_chunk)
+
+    @requests_error_handler
+    def send_batch(batch_id, chunk_df):
+        """Helper function that sends chunked dataframes to ServiceNOW"""
+
+        # format for batch call can be found here: https://docs.servicenow.com/bundle/vancouver-api-reference/page/integrate/inbound-rest/concept/batch-api.html
+        logger.debug("Batch ID %s sending %s requests to %s", batch_id, len(chunk_df), table_name)
+        data = {
+            "batch_request_id": str(batch_id),
+            "rest_requests": []
+        }
+        for idx, record in enumerate(chunk_df.to_dicts()):
+            data['rest_requests'].append(
+                {
+                    "id": str(idx+1),
+                    "headers": [
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        }
+                    ],
+                    "url": f"/api/now/table/{table_name}" + (f"/{record['sys_id']}" if (method:=record.pop('HTTP Action').lower()) in {"put", "patch", "delete"} else ""),
+                    "method": method.upper(),
+                    # "body": base64.b64encode(unescape(json.dumps(record)).encode()).decode()
+                    "body": base64.b64encode((json.dumps({k:unescape(v) for k,v in record.items() if v})).encode()).decode()
+                }
+            )
+        res = SNOW_REQUESTS_SESSION.post(SNOW_API+"/v1/batch", json=data, timeout=300)
+
+        if not res.ok:
+            logger.debug("%s %s %s", res, res.reason, res.text)
+
+        # if status is 202 need to resend the same batch to get the status of the load.
+        # otherwise the response get's lost and we dont know if it ingested everything.
+        while res.status_code == 202:
+            logger.debug("202 Status Code, retrying batch ID %s", batch_id)
+            time.sleep(60)
+            req = res.request
+            res = SNOW_REQUESTS_SESSION.request(method=req.method, url=req.url, headers=req.headers, data=req.body, timeout=300)
+
+        return res
+    
+    # Start with ingest.
+    batch_id = 0
+    while True:
+        # using a while loop since there will be some queries that need to be retried.
+        batch_size_has_changed = False
+        batch_row_limit_has_changed = False
+    
+        with cf.ThreadPoolExecutor(max_workers=max_threads) as executor:
+            threads = {}
+            for chunk in chunk_records(df, size=batch_limit_size, row_limit=row_limit):
+                batch_id += 1 
+                threads[executor.submit(send_batch, batch_id, chunk)] = chunk
+                                        
+            to_retry = pl.DataFrame()
+            for future in cf.as_completed(threads):
+                _df = threads[future]
+                # Loop thru each future object and determine if it was good, or needs to be retried
+                try:
+                    res = future.result()
+                except KeyboardInterrupt as e:
+                    raise e
+                except Exception as e:
+                    # if anything exception happens in the thread, retry
+                    logger.error(str(e))
+                    to_retry = concat_dfs(to_retry, _df, schema=df.schema)
+                    continue
+
+                if not res.ok:
+                    if res.status_code == 403:
+                        # This is different from a single query returning a 403, if the BatchAPI returns a 403 it is indeed a credential issue
+                        # logger.error("Invalid Credentials: %s", res.text)
+                        raise BadCreds(f"Invalid Credentials: {res.text}")
+                    if res.status_code == 413:
+                        logger.debug("REQUEST TOO LARGE, reducing batch size by 10%")
+                        if not batch_size_has_changed:
+                            batch_size_has_changed = True
+                            batch_limit_size *= .9
+                        
+                    to_retry = concat_dfs(to_retry, _df, schema=df.schema)
+                    continue
+                
+                try:
+                    results = res.json()
+                except requests.exceptions.JSONDecodeError as e:
+                    # a JSONDecodeError means somehting went wrong with the query
+                    if "Transaction cancelled: Max output size reached for current BatchRest transaction" not in res.text:
+                        logger.debug(res.text)
+                        to_retry = concat_dfs(to_retry, _df, schema=df.schema)
+                        continue
+                    if batch_row_limit_has_changed:
+                        to_retry = concat_dfs(to_retry, _df, schema=df.schema)
+                        continue
+                    logger.debug("Chunked dataframe with %s rows triggered a max output size error from the API. Reducing row limit by 10%%", len(_df))
+                    to_retry = concat_dfs(to_retry, _df, schema=df.schema)
+                    batch_row_limit_has_changed = True
+                    row_limit = int(row_limit * .9)
+                    continue
+                    
+                unserviced = set(results['unserviced_requests'])
+                if unserviced:
+                    logger.debug("%s UNSERVICED REQUESTS, retrying", len(unserviced))
+                    idxs = [int(_id)-1 for _id in unserviced]
+                    to_retry = concat_dfs(to_retry, _df.select(pl.all().gather(idxs)), schema=df.schema)
+
+                serviced = results['serviced_requests']
+                serviced_idxs = [int(x['id'])-1 for x in serviced]
+                requests_mapping = list(zip(_df.select(pl.all().gather(serviced_idxs)).to_dicts(), serviced))
+                failed = [_res for _res in requests_mapping if str(_res[1]['status_code'])[0] != '2']
+                if failed:
+                    for _fail in failed:
+                        body = base64.b64decode(_fail[1]['body']).decode(encoding='utf-8', errors='ignore')
+                        try:
+                            err_msg = str(json.loads(body)['error'])
+                        except json.JSONDecodeError:
+                            err_msg = body
+                        logger.debug("FAILED: STATUS '%s' ERROR MSG '%s'", _fail[1]['status_code'], err_msg)#, json.dumps(_fail[0]))
+                    logger.debug("FAILED TO SEND TO %s REQUESTS TO SNOW", len(failed))
+                    retry = [x[0] for x in failed if is_to_retry(x[1])]
+                    to_retry = concat_dfs(to_retry, pl.from_dicts(retry, schema=df.schema), schema=df.schema)
+
+            if not to_retry.is_empty():
+                df = to_retry
+                logger.debug("Retrying %s findings", len(df))
+            else:
+                logger.info("Avg time taken: %s findings/second. Total findings: %s", get_avg_time(s, datetime.datetime.now(), total_to_send), total_to_send)
+                return
+            
+class Http400Error(Exception):
     pass
 
-    
-if __name__ == "__main__":
+from polars import Schema, String, Struct
+SNOW_TABLE_SCHEMAS = {
+    SNOW_FINDINGS_TABLE_NAME: Schema([('netbios_name', String), ('note', String), ('stig_cis_benchmark', String), 
+                                     ('description', String), ('actual_value', String), ('sys_updated_on', String), 
+                                     ('repository', String), ('see_also', String), ('stig_id', String), ('u_800_53_controls', String), 
+                                     ('poa_m_required', String), ('result', String), ('sys_id', String), ('first_discovered', String), 
+                                     ('sys_updated_by', String), ('solution', String), ('error_details', String), 
+                                     ('sys_created_on', String), ('cat', String), ('last_observed', String), 
+                                     ('operating_system', String), ('id', String), ('state', String), ('kev', String), 
+                                     ('sys_created_by', String), ('severity', String), ('plugin_output', String), 
+                                     ('days_since_discover', String), ('sys_mod_count', String), ('ip_address', String), 
+                                     ('synopsis', String), ('finding_type', String), ('plugin_name', String), ('sys_tags', String), 
+                                     ('additional_comments', String), ('dns_name', String), 
+                                     ('weakness_tracking', Struct({'link': String, 'value': String})), ('plugin', String), 
+                                     ('port', String), ('fix_type', String), ('check_name', String), ('information', String), 
+                                     ('policy_value', String), ('cross_references', String), ('scan_id', String), ('work_notes', String), 
+                                     ('fisma_system', Struct({'link': String, 'value': String})), ('common_platform_enum', String),
+                                     ('cpe_type_vendor', String), ('cpe_product', String), ('cpe_version', String)]),
+    SNOW_WEAKNESS_TRACKING_TABLE_NAME: Schema([
+                                     ('poa_m_id', Struct({'link': String, 'value': String})), 
+                                     ('fisma_system', Struct({'link': String, 'value': String}))
+                                ]),
+    SNOW_USERS_TABLE_NAME: Schema([
+                        ('u_division', Struct({'link': String, 'value': String})), 
+                        ('sys_domain', Struct({'link': String, 'value': String})), 
+                        ('u_branch', Struct({'link': String, 'value': String})), 
+                        ('u_property_custodian', Struct({'link': String, 'value': String})), 
+                        ('u_sub_site_code', Struct({'link': String, 'value': String})), 
+                        ('company', Struct({'link': String, 'value': String})), 
+                        ('department', Struct({'link': String, 'value': String})),
+                        ('u_section', Struct({'link': String, 'value': String})), 
+                        ('u_sub_section', Struct({'link': String, 'value': String})), 
+                        ('u_program', Struct({'link': String, 'value': String})), 
+                        ('manager', Struct({'link': String, 'value': String})), 
+                        ('u_program_matrix', Struct({'link': String, 'value': String})), 
+                        ('schedule', Struct({'link': String, 'value': String})), 
+                        ('location', Struct({'link': String, 'value': String}))
+                    ]),
+    SNOW_MILESTONE_TABLE_NAME: Schema([('actual_start_date', String), ('due_date', String), ('sys_mod_count', String), ('description', String), ('sys_updated_on', String), ('planned_finish_date', String), ('sys_tags', String), ('weakness_tracking_id', Struct({'link': String, 'value': String})), ('actual_finish_date', String), ('number', String), ('sys_id', String), ('sys_updated_by', String), ('sys_created_on', String), ('planned_start_date', String), ('milestone_assignee', Struct({'link': String, 'value': String})), ('action_number', String), ('sys_created_by', String)])
+}
+            
+@execute_timer(logger=logger)
+def get_latest_snow_table(table, api_url, offset_limit=5_000, limit=0, sysparm_fields: list = None, sysparm_query=""):
+    if sysparm_fields:
+        sysparm_fields = ",".join(sysparm_fields)
 
-    try:
-        main()
-    except Exception as e:
-        logger.exception("Exception Occured during operation")
-        raise e
+    timer = datetime.datetime.now()
+    timer_step = 100_000
+
+    start = 0
+    data = pl.DataFrame()
+    done = False
+    to_retry = []
+    while not done:
+        if len(data):
+            checkpoint = datetime.datetime.now() - timer
+            avg = checkpoint / (len(data) / timer_step)
+            logger.debug("Elapsed time: %s, records pulled: %s, avg time per %s: %s", checkpoint, len(data), timer_step, avg)
+        if to_retry:
+            logger.debug("Encountered retries, sleeping to avoid execution timeout...")
+            time.sleep(60)
+        with cf.ThreadPoolExecutor(max_workers=10) as executor:
+            attempts = executor._max_workers
+            end = start + offset_limit*attempts if not limit else limit
+
+            """
+            sys_id: UUID that SNOW populates for each finding
+            scan_id: a value derived from Tenable's "vulnUniqueness" field. Typically `repositoryID,ip,port,protocol,pluginID`
+            id: an incrementing ID for tracking in SNOW. e.g. FIND000001
+            state: state of the finding
+            days_since_discover: the diff of days between now, and First Discovered
+            first_discovered: Tenable value showing when the finding was found
+            last_observed: Tenable value showing when the finding was last seen
+            poa_m_required: Value that I calculate
+            """
+            runs = []
+            for step in range(start, end, offset_limit):
+                params = {'offset': step, 'limit': offset_limit}
+                if sysparm_fields:
+                    params['sysparm_fields'] = sysparm_fields
+                if sysparm_query:
+                    params['sysparm_query'] = sysparm_query
+                runs.append(params)
+
+            while to_retry:
+                retry = to_retry.pop(0)
+                logger.debug("retrying %s", str(retry))
+                runs.append(retry)
+
+            futures = []
+            for run in runs:
+                logger.debug("calling %s for %s", str(run), table)
+                futures.append((executor.submit(get_snow_table, table, api_url, **run),run))
+
+        to_concat = []
+        for future, run in futures:
+            res = future.result()
+            if not res.ok:
+                sc = str(res.status_code)
+                if sc[0] == '5' or sc == "429":
+                    logger.debug("%s status code received, retrying", res.status_code)
+                    to_retry.append(run)
+                    continue
+
+                if sc[0] == "4":
+                    logger.error("%s", res.json())
+                    to_retry.append(run)
+                    continue
+                    # raise Http400Error(res.json())
+
+            try:
+                _data = res.json()
+            except (JSONDecodeError, ContentDecodingError) as e:
+                logger.debug("%s exception hit, retrying...", str(e))
+                to_retry.append(run)
+                continue
+
+            if "error" in _data:
+                logger.debug("Error returned from API, retrying - %s", _data['error'])
+                to_retry.append(run)
+                continue
+
+            if not _data:
+                done = True
+                break
+
+            try:
+                to_concat.extend([x for x in _data['result'] if x])
+            except KeyError:
+                logger.debug("%s exception hit, retrying...", str(e))
+                to_retry.append(run)
+                continue
+
+        else:
+            if not to_retry and not to_concat:
+                done = True
+
+        # SNOW has a "datatype" that refers to a link in another SNOW table. This block
+        # seeks to set the schema for those columns to match that data type. evertying else
+        #  is a string. otherwise polars will puke
+        # ex: {'link': 'https://iceserviceportal.servicenowservices.com/api/now/table/u_fisma_inventory/6b79fa14dbb4b60046d470340f961943', 'value': '6b79fa14dbb4b60046d470340f961943'}
+        if not to_concat:
+            continue
+        if not (schema:=SNOW_TABLE_SCHEMAS.get(table, None)):
+            schema = {k: pl.String for k in to_concat[0].keys()}
+            keys = {x for t in to_concat for x in t.keys()}
+            for test in to_concat:
+                for k in keys:
+                    if k not in test:
+                        continue
+                    v = test[k]
+                    if isinstance(v, pl.Struct):
+                        continue
+                    if isinstance(v, dict) and all(t in v for t in ['link', 'value']):
+                        schema[k] = SNOW_LINK_DTYPE
+        if to_concat:
+            _schema = {**{k:String for k in to_concat[0]}, **schema}
+            data = concat_dfs(data, pl.from_dicts(to_concat, schema=_schema, infer_schema_length=None), schema=_schema)
+        start = end
+    fn = os.path.join(tempfile.gettempdir(), f"get_latest_snow_table_{table}_{time.time()}.parquet")
+    data.write_parquet(fn, use_pyarrow=True)
+    return pl.scan_parquet(fn)

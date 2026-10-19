@@ -1,724 +1,102 @@
-from lib import set_file_handler, set_stream_handler, execute_timer, concat_dfs
 import os
-import datetime
-import requests
-from requests.auth import HTTPBasicAuth
-from requests.adapters import HTTPAdapter
-import time
-import json
-import logging
 import polars as pl
-from polars import Schema, String, Struct
-cs = pl.selectors
-import base64
-from html import unescape
-import concurrent.futures as cf
-from requests.exceptions import JSONDecodeError, ContentDecodingError, RequestException
+import logging
+from logging.handlers import RotatingFileHandler
 from functools import wraps
-from urllib3.util import Retry
 import tempfile
+import datetime
 
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-MAX_THREADS = 8
-
-SNOW_AUTH = HTTPBasicAuth(os.environ['SNOW_USER'], os.environ['SNOW_PASS'])
-
-logger = logging.getLogger('snow_ingest')
-logger.propagate = False
-logger.setLevel(logging.DEBUG)
-
-logger = set_file_handler(logger, "snow_ingest.log")
-logger = set_stream_handler(logger)
-
-SNOW_LINK_DTYPE = pl.Struct({'link': pl.String, 'value': pl.String})
-
-def get_avg_time(start, end, num_findings):
-    return num_findings / (end - start).total_seconds()
-
-SNOW_TIME_FORMAT = "%Y-%m-%d"
-
-SNOW_FINDINGS_TABLE_NAME = "x_g_dh5_poam_findings"
-SNOW_FINDINGS_STAGING_TABLE_NAME = "x_g_dh5_poam_findings_import"
-SNOW_WEAKNESS_TRACKING_TABLE_NAME = "x_g_dh5_poam_weakness_tracking"
-SNOW_MILESTONE_TABLE_NAME = "x_g_dh5_poam_pre_poam_draft_milestone"
-SNOW_USERS_TABLE_NAME = "sys_user"
-SNOW_POAM_TABLE_NAME = 'x_g_dh5_poam_csam_poam_data'
-SNOW_FISMA_INVENTORY_NAME = "u_fisma_inventory"
-SNOW_ISVM_TABLE_NAME = "x_g_dh5_poam_isvm"
-
-SNOW_FINDINGS_STAGING_COLS = [
-    "sys_class_name",
-    "sys_created_by",
-    "sys_created_on",
-    "sys_id",
-    "sys_import_row",
-    "sys_import_state",
-    "sys_import_state_comment",
-    "sys_mod_count",
-    "sys_tags",
-    "sys_target_sys_id",
-    "sys_target_table",
-    "sys_updated_by",
-    "sys_updated_on",
-    "template_import_log",
-    "u_800_53_controls",
-    "u_actual_value",
-    "u_audit_file", 
-    "u_additional_comments",
-    "u_cat",
-    "u_check_name",
-    "u_common_platform_enum",
-    "u_cpe_product",
-    "u_cpe_type_vendor",
-    "u_cpe_version",
-    "u_cross_references",
-    "u_cve",
-    "u_days_since_discover",
-    "u_description",
-    "u_dns_name",
-    "u_error_details",
-    "u_finding_type",
-    "u_first_discovered",
-    "u_fisma_system",
-    "u_fix_type",
-    "u_id",
-    "u_information",
-    "u_ip_address",
-    "u_kev",
-    "u_kev_due_date",
-    "u_last_observed",
-    "u_netbios_name",
-    "u_note",
-    "u_operating_system",
-    "u_plugin",
-    "u_plugin_name",
-    "u_plugin_output",
-    "u_poa_m_required",
-    "u_policy_value",
-    "u_port",
-    "u_repository",
-    "u_result",
-    "u_scan_id",
-    "u_see_also",
-    "u_severity",
-    "u_soar_isvm_id",
-    "u_solution",
-    "u_state",
-    "u_stig_cis_benchmark",
-    "u_stig_id",
-    "u_synopsis",
-    "u_weakness_tracking",
-    "u_work_notes"
-]
-
-TENABLE_VM_SNOW_FINDINGS_STAGING_COLS_MAPPING = {
-    'u_800_53_controls': 'u_800_53_controls',
-    'actual_value': 'u_actual_value',
-    'audit_file': 'u_audit_file',
-    'cat': 'u_cat',
-    'check_name': 'u_check_name',
-    'cpe': 'u_common_platform_enum',
-    'cpe_product': 'u_cpe_product',
-    'cpe_type_vendor': 'u_cpe_type_vendor',
-    'cpe_version': 'u_cpe_version',
-    'xref': 'u_cross_references',
-    'cve': 'u_cve',
-    'plugin_description': 'u_description',
-    'dns_name': 'u_dns_name',
-    'check_error': 'u_error_details',
-    'finding_type': 'u_finding_type',
-    'first_discovered': 'u_first_discovered',
-    'fisma_system': 'u_fisma_system',
-    # 'u_id',
-    'check_info': 'u_information',
-    'ip_address': 'u_ip_address',
-    # 'u_isvms',
-    'kev': 'u_kev',
-    # 'u_kev_due_date',
-    'last_observed': 'u_last_observed',
-    'netbios_name': 'u_netbios_name',
-    # 'u_note',
-    'operating_system': 'u_operating_system',
-    'plugin_id': 'u_plugin',
-    'plugin_name': 'u_plugin_name',
-    'output': 'u_plugin_output',
-    'expected_value': 'u_policy_value',
-    'port_port': 'u_port',
-    'status': 'u_result',
-    "finding_id": 'u_scan_id',
-    'see_also': 'u_see_also',
-    'severity': 'u_severity',
-    # 'u_soar_isvm_id',
-    'solution': 'u_solution',
-    'stig_cis_benchmark': 'u_stig_cis_benchmark',
-    'stig_id': 'u_stig_id',
-    'plugin_synopsis': 'u_synopsis',
-}
-
-branch = os.environ['BRANCH_NAME'].strip()
-is_main_branch = branch == "main"
-if not is_main_branch:
-    if branch == "dev" or "SAB-" in branch:
-        SUB_DOMAIN = "iceserviceportaldev"
-    elif branch == "test" or branch.startswith("PR-"):
-        SUB_DOMAIN = "iceserviceportaltest"
-    # elif branch =="sandbox":
-        # SUB_DOMAIN = "dhsicetest"
-    # elif branch == "uat":
-        # SUB_DOMAIN = "iceserviceportaluat"
-    else:
-        SUB_DOMAIN = "iceserviceportaldev"
+branch = os.environ['BRANCH_NAME']
+IS_MAIN_BRANCH = branch == "main"
+if not IS_MAIN_BRANCH:
+    LOG_LEVEL = logging.DEBUG
 else:
-    SUB_DOMAIN = "iceserviceportal"
+    LOG_LEVEL = logging.INFO
 
-SNOW_URL_BASE = f"https://{SUB_DOMAIN}.servicenowservices.com"
-API_SUFFIX = "/api/now"
-SNOW_API = SNOW_URL_BASE+API_SUFFIX
-UI_SUFFIX = "/now/nav/ui/classic/params/target"
+TEMP_DIR = tempfile.gettempdir()
+LOG_DIR = os.path.join(TEMP_DIR, "logs")
 
-RETRY = Retry(
-    total=5,
-    backoff_factor=0.2
-)
-SNOW_REQUESTS_SESSION = requests.Session()
-SNOW_REQUESTS_SESSION.auth = SNOW_AUTH
-SNOW_REQUESTS_SESSION.headers['Content-Type'] = "application/json"
-SNOW_REQUESTS_SESSION.verify = False
-SNOW_REQUESTS_SESSION.mount("https://", HTTPAdapter(max_retries=RETRY))
+FORMATTER = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-FINDINGS_TABLE_FIELDS = [
-    "actual_value",
-    "additional_comments",
-    "cat",
-    "check_name",
-    "common_platform_enum",
-    "cross_references",
-    "days_since_discover",
-    "description",
-    "dns_name",
-    "error_details",
-    "finding_type",
-    "first_discovered",
-    "fisma_system",
-    "fix_type",
-    "id",
-    "information",
-    "ip_address",
-    "kev",
-    "last_observed",
-    "netbios_name",
-    "note",
-    "operating_system",
-    "plugin",
-    "plugin_name",
-    "plugin_output",
-    "poa_m_required",
-    "policy_value",
-    "port",
-    "repository",
-    "result",
-    "scan_id",
-    "see_also",
-    "severity",
-    "solution",
-    "state",
-    "stig_cis_benchmark",
-    "stig_id",
-    "synopsis",
-    "sys_created_by",
-    "sys_created_on",
-    "sys_id",
-    "sys_mod_count",
-    "sys_updated_by",
-    "sys_updated_on",
-    "u_800_53_controls",
-    "weakness_tracking",
-    "work_notes",
-]
+def set_file_handler(logger, logfile_name):
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_file = os.path.join(LOG_DIR, logfile_name)
+    file_handler = RotatingFileHandler(log_file, maxBytes=(10*(2**20)), backupCount=10)
+    file_handler.setFormatter(FORMATTER)
+    file_handler.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
+    return logger
 
-def requests_error_handler(func):
-    """decorator to handle errors and retries callables"""
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        counter = 0
-        while True:
+
+def set_stream_handler(logger):
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(FORMATTER)
+    stream_handler.setLevel(LOG_LEVEL)
+    logger.addHandler(stream_handler)
+    return logger
+
+def get_unstable_logger(logger_name):
+    unstable_name = f"{logger_name}_unstable"
+    fn = f"{unstable_name}.log"
+    fn_path = os.path.join(LOG_DIR, fn)
+    try:
+        os.remove(fn_path)
+    except FileNotFoundError:
+        pass
+    unstable_logger = logging.getLogger(unstable_name)
+    unstable_logger.propagate=False
+    unstable_logger.setLevel(logging.DEBUG)
+    unstable_logger = set_file_handler(unstable_logger, fn)
+    unstable_logger = set_stream_handler(unstable_logger)
+    return unstable_logger, fn_path
+
+def set_unstable(unstable_logger, unstable_fn_path):
+    if os.stat(unstable_fn_path).st_size:
+        # need to close the filehandler
+        fhs = []
+        for handlr in unstable_logger.handlers:
             try:
-                res = func(*args, **kwargs)
-                res.raise_for_status()
-            except requests.exceptions.HTTPError as e:
-                return res
-            except RequestException as e:
-                counter += 1
-                logger.error("%s exception thrown when executing %s. Attempt %s, retrying...", e.__class__.__name__, func.__name__, counter)
-                time.sleep(5)
-            else:
-                return res
-    return wrapper
+                if handlr.baseFilename == unstable_fn_path:
+                    fhs.append(handlr)
+            except AttributeError:
+                pass
+        for fh in fhs:
+            fh.flush()
+            fh.close()
+            unstable_logger.removeHandler(fh)
 
-@requests_error_handler
-def get_snow_table(table_name, api_url, limit=0, offset=0, **kwargs) -> dict:
-    """return SNOW FISMA Inventory Table"""
-    url = f"{api_url}/table/{table_name}"
-    params = kwargs
-    if limit:
-        params['sysparm_limit'] = limit
-    if offset:
-        params['sysparm_offset'] = offset
-    res = SNOW_REQUESTS_SESSION.get(url, params=params, timeout=600)
-    return res
-
-class BadCreds(Exception):
-    pass
-
-@execute_timer(logger=logger)
-def insert_multiple(df, table_name, api_url=SNOW_API, rows_per_chunk=6000):
-    cooloff = 30
-    if rows_per_chunk <= 0:
-        raise Exception("Rows per chunk reduced too low")
-
-    for start_idx in range(0, len(df), rows_per_chunk):
-        _df =  df.slice(start_idx, rows_per_chunk)
-        to_send = {
-            "records": []
-        }
-        for idx, record in enumerate(_df.to_dicts()):
-            if idx % 1000 == 0:
-                logger.debug("Processed %s to send to insertMultiple", idx)
-            to_send['records'].append({k:unescape(v) for k,v in record.items() if v})
-        while True:
-            start = datetime.datetime.now(datetime.timezone.utc)
-
-            try:
-                res = SNOW_REQUESTS_SESSION.post(api_url+f"/import/{table_name}/insertMultiple", json=to_send, timeout=300)
-            except RequestException as e:
-                cooloff = 30
-                logger.exception("Running %s cooloff, then retrying %s-%s", cooloff, start_idx, start_idx+rows_per_chunk)
-                time.sleep(cooloff)
-                continue
-
-            if not res.ok:
-                logger.debug("%s %s %s", res, res.reason, res.text)
-                if str(res.status_code)[0] == '5' and "Transaction cancelled: maximum execution time exceeded" in res.text:
-                    new_rows_per_chunk = rows_per_chunk-1000
-                    logger.debug("Ran into issues with rows_per_chunk=%s, reducing to %s and trying again", rows_per_chunk, new_rows_per_chunk)
-                    # slicing the original df. (start_idx, None) slices the full df from start_idx
-                    # this way we aren't resending what's already been sent 
-                    _df = df.slice(start_idx, None)
-                    # recursively calling the function adjusting the rows_per_chunk
-                    return insert_multiple(_df, table_name, api_url=SNOW_API, rows_per_chunk=new_rows_per_chunk)
-                else:
-                    logger.exception("Running %s cooloff, then retrying %s-%s", cooloff, start_idx, start_idx+rows_per_chunk)
-                    time.sleep(cooloff)
-                    continue
-
-            end = datetime.datetime.now(datetime.timezone.utc)
-            logger.debug("Sent %s to %s. Elapsed time %s", start_idx+rows_per_chunk, api_url+f"/import/{table_name}/insertMultiple", end-start)
-            break
-
-@execute_timer(logger=logger)
-def insert_multiple_threaded(df, table_name, api_url=SNOW_API, rows_per_chunk=500):
-
-    def send(to_send, start_idx, rows_per_chunk):
-        url = api_url+f"/import/{table_name}/insertMultiple"
-        logger.debug('Sending %s-%s to %s', start_idx, start_idx+rows_per_chunk, url)
-        start = datetime.datetime.now(datetime.timezone.utc)
-        retry_count = 10
-        while True:
-            if not retry_count:
-                raise Exception("Max retries hit")
-            
-            try:
-                res = SNOW_REQUESTS_SESSION.post(url, json=to_send, timeout=300)
-            except RequestException as e:
-                cooloff = 30
-                logger.exception("Running %s cooloff, then retrying %s-%s", cooloff, start_idx, start_idx+rows_per_chunk)
-                time.sleep(cooloff)
-                continue
-
-            if not res.ok:
-                retry_count -= 1
-                logger.debug("%s %s %s", res, res.reason, res.text)
-                logger.debug('Retry Sending %s-%s to %s. Retries left: %s', start_idx, start_idx+rows_per_chunk, url, retry_count)
-                time.sleep(300)
-                continue
-            break
-        end = datetime.datetime.now(datetime.timezone.utc)
-        logger.debug("Sent %s to %s. Elapsed time %s", start_idx+rows_per_chunk, api_url+f"/import/{table_name}/insertMultiple", end-start)
-        return
-
-    futures = []
-    with cf.ThreadPoolExecutor(max_workers=MAX_THREADS) as executer:
-        for start_idx in range(0, len(df), rows_per_chunk):
-            _df =  df.slice(start_idx, rows_per_chunk)
-            to_send = {
-                "records": []
-            }
-            for idx, record in enumerate(_df.to_dicts()):
-                # if idx % 1000 == 0:
-                    # logger.debug("Processed %s to send to insertMultiple", idx)
-                to_send['records'].append({k:unescape(v) for k,v in record.items() if v})
-            futures.append(executer.submit(send, to_send, start_idx, rows_per_chunk))
-    exceptions = [f.exception() for f in futures if f.exception()]
-    if exceptions:
-        for e in exceptions:
-            try:
-                raise e
-            except:
-                logger.exception("Thread failed:")
-        raise ExceptionGroup(f"One or more threads failed insert in {api_url}", exceptions)
- 
-@execute_timer(logger=logger)
-def send_to_snow(df, table_name, batch_limit_size=(9.8*(1024**2)), row_limit=200, max_threads=MAX_THREADS):
-    """
-    Function to send results from a dataframe to ServiceNow
-
-    params:
-    df: the dataframe to send
-    table_name: name of the ServiceNow table we're sending to
-    batch_limit_size: the ServiceNOW Batch API has limits (5MB) on the size batch queries. Default: 4MB to ensur we're under that threshold to avoid errors: https://docs.servicenow.com/bundle/vancouver-api-reference/page/integrate/inbound-rest/concept/batch-api.html
-    row_limit: default=5000. Similar to batch_limit_size, more than 5000 seems to illicit unexpected behavior
-    """
-    s = datetime.datetime.now()
-    total_to_send = len(df)
-
-    if df.is_empty():
-        return
-    
-    df = (
-        df.drop(pl.col(SNOW_LINK_DTYPE))
-        .cast(pl.String)
-        .with_columns(pl.all().str.slice(0,4000)) # max char length for SNOW is 4000
-    )
-
-    def is_to_retry(_fail):
-        """helper function to determine if a response from the API warants retrying"""
-
-        # obviously any server errors
-        if str(_fail['status_code'])[0]=="5":
-            return True
-        
-        body = json.loads(base64.b64decode(_fail['body']))
+        import shutil
+        unstable_dir = os.path.join(LOG_DIR, "unstable_notify")
+        if not os.path.exists(unstable_dir):
+            os.mkdir(unstable_dir)
         try:
-            # sometimes are 200 is returned, but there is an `error` 
-            detail = body['error']['detail']
-            if detail and "Transaction cancelled: maximum execution time exceeded" in detail:
-                return True
-        except KeyError:
-            # typically if it's not a server error it's a 403, which indicates an issue with the body.
-            # this can include a finding that's already submitted which SNOW is filtering out
-            logger.debug("WONT RETRY: %s", body)
-            return False
-        logger.debug("WONT RETRY: %s", body)
-        return False
+            os.remove(os.path.join(unstable_dir, os.path.split(unstable_fn_path)[-1]))
+        except FileNotFoundError:
+            pass
+        shutil.move(unstable_fn_path, unstable_dir)
+    else:
+        os.remove(unstable_fn_path)
 
-    def chunk_records(df, size=batch_limit_size, row_limit=row_limit):
-        """helper function to chunk the larger dataframe into manageable chunks that SNOW can handle"""
+def execute_timer(logger):
+    def decorator(f):
+        @wraps(f)
+        def wrap(*args, **kw):
+            ts = datetime.datetime.now(datetime.timezone.utc)
+            result = f(*args, **kw)
+            te = datetime.datetime.now(datetime.timezone.utc)
+            logger.info('func:%s took: %s to execute', f.__name__, te-ts)
+            return result
+        return wrap
+    return decorator
 
-        # need to estimate the memory each row in the dataframe is occupying.
-        # determine what's the largest occupier, and use it 
-        df = df.with_columns(est_size=pl.Series([pl.Series(x).estimated_size() for x in df.iter_rows()], dtype=pl.UInt16))
-        largest_row_mem = df['est_size'].max()
-        df = df.drop('est_size')
 
-        # calculate rows and how many rows per chunk
-        rows = int(size // largest_row_mem)
-        rows_per_chunk = rows if rows < row_limit else row_limit
-        # rows_per_chunk = row_limit
-        for start in range(0, len(df), rows_per_chunk):
-            yield df.slice(start, rows_per_chunk)
+def concat_dfs(*args, schema=None, how='vertical', rechunk=False, parallel=True) -> pl.DataFrame:
+    """A helper funcion that ensures that 2 dataframes can be concat'd, even either is empty or the schema mismatches"""
 
-    @requests_error_handler
-    def send_batch(batch_id, chunk_df):
-        """Helper function that sends chunked dataframes to ServiceNOW"""
-
-        # format for batch call can be found here: https://docs.servicenow.com/bundle/vancouver-api-reference/page/integrate/inbound-rest/concept/batch-api.html
-        logger.debug("Batch ID %s sending %s requests to %s", batch_id, len(chunk_df), table_name)
-        data = {
-            "batch_request_id": str(batch_id),
-            "rest_requests": []
-        }
-        for idx, record in enumerate(chunk_df.to_dicts()):
-            data['rest_requests'].append(
-                {
-                    "id": str(idx+1),
-                    "headers": [
-                        {
-                            "name": "Content-Type",
-                            "value": "application/json"
-                        }
-                    ],
-                    "url": f"/api/now/table/{table_name}" + (f"/{record['sys_id']}" if (method:=record.pop('HTTP Action').lower()) in {"put", "patch", "delete"} else ""),
-                    "method": method.upper(),
-                    # "body": base64.b64encode(unescape(json.dumps(record)).encode()).decode()
-                    "body": base64.b64encode((json.dumps({k:unescape(v) for k,v in record.items() if v})).encode()).decode()
-                }
-            )
-        res = SNOW_REQUESTS_SESSION.post(SNOW_API+"/v1/batch", json=data, timeout=300)
-
-        if not res.ok:
-            logger.debug("%s %s %s", res, res.reason, res.text)
-
-        # if status is 202 need to resend the same batch to get the status of the load.
-        # otherwise the response get's lost and we dont know if it ingested everything.
-        while res.status_code == 202:
-            logger.debug("202 Status Code, retrying batch ID %s", batch_id)
-            time.sleep(60)
-            req = res.request
-            res = SNOW_REQUESTS_SESSION.request(method=req.method, url=req.url, headers=req.headers, data=req.body, timeout=300)
-
-        return res
-    
-    # Start with ingest.
-    batch_id = 0
-    while True:
-        # using a while loop since there will be some queries that need to be retried.
-        batch_size_has_changed = False
-        batch_row_limit_has_changed = False
-    
-        with cf.ThreadPoolExecutor(max_workers=max_threads) as executor:
-            threads = {}
-            for chunk in chunk_records(df, size=batch_limit_size, row_limit=row_limit):
-                batch_id += 1 
-                threads[executor.submit(send_batch, batch_id, chunk)] = chunk
-                                        
-            to_retry = pl.DataFrame()
-            for future in cf.as_completed(threads):
-                _df = threads[future]
-                # Loop thru each future object and determine if it was good, or needs to be retried
-                try:
-                    res = future.result()
-                except KeyboardInterrupt as e:
-                    raise e
-                except Exception as e:
-                    # if anything exception happens in the thread, retry
-                    logger.error(str(e))
-                    to_retry = concat_dfs(to_retry, _df, schema=df.schema)
-                    continue
-
-                if not res.ok:
-                    if res.status_code == 403:
-                        # This is different from a single query returning a 403, if the BatchAPI returns a 403 it is indeed a credential issue
-                        # logger.error("Invalid Credentials: %s", res.text)
-                        raise BadCreds(f"Invalid Credentials: {res.text}")
-                    if res.status_code == 413:
-                        logger.debug("REQUEST TOO LARGE, reducing batch size by 10%")
-                        if not batch_size_has_changed:
-                            batch_size_has_changed = True
-                            batch_limit_size *= .9
-                        
-                    to_retry = concat_dfs(to_retry, _df, schema=df.schema)
-                    continue
-                
-                try:
-                    results = res.json()
-                except requests.exceptions.JSONDecodeError as e:
-                    # a JSONDecodeError means somehting went wrong with the query
-                    if "Transaction cancelled: Max output size reached for current BatchRest transaction" not in res.text:
-                        logger.debug(res.text)
-                        to_retry = concat_dfs(to_retry, _df, schema=df.schema)
-                        continue
-                    if batch_row_limit_has_changed:
-                        to_retry = concat_dfs(to_retry, _df, schema=df.schema)
-                        continue
-                    logger.debug("Chunked dataframe with %s rows triggered a max output size error from the API. Reducing row limit by 10%%", len(_df))
-                    to_retry = concat_dfs(to_retry, _df, schema=df.schema)
-                    batch_row_limit_has_changed = True
-                    row_limit = int(row_limit * .9)
-                    continue
-                    
-                unserviced = set(results['unserviced_requests'])
-                if unserviced:
-                    logger.debug("%s UNSERVICED REQUESTS, retrying", len(unserviced))
-                    idxs = [int(_id)-1 for _id in unserviced]
-                    to_retry = concat_dfs(to_retry, _df.select(pl.all().gather(idxs)), schema=df.schema)
-
-                serviced = results['serviced_requests']
-                serviced_idxs = [int(x['id'])-1 for x in serviced]
-                requests_mapping = list(zip(_df.select(pl.all().gather(serviced_idxs)).to_dicts(), serviced))
-                failed = [_res for _res in requests_mapping if str(_res[1]['status_code'])[0] != '2']
-                if failed:
-                    for _fail in failed:
-                        body = base64.b64decode(_fail[1]['body']).decode(encoding='utf-8', errors='ignore')
-                        try:
-                            err_msg = str(json.loads(body)['error'])
-                        except json.JSONDecodeError:
-                            err_msg = body
-                        logger.debug("FAILED: STATUS '%s' ERROR MSG '%s'", _fail[1]['status_code'], err_msg)#, json.dumps(_fail[0]))
-                    logger.debug("FAILED TO SEND TO %s REQUESTS TO SNOW", len(failed))
-                    retry = [x[0] for x in failed if is_to_retry(x[1])]
-                    to_retry = concat_dfs(to_retry, pl.from_dicts(retry, schema=df.schema), schema=df.schema)
-
-            if not to_retry.is_empty():
-                df = to_retry
-                logger.debug("Retrying %s findings", len(df))
-            else:
-                logger.info("Avg time taken: %s findings/second. Total findings: %s", get_avg_time(s, datetime.datetime.now(), total_to_send), total_to_send)
-                return
-            
-class Http400Error(Exception):
-    pass
-
-from polars import Schema, String, Struct
-SNOW_TABLE_SCHEMAS = {
-    SNOW_FINDINGS_TABLE_NAME: Schema([('netbios_name', String), ('note', String), ('stig_cis_benchmark', String), 
-                                     ('description', String), ('actual_value', String), ('sys_updated_on', String), 
-                                     ('repository', String), ('see_also', String), ('stig_id', String), ('u_800_53_controls', String), 
-                                     ('poa_m_required', String), ('result', String), ('sys_id', String), ('first_discovered', String), 
-                                     ('sys_updated_by', String), ('solution', String), ('error_details', String), 
-                                     ('sys_created_on', String), ('cat', String), ('last_observed', String), 
-                                     ('operating_system', String), ('id', String), ('state', String), ('kev', String), 
-                                     ('sys_created_by', String), ('severity', String), ('plugin_output', String), 
-                                     ('days_since_discover', String), ('sys_mod_count', String), ('ip_address', String), 
-                                     ('synopsis', String), ('finding_type', String), ('plugin_name', String), ('sys_tags', String), 
-                                     ('additional_comments', String), ('dns_name', String), 
-                                     ('weakness_tracking', Struct({'link': String, 'value': String})), ('plugin', String), 
-                                     ('port', String), ('fix_type', String), ('check_name', String), ('information', String), 
-                                     ('policy_value', String), ('cross_references', String), ('scan_id', String), ('work_notes', String), 
-                                     ('fisma_system', Struct({'link': String, 'value': String})), ('common_platform_enum', String),
-                                     ('cpe_type_vendor', String), ('cpe_product', String), ('cpe_version', String)]),
-    SNOW_WEAKNESS_TRACKING_TABLE_NAME: Schema([
-                                     ('poa_m_id', Struct({'link': String, 'value': String})), 
-                                     ('fisma_system', Struct({'link': String, 'value': String}))
-                                ]),
-    SNOW_USERS_TABLE_NAME: Schema([
-                        ('u_division', Struct({'link': String, 'value': String})), 
-                        ('sys_domain', Struct({'link': String, 'value': String})), 
-                        ('u_branch', Struct({'link': String, 'value': String})), 
-                        ('u_property_custodian', Struct({'link': String, 'value': String})), 
-                        ('u_sub_site_code', Struct({'link': String, 'value': String})), 
-                        ('company', Struct({'link': String, 'value': String})), 
-                        ('department', Struct({'link': String, 'value': String})),
-                        ('u_section', Struct({'link': String, 'value': String})), 
-                        ('u_sub_section', Struct({'link': String, 'value': String})), 
-                        ('u_program', Struct({'link': String, 'value': String})), 
-                        ('manager', Struct({'link': String, 'value': String})), 
-                        ('u_program_matrix', Struct({'link': String, 'value': String})), 
-                        ('schedule', Struct({'link': String, 'value': String})), 
-                        ('location', Struct({'link': String, 'value': String}))
-                    ]),
-    SNOW_MILESTONE_TABLE_NAME: Schema([('actual_start_date', String), ('due_date', String), ('sys_mod_count', String), ('description', String), ('sys_updated_on', String), ('planned_finish_date', String), ('sys_tags', String), ('weakness_tracking_id', Struct({'link': String, 'value': String})), ('actual_finish_date', String), ('number', String), ('sys_id', String), ('sys_updated_by', String), ('sys_created_on', String), ('planned_start_date', String), ('milestone_assignee', Struct({'link': String, 'value': String})), ('action_number', String), ('sys_created_by', String)])
-}
-            
-@execute_timer(logger=logger)
-def get_latest_snow_table(table, api_url, offset_limit=5_000, limit=0, sysparm_fields: list = None, sysparm_query=""):
-    if sysparm_fields:
-        sysparm_fields = ",".join(sysparm_fields)
-
-    timer = datetime.datetime.now()
-    timer_step = 100_000
-
-    start = 0
-    data = pl.DataFrame()
-    done = False
-    to_retry = []
-    while not done:
-        if len(data):
-            checkpoint = datetime.datetime.now() - timer
-            avg = checkpoint / (len(data) / timer_step)
-            logger.debug("Elapsed time: %s, records pulled: %s, avg time per %s: %s", checkpoint, len(data), timer_step, avg)
-        if to_retry:
-            logger.debug("Encountered retries, sleeping to avoid execution timeout...")
-            time.sleep(60)
-        with cf.ThreadPoolExecutor(max_workers=10) as executor:
-            attempts = executor._max_workers
-            end = start + offset_limit*attempts if not limit else limit
-
-            """
-            sys_id: UUID that SNOW populates for each finding
-            scan_id: a value derived from Tenable's "vulnUniqueness" field. Typically `repositoryID,ip,port,protocol,pluginID`
-            id: an incrementing ID for tracking in SNOW. e.g. FIND000001
-            state: state of the finding
-            days_since_discover: the diff of days between now, and First Discovered
-            first_discovered: Tenable value showing when the finding was found
-            last_observed: Tenable value showing when the finding was last seen
-            poa_m_required: Value that I calculate
-            """
-            runs = []
-            for step in range(start, end, offset_limit):
-                params = {'offset': step, 'limit': offset_limit}
-                if sysparm_fields:
-                    params['sysparm_fields'] = sysparm_fields
-                if sysparm_query:
-                    params['sysparm_query'] = sysparm_query
-                runs.append(params)
-
-            while to_retry:
-                retry = to_retry.pop(0)
-                logger.debug("retrying %s", str(retry))
-                runs.append(retry)
-
-            futures = []
-            for run in runs:
-                logger.debug("calling %s for %s", str(run), table)
-                futures.append((executor.submit(get_snow_table, table, api_url, **run),run))
-
-        to_concat = []
-        for future, run in futures:
-            res = future.result()
-            if not res.ok:
-                sc = str(res.status_code)
-                if sc[0] == '5' or sc == "429":
-                    logger.debug("%s status code received, retrying", res.status_code)
-                    to_retry.append(run)
-                    continue
-
-                if sc[0] == "4":
-                    logger.error("%s", res.json())
-                    to_retry.append(run)
-                    continue
-                    # raise Http400Error(res.json())
-
-            try:
-                _data = res.json()
-            except (JSONDecodeError, ContentDecodingError) as e:
-                logger.debug("%s exception hit, retrying...", str(e))
-                to_retry.append(run)
-                continue
-
-            if "error" in _data:
-                logger.debug("Error returned from API, retrying - %s", _data['error'])
-                to_retry.append(run)
-                continue
-
-            if not _data:
-                done = True
-                break
-
-            try:
-                to_concat.extend([x for x in _data['result'] if x])
-            except KeyError:
-                logger.debug("%s exception hit, retrying...", str(e))
-                to_retry.append(run)
-                continue
-
+    to_concat = []
+    for a in args:
+        if a.is_empty():
+            to_concat.append(pl.DataFrame(schema=schema))
         else:
-            if not to_retry and not to_concat:
-                done = True
-
-        # SNOW has a "datatype" that refers to a link in another SNOW table. This block
-        # seeks to set the schema for those columns to match that data type. evertying else
-        #  is a string. otherwise polars will puke
-        # ex: {'link': 'https://iceserviceportal.servicenowservices.com/api/now/table/u_fisma_inventory/6b79fa14dbb4b60046d470340f961943', 'value': '6b79fa14dbb4b60046d470340f961943'}
-        if not to_concat:
-            continue
-        if not (schema:=SNOW_TABLE_SCHEMAS.get(table, None)):
-            schema = {k: pl.String for k in to_concat[0].keys()}
-            keys = {x for t in to_concat for x in t.keys()}
-            for test in to_concat:
-                for k in keys:
-                    if k not in test:
-                        continue
-                    v = test[k]
-                    if isinstance(v, pl.Struct):
-                        continue
-                    if isinstance(v, dict) and all(t in v for t in ['link', 'value']):
-                        schema[k] = SNOW_LINK_DTYPE
-        if to_concat:
-            _schema = {**{k:String for k in to_concat[0]}, **schema}
-            data = concat_dfs(data, pl.from_dicts(to_concat, schema=_schema, infer_schema_length=None), schema=_schema)
-        start = end
-    fn = os.path.join(tempfile.gettempdir(), f"get_latest_snow_table_{table}_{time.time()}.parquet")
-    data.write_parquet(fn, use_pyarrow=True)
-    return pl.scan_parquet(fn)
+            to_concat.append(a.cast(schema))
+    return pl.concat(to_concat, how=how, rechunk=rechunk, parallel=parallel)

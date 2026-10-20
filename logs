@@ -1,234 +1,279 @@
+import unittest
+from unittest.mock import Mock, patch, MagicMock, ANY
 import pandas as pd
-import numpy as np
-import re
-import math
-import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple, Any, List, Union
-from pandas import Series
+from datetime import datetime, date, timedelta
+import sys
 
-logger = logging.getLogger(__name__)
+from crma_hive_scorecard_aggregate_scores import (
+        build_fisma_all_metrics_aggregate_scores_sql, 
+        build_component_scores_sql, 
+        run_aggregate_scores_workflow,
+    )
 
-logger.setLevel(logging.INFO)
-
-class DataAggregator:
-
-    def __init__(self):
-        self.logger = logger
-
-    def _is_array_column(self, series: pd.Series) -> bool:
-        """
-        Detect if column contains arrays/lists
-        """
-        if series.empty or series.isna().all():
-            return False
-        sample = series.dropna().iloc[0] 
-        return isinstance(sample, (list, np.ndarray)) or (sample is not None and hasattr(sample, '__iter__') and not isinstance(sample, str))
-
-    def _parse_wildcard_pattern(self, pattern: str) -> tuple[bool,bool,str]:
-        """
-        Convert wildcard pattern to flags and clean pattern
-        """
-        is_prefix = pattern.endswith('*')
-        is_suffix = pattern.startswith('*')
-        clean_pattern = pattern.strip('*')
-        return is_prefix, is_suffix, clean_pattern
-    
-    def _scalar_wildcard_filter(self, series: Series, pattern: Union[str, List[Any]]) -> Series:
-        """
-        Filter scalar column with wildcard support (eg,. state = '*open*') as well as multi-value support (eg., state = 'open' | state = 'reopened')
-        """
-        if isinstance(pattern,list):
-            masks = []
-            for p in pattern:
-                p_str = str(p) if p is not None else ''
-
-                # handle booleans
-                if series.dtype == 'bool':
-                    if p_str.lower() in ('true', '1', 'yes'):
-                        masks.append(series == True)
-                    elif p_str.lower() in ('false', '0', 'no'):
-                        masks.append(series == True)
-                    else:
-                        masks.append(pd.Series([False] * len(series), index=series.index))
-                # handle numerics
-                elif pd.api.types.is_numeric_dtype(series):
-                    try:
-                        p_num = pd.to_numeric(p)
-                        masks.append(series == p_num)
-                    except:
-                       masks.append(pd.Series([False] * len(series), index=series.index))
-                # string wildcard 
-                else:
-                    prefix_wild, suffix_wild, clean_pattern = self._parse_wildcard_pattern(p_str)
-                    series_str = series.astype(str).str.lower()
-                    clean_pattern_lower = clean_pattern.lower()
-
-                    if prefix_wild and suffix_wild:
-                        mask = series_str.str.contains(clean_pattern_lower, na=False, regex=False)
-                    elif prefix_wild:
-                        mask = series_str.str.fullmatch(f'^{re.escape(clean_pattern_lower)}.*', na=False)
-                    elif suffix_wild:
-                        mask = series_str.str.fullmatch( f'.*{re.escape(clean_pattern_lower)}$', na=False)
-                    else:
-                        mask = series_str == p_str.lower()     
-                    masks.append(mask.fillna(False).astype(bool))
-
-            # OR all masks togheter
-            combined_mask = pd.Series(np.logical_or.reduce(masks), index=series.index, dtype=bool)
-            return combined_mask
-        else:
-                        
-            # convert pattern to string
-            pattern_str = str(pattern) if pattern is not None else ''
-
-            # handle booleans explicitly
-            if series.dtype == 'bool':
-                if pattern_str.lower() in ('true', '1', 'yes'):
-                    return pd.Series(series == True, index=series.index, dtype=bool) #series == True
-                elif pattern_str.lower() in ('false', '0', 'no'):
-                    return pd.Series(series == False, index=series.index, dtype=bool) #return series == False
-                else:
-                    return pd.Series([False] * len(series), index=series.index, dtype=bool)
-            
-            # handle numeric columns
-            if pd.api.types.is_numeric_dtype(series):
-                try:
-                    pattern_num = pd.to_numeric(pattern)
-                    return pd.Series(series == pattern_num, index=series.index, dtype=bool)
-                except:
-                    return pd.Series([False] * len(series), index=series.index)
-                
-            # string columns with wildcard support
-            prefix_wild, suffix_wild, clean_pattern = self._parse_wildcard_pattern(pattern_str)
-            series_str = series.astype(str).str.lower()
-            clean_pattern_lower = clean_pattern.lower()
-
-            if prefix_wild and suffix_wild:
-                mask = series_str.str.contains(clean_pattern_lower, na=False, regex=False)
-            
-            elif prefix_wild:
-                mask = series_str.str.fullmatch(f'^{re.escape(clean_pattern_lower)}.*', na=False)
-            elif suffix_wild:
-                mask = series_str.str.fullmatch( f'.*{re.escape(clean_pattern_lower)}$', na=False)
-            else:
-                mask = series_str == pattern_str.lower()
-            
-            return pd.Series(mask.fillna(False).astype(bool), index=series.index)
-
-    def _array_wildcard_filter(self, series: Series, pattern: Union[str, List[Any]]) -> Series:
-        """
-        Filter array column with wildcard support (eg,. state && ['*open*']) as well as multi-value support (eg., state && ['open*', 'reopned'])
-        """
-        pattern_list = [pattern] if not isinstance(pattern, list) else pattern
-
-        
-
-        # def _check_array_match(arr: Any, pattern_str: str) -> bool:
-        def _check_array_match_any_values(arr: Any) -> bool:
-            # check if valid array
-            if arr is None or not isinstance(arr, (list, np.ndarray)) or len(arr) == 0:
-                return False
-            # convert ndarray -> list
-            arr_list = list(arr) if isinstance(arr, np.ndarray) else arr
-
-            # check if ANY pattern value matches this array
-            for pattern_val in pattern_list:
-                pattern_str = str(pattern_val) if pattern_val is not None else ''
+MODULE_PATH = "crma_hive_scorecard_aggregate_scores"
 
 
-                prefix_wild, suffix_wild, clean_pattern = self._parse_wildcard_pattern(pattern_str)
-                clean_pattern_lower = clean_pattern.lower()
+class TestScorecardComputeVmScore(unittest.TestCase):
+  
+    def test_build_fisma_all_metrics_aggregate_scores_sql_returns_string(self):
+        sql = build_fisma_all_metrics_aggregate_scores_sql()
+        self.assertIsInstance(sql, str)
 
-                for item in arr_list:
-                    # handle boolean in arrays
-                    if isinstance(item, bool):
-                        item_str = 'true' if item else 'false'
-                    else:
-                        item_str = str(item).lower()
+    def test_build_fisma_all_metrics_aggregate_scores_sql_contains_select(self):
+        sql = build_fisma_all_metrics_aggregate_scores_sql()
+        self.assertIn("SELECT", sql.upper())
 
-                    if prefix_wild and suffix_wild:
-                        if clean_pattern_lower in item_str:
-                            return True
-                    elif prefix_wild:
-                        if re.match(f'^{re.escape(clean_pattern_lower)}.*', item_str, re.IGNORECASE):   
-                            return True
-                    elif suffix_wild:
-                        if re.match(f'.*{re.escape(clean_pattern_lower)}$', item_str, re.IGNORECASE):
-                            return True
-                    else:
-                        if item_str == pattern_str.lower():
-                            return True
-            return False
-                
-        result = series.apply(_check_array_match_any_values)
-        return pd.Series(result.fillna(False).astype(bool), index=series.index)
-    
-    def filter_dataframe(self, df: pd.DataFrame, filter_conditions: List[Tuple[str,Union[str, List[Any]]]], dedup_on: Optional[str] = None) -> pd.DataFrame:
-        """
-        Apply multiple filter conditions, supports filters on array, and supports using wildcard expresions
+    def test_build_fisma_all_metrics_aggregate_scores_sql_contains_from(self):
+        sql = build_fisma_all_metrics_aggregate_scores_sql()
+        self.assertIn("FROM", sql.upper())
 
-        Parameters:
-            df: Input dataframe to filter and count
-            filter_conditions: List of {column: value} filters
-        
-        Returns:
-            pd.DataFrame: Returns all records matching filter conditions
-        """
-        logger.info(f"Applying {len(filter_conditions)} filter conditions to {len(df)} records")
-        filtered = df.copy()
-        for col, val in filter_conditions:
-            if col not in filtered.columns:
-                logger.error(f"Column '{col}' not found")
-                raise KeyError("Missing column")
-            
-            val_display = str(val[:10] + ['...'] if isinstance(val, list) and len(val) > 3 else val)
-            logger.info(f"Filtering {len(filtered)} records on {col}='{val_display}'")
-            if self._is_array_column(filtered[col]):
-                logger.info(f"Detected array column '{col}'")
-                mask = self._array_wildcard_filter(filtered[col], val)
-            else:
-                mask = self._scalar_wildcard_filter(filtered[col], val)
-            prev_count = len(filtered)
-            filtered = filtered[mask]
-            retention = len(filtered) / prev_count * 100 if prev_count > 0 else 0
-            logger.info(f"Result: {len(filtered)} records returned ({retention:.1f}%)")
-        
-        # Deduplicate dataframe on dedup id
-        if dedup_on is not None:
-            if dedup_on not in filtered.columns:
-                logger.error(f"Dedup column '{dedup_on}' not found")
-                raise KeyError("Missing dedup column")
-            else:
-                logger.info(f"Deduplicating on '{dedup_on}' at the end")
-                filtered = filtered.drop_duplicates(subset=[dedup_on])
-        
-        logger.info(f"Final filtered dataframe: {len(filtered)} records")
-        return filtered
-    
-    def avg_time_days(self, df: pd.DataFrame, time_col: str = "time_taken_to_fix", conversion_factor: int = 86400) -> int:
-        """
-        Compute average time with optional filtering
+    def test_build_fisma_all_metrics_aggregate_scores_sql_not_empty(self):
+        sql = build_fisma_all_metrics_aggregate_scores_sql()
+        self.assertTrue(sql.strip())
 
-        Parameteres:
-            df: Input dataframe to filter and average
-            filter_conditions: Optional List of {column: value} filters
-            time_col: Time/duration column name 
-            conversion_factor: Conversion factor (86400=sec->days, 24=hours->days, 1440=min->days)
+    def test_build_fisma_all_metrics_aggregate_scores_sql_returns_string(self):
+        sql = build_fisma_all_metrics_aggregate_scores_sql()
+        self.assertIsInstance(sql, str)
 
-        Returns:
-            int: Average time in target units (0 if no data)
-        """
-        logger.info(f"Computing average for '{time_col}' column for {len(df)} records (units: {conversion_factor})")
-        valid_times = df[time_col].dropna()
-        logger.info(f"Found {len(valid_times)} valid {time_col} values")
+    def test_build_component_scores_sql_contains_cte(self):
+        sql = build_component_scores_sql()
+        self.assertIn("WITH", sql.upper())
 
-        if len(valid_times) > 0:
-            avg_smallest_units = valid_times.mean()
-            avg_units = math.ceil(avg_smallest_units / conversion_factor)
+    def test_build_component_scores_sql_contains_select(self):
+        sql = build_component_scores_sql()
+        self.assertIn("SELECT", sql.upper())
 
-            logger.info(f"Average time: {avg_units} days ({avg_smallest_units:.0f})")
-            return avg_units
-        else:
-            logger.warning(f"No valid time values found, returning 0")
-            return None
+    def test_build_component_scores_sql_contains_from(self):
+        sql = build_component_scores_sql()
+        self.assertIn("FROM", sql.upper())
+
+    def test_build_component_scores_sql_not_empty(self):
+        sql = build_component_scores_sql()
+        self.assertTrue(sql.strip())
+
+ 
+    @patch(f"{MODULE_PATH}.date")
+    @patch(f"{MODULE_PATH}.logger")
+    @patch(f"{MODULE_PATH}.build_fisma_all_metrics_aggregate_scores_sql")
+    @patch(f"{MODULE_PATH}.rw_util.query_postgres_to_dataframe")
+    @patch(f"{MODULE_PATH}.fismaScorecardUtility.load_to_db_and_perform_post_load_validation")
+    @patch(f"{MODULE_PATH}.fismaScorecardUtility.archive_to_s3")
+    @patch(f"{MODULE_PATH}.build_component_scores_sql")
+    def test_fisma_query_returns_none_stops_workflow(
+        self,
+        mock_build_component_scores_sql,
+        mock_archive_to_s3,
+        mock_load_to_db_and_validate,
+        mock_query_postgres_to_dataframe,
+        mock_build_fisma_all_metrics_aggregate_scores_sql,
+        mock_logger,
+        mock_date,
+    ):
+        """Ensure workflow stops after warning when fisma query returns no data."""
+        # Arrange
+        engine = MagicMock(name="engine")
+        bucket_name = "test-bucket"
+
+        fixed_date = date(2026, 9, 1)
+        mock_date.today.return_value = fixed_date
+
+        sql_fisma = "SELECT * FROM fisma_agg"
+        mock_build_fisma_all_metrics_aggregate_scores_sql.return_value = sql_fisma
+
+        # First call (fisma) returns None, so workflow should return early
+        mock_query_postgres_to_dataframe.return_value = None
+
+        # Act
+        run_aggregate_scores_workflow(engine=engine, bucket_name=bucket_name)
+
+        # Assert : compute params, build and execute input query called
+        mock_build_fisma_all_metrics_aggregate_scores_sql.assert_called_once()
+
+        mock_query_postgres_to_dataframe.assert_called_once_with(
+            engine=engine,
+            sql_query=sql_fisma,
+            params = {"etl_date": fixed_date}
+        )
+
+        mock_logger.warning.assert_called_once_with("Query returned no data")
+
+        # Assert: No downstream processing should be invoked
+        mock_load_to_db_and_validate.assert_not_called()
+        mock_archive_to_s3.assert_not_called()
+        mock_build_component_scores_sql.assert_not_called()
+
+    @patch(f"{MODULE_PATH}.date")
+    @patch(f"{MODULE_PATH}.logger")
+    @patch(f"{MODULE_PATH}.build_fisma_all_metrics_aggregate_scores_sql")
+    @patch(f"{MODULE_PATH}.rw_util.query_postgres_to_dataframe")
+    @patch(f"{MODULE_PATH}.fismaScorecardUtility.load_to_db_and_perform_post_load_validation")
+    @patch(f"{MODULE_PATH}.fismaScorecardUtility.archive_to_s3")
+    @patch(f"{MODULE_PATH}.build_component_scores_sql")
+    def test_fisma_data_present_component_query_returns_none(
+        self,
+        mock_build_component_scores_sql,
+        mock_archive_to_s3,
+        mock_load_to_db_and_validate,
+        mock_query_postgres_to_dataframe,
+        mock_build_fisma_all_metrics_aggregate_scores_sql,
+        mock_logger,
+        mock_date,
+    ):
+        """Verify FISMa pipeline runs fully and Component pipeline is skipped when FISMA query returns no data."""
+        # Arrange
+        engine = MagicMock(name="engine")
+        bucket_name = "test-bucket"
+
+        fixed_date = date(2026, 9, 1)
+        mock_date.today.return_value = fixed_date
+
+        sql_fisma = "SELECT * FROM fisma_agg"
+        mock_build_fisma_all_metrics_aggregate_scores_sql.return_value = sql_fisma
+
+        # Fisma query returns data, Component query returns None
+        df_fisma = pd.DataFrame(
+            {
+                "fisma_id": ["ID1", "ID2"],
+                "fisma_name": ["Name1", "Name2"],
+                "portfolio": ["Port1", "Port2"],
+            }
+        )
+        mock_query_postgres_to_dataframe.side_effect = [df_fisma, None]
+
+        # Act
+        run_aggregate_scores_workflow(engine=engine, bucket_name=bucket_name)
+
+        # Assert: fisma query
+        mock_query_postgres_to_dataframe.assert_any_call(
+            engine=engine,
+            sql_query=sql_fisma,
+            params = {"etl_date": fixed_date}
+        )
+
+        # Assert: Fisma dataset loading and archival are called
+        mock_load_to_db_and_validate.assert_any_call(
+            engine=engine,
+            df=ANY,
+            table="crma_hive_fismascorecard_fisma_system_all_metrics_scores",
+            etl_date=fixed_date,
+        )
+        mock_archive_to_s3.assert_any_call(
+            df=ANY,
+            bucket_name=bucket_name,
+            dataset="crma_hive_fismascorecard_fisma_system_all_metrics_scores",
+        )
+
+        # Assert: Componenet SQL should be built once
+        mock_build_component_scores_sql.assert_called_once()
+
+        #Assert: Second query 
+        self.assertEqual(mock_query_postgres_to_dataframe.call_count, 2)
+
+        #Assert:  Component branch returns None -> warning once more
+        mock_logger.warning.assert_called_once_with("Query returned no data")
+
+        # Assert: No Component load/archive when df is None
+        self.assertEqual(mock_load_to_db_and_validate.call_count, 1)
+        self.assertEqual(mock_archive_to_s3.call_count, 1)
+
+    @patch(f"{MODULE_PATH}.date")
+    @patch(f"{MODULE_PATH}.logger")
+    @patch(f"{MODULE_PATH}.build_fisma_all_metrics_aggregate_scores_sql")
+    @patch(f"{MODULE_PATH}.rw_util.query_postgres_to_dataframe")
+    @patch(f"{MODULE_PATH}.fismaScorecardUtility.load_to_db_and_perform_post_load_validation")
+    @patch(f"{MODULE_PATH}.fismaScorecardUtility.archive_to_s3")
+    @patch(f"{MODULE_PATH}.build_component_scores_sql")
+    def test_fisma_and_component_pipelines_run_successfully(
+        self,
+        mock_build_component_scores_sql,
+        mock_archive_to_s3,
+        mock_load_to_db_and_validate,
+        mock_query_postgres_to_dataframe,
+        mock_build_fisma_all_metrics_aggregate_scores_sql,
+        mock_logger,
+        mock_date,
+    ):
+        """Confirm both fisma and comoponent pipelines execute fully when data is returned."""
+        # Arrange
+        engine = MagicMock(name="engine")
+        bucket_name = "test-bucket"
+
+        fixed_date = date(2026, 9, 1)
+        mock_date.today.return_value = fixed_date
+
+
+        sql_fisma = "SELECT * FROM fisma_aggs"
+        sql_component = "SELECT * FROM component_aggs"
+        mock_build_fisma_all_metrics_aggregate_scores_sql.return_value = sql_fisma
+        mock_build_component_scores_sql.return_value = sql_component
+
+        df_fisma = pd.DataFrame(
+            {
+                "fisma_id": ["ID1"],
+                "fisma_name": ["Name1"],
+                "portfolio": ["Port1"],
+            }
+        )
+        df_component = pd.DataFrame({"col": [1, 2]})
+
+        # First call: fisma DF, second call: component DF
+        mock_query_postgres_to_dataframe.side_effect = [df_fisma, df_component]
+
+        # Act
+        run_aggregate_scores_workflow(engine=engine, bucket_name=bucket_name)
+
+        # Assert: fisma aggs
+        self.assertEqual(mock_build_fisma_all_metrics_aggregate_scores_sql.call_count, 1)
+
+        # Assert: component component aggs
+        self.assertEqual(mock_build_component_scores_sql.call_count, 1)
+
+        # Assert: both queries executed
+        self.assertEqual(mock_query_postgres_to_dataframe.call_count, 2)
+
+        mock_query_postgres_to_dataframe.assert_any_call(
+            engine=engine,
+            sql_query=sql_fisma,
+            params = {"etl_date": fixed_date}
+
+        )
+        mock_query_postgres_to_dataframe.assert_any_call(
+            engine=engine,
+            sql_query=sql_component,
+            params = {"etl_date": fixed_date}
+        )
+
+        # Assert: Both FISMA and component loads
+        self.assertEqual(mock_load_to_db_and_validate.call_count, 2)
+        mock_load_to_db_and_validate.assert_any_call(
+            engine=engine,
+            df=ANY,
+            table="crma_hive_fismascorecard_fisma_system_all_metrics_scores",
+            etl_date=fixed_date,
+        )
+        mock_load_to_db_and_validate.assert_any_call(
+            engine=engine,
+            df=ANY,
+            table="crma_hive_fismascorecard_component_scores",
+            etl_date=fixed_date,
+        )
+
+        #Assert: Both archival calls
+        self.assertEqual(mock_archive_to_s3.call_count, 2)
+        mock_archive_to_s3.assert_any_call(
+            df=ANY,
+            bucket_name=bucket_name,
+            dataset="crma_hive_fismascorecard_fisma_system_all_metrics_scores",
+        )
+        mock_archive_to_s3.assert_any_call(
+            df=ANY,
+            bucket_name=bucket_name,
+            dataset="crma_hive_fismascorecard_component_scores",
+        )
+
+        # Assert: No warnings expected when both datasets are present
+        mock_logger.warning.assert_not_called()
+
+
+if __name__ == '__main__':
+    unittest.main()

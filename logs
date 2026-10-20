@@ -48,32 +48,32 @@ def load_to_processed(
         warnning_df(pd.DataFrame): Dataframe with rows containing warning flangs 
     """
     if backfill_date:
-        prefix = "processed/AXONIUS/CLEAN/"
-        s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_CLEAN"
+        prefix = "processed/CSAM/CLEAN/"
+        s3_filename = f"CRMA_HIVE_CSAM_{dataset}_CLEAN"
         target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET") 
         rw_util.load_to_s3(bucket_name, clean_df, target_filename, "PARQUET", True)
        
         if quarantine_df is not None:
-            prefix = "processed/AXONIUS/QUARANTINE/"
-            s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_QUARANTINE"
+            prefix = "processed/CSAM/QUARANTINE/"
+            s3_filename = f"CRMA_HIVE_CSAM_{dataset}_QUARANTINE"
             target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET")
             rw_util.load_to_s3(bucket_name, quarantine_df, target_filename, "PARQUET", True)   
 
         if warning_df is not None:
-            prefix = "processed/AXONIUS/WARNING/"
-            s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_WARNING"        
+            prefix = "processed/CSAM/WARNING/"
+            s3_filename = f"CRMA_HIVE_CSAM_{dataset}_WARNING"        
             target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET")
             rw_util.load_to_s3(bucket_name, warning_df, target_filename, "PARQUET", True)     
     else:    
-        output_file= f"processed/AXONIUS/CLEAN/CRMA_HIVE_AXONIUS_{dataset}_CLEAN"
+        output_file= f"processed/CSAM/CLEAN/CRMA_HIVE_CSAM_{dataset}_CLEAN"
         rw_util.load_to_s3(bucket_name, clean_df, output_file, "PARQUET")
 
         if quarantine_df is not None:
-            output_file= f"processed/AXONIUS/QUARANTINE/CRMA_HIVE_AXONIUS_{dataset}_QUARANTINE"
+            output_file= f"processed/CSAM/QUARANTINE/CRMA_HIVE_CSAM_{dataset}_QUARANTINE"
             rw_util.load_to_s3(bucket_name, quarantine_df, output_file, "PARQUET")   
 
         if warning_df is not None:
-            output_file= f"processed/AXONIUS/WARNING/CRMA_HIVE_AXONIUS_{dataset}_WARNING"
+            output_file= f"processed/CSAM/WARNING/CRMA_HIVE_CSAM_{dataset}_WARNING"
             rw_util.load_to_s3(bucket_name, warning_df, output_file, "PARQUET")         
 
 ## For dev testing purpose only##
@@ -90,37 +90,37 @@ def load_to_test(
     
     """
     if backfill_date:
-        prefix = "test/processed/AXONIUS/CLEAN/"
-        s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_CLEAN"
+        prefix = "test/processed/CSAM/CLEAN/"
+        s3_filename = f"CRMA_HIVE_CSAM_{dataset}_CLEAN"
         target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV") 
         rw_util.load_to_s3(bucket_name, clean_df, target_filename, "CSV", True)
        
         if quarantine_df is not None:
-            prefix = "test/processed/AXONIUS/QUARANTINE/"
-            s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_QUARANTINE"
+            prefix = "test/processed/CSAM/QUARANTINE/"
+            s3_filename = f"CRMA_HIVE_CSAM_{dataset}_QUARANTINE"
             target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV")
             rw_util.load_to_s3(bucket_name, quarantine_df, target_filename, "CSV", True)   
 
         if warning_df is not None:
-            prefix = "test/processed/AXONIUS/WARNING/"
-            s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_WARNING"        
+            prefix = "test/processed/CSAM/WARNING/"
+            s3_filename = f"CRMA_HIVE_CSAM_{dataset}_WARNING"        
             target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV")
             rw_util.load_to_s3(bucket_name, warning_df, target_filename, "CSV", True)     
     else:    
-        output_file= f"test/processed/AXONIUS/CLEAN/CRMA_HIVE_AXONIUS_{dataset}_CLEAN"
+        output_file= f"test/processed/CSAM/CLEAN/CRMA_HIVE_CSAM_{dataset}_CLEAN"
         rw_util.load_to_s3(bucket_name, clean_df, output_file, "CSV")
 
         if quarantine_df is not None:
-            output_file= f"test/processed/AXONIUS/QUARANTINE/CRMA_HIVE_AXONIUS_{dataset}_QUARANTINE"
+            output_file= f"test/processed/CSAM/QUARANTINE/CRMA_HIVE_CSAM_{dataset}_QUARANTINE"
             rw_util.load_to_s3(bucket_name, quarantine_df, output_file, "CSV")   
 
         if warning_df is not None:
-            output_file= f"test/processed/AXONIUS/WARNING/CRMA_HIVE_AXONIUS_{dataset}_WARNING"
+            output_file= f"test/processed/CSAM/WARNING/CRMA_HIVE_CSAM_{dataset}_WARNING"
             rw_util.load_to_s3(bucket_name, warning_df, output_file, "CSV")  
   
-def process_devices(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+def process_systems_general_details_query(bucket_name: str, backfill_date: Optional[str] = None) -> None:
     """
-    Handles  data cleaning and enrichement of AXONIUS devices dataset.
+    Handles  data cleaning and enrichement of the CSAM systems_general_details_query 
     
     In backfill mode, fetch the file whose name contains the backfill date and 
     overwrite existing file in /processed prefix.
@@ -136,9 +136,9 @@ def process_devices(bucket_name: str, backfill_date: Optional[str] = None) -> No
     logger.info(f"Fetching data from landing zone...")
     
     # Creating variables and the dataframe
-    dataset = "DEVICES" 
-    prefix = "raw_data/AXONIUS/"
-    base_name = prefix + "CRMA_HIVE_AXONIUS_" + dataset
+    dataset = "SYSTEMS_GENERAL_DETAILS_QUERY" 
+    prefix = "raw_data/CSAM/"
+    base_name = prefix + "CRMA_HIVE_CSAM_" + dataset
 
     if backfill_date:
         df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
@@ -148,67 +148,63 @@ def process_devices(bucket_name: str, backfill_date: Optional[str] = None) -> No
     if df is None:
         raise ValueError("No data fetched from landing zone")
     
-    target_columns = ["internal_axon_id", "adapters", "adapter_list_length", "labels", "specific_data.data.domain", "specific_data.data.hostname_preferred", "specific_data.data.enrichment_u_acronym", 
-                      "specific_data.data.enrichment_u_inventory_system", "specific_data.data.enrichment_u_security_support_portfolio", "specific_data.data.first_seen",
-                      "specific_data.data.last_seen", "specific_data.data.network_interfaces.mac", "specific_data.data.network_interfaces.ips_v4_preferred", "specific_data.data.network_interfaces.ips_v6_preferred", 
-                      "specific_data.data.organizational_unit", "specific_data.data.os.distribution", "specific_data.data.os.type", "specific_data.data.os.type_distribution",
-                      "adapters_data.tenable_io_adapter.asset_uuid", "adapters_data.gui.custom_devicerole", "adapters_data.gui.custom_devicetype", "specific_data.data.axonius_classification_identifier.device_type", 
-                      "specific_data.data.enrichment_u_dhs_hva", "adapters_data.crowd_strike_adapter.last_seen", "specific_data.data.os.type_distribution_preferred", "adapters_data.crowd_strike_adapter.policies.policy_type",
-                      "adapters_data.crowd_strike_adapter.policies.applied", "adapters_data.gui.custom_enrichment_fisma_id", "specific_data.data.serial_number_preferred", "adapters_data.gui.custom_asset_auth_status",
-                      "adapters_data.gui.custom_asset_hosting",
+    target_columns = ["System ID", "Org", "Sub Org","System Name", "Acronym", "System Category", "Confidentiality", "Integrity", "Availability", "System Operational Status", "Contractor System", "FISMA Reportable", "Child System",
+                      "FISMA ID", "Office", "Address", "City", "State", "Zip Code", "System Mission Purpose", "System Type", "PTA / IPA Date Completed", "PTA / IPA Artifacts Loaded", "Personally Identifiable Information", 
+                      "Privacy Impact Assessment Status", "Privacy Impact Assessment Date Completed", "Privacy Impact Assessment Artifacts Loaded", "System of Records Notice", "Sorn ID", "SORN Status", "Financial Management", 
+                      "Critical Infrastructure", "Mission Essential System", "ATO Type", "ATO Date", "ATO Expiration", "Authorization Workflow Date", "Days in Current Status", "Authorization Workflow Submitted By", "System Sensitivity", 
+                      "UII Code", "Investment Name", "Portfolio", "Business Impact Analysis Date Completed", "Business Impact Analysis Next Due Date", "Business Impact Analysis Artifacts Loaded", "Contingency Plan Date Completed", 
+                      "Contingency Plan Next Due Date", "Contingency Plan Artifacts Loaded", "Contingency Plan Training Date Completed", "Contingency Plan Training Next Due Date", "Contingency Plan Training Artifacts Loaded", 
+                      "Contingency Plan Test Date Completed", "Contingency Plan Test Next Due Date", "Contingency Plan Test Type", "Contingency Plan Test Artifacts Loaded", "Disaster Recovery Implemented", "Primary Site", "Alternate Site", 
+                      "Information System Owner", "Information System Security Officer", "Number of Open Approved POA&Ms", "Number of Delayed POA&Ms", "E-Authentication Status",  "High Value Asset", "External Web Interface", 
+                      "CFO Designation", "Cloud System", "Cloud Service Model", "Law Enforcement Sensitive", "Authorizing Official",  "Information System Security Manager", "System Support Personnel", "Contingency Plan Review Date Completed", 
+                      "Contingency Plan Test Review Date Completed", "Document Review Approval Date Completed", "Published in Federal Register"
                       ]
     logger.info("Selecting target columns...")
     df = dataQualityUtils.select_fields(df, target_columns)
 
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA', 'TBD'], pd.NA, inplace=True)
+
+    #Clean column names:
+    df = dataQualityUtils.clean_column_names(df)
+
     #Remaname columns
-    map = {
-        "specific_data.data.domain": "devices_domain","specific_data.data.hostname_preferred": "devices_hostname_preferred", "specific_data.data.enrichment_u_acronym": "devices_enrichment_u_acronym",
-         "specific_data.data.enrichment_u_inventory_system":"devices_enrichment_u_inventory_system", 
-         "specific_data.data.enrichment_u_security_support_portfolio": "devices_enrichment_u_security_support_portfolio", "specific_data.data.first_seen": "devices_first_seen", 
-         "specific_data.data.last_seen": "devices_last_seen", "specific_data.data.network_interfaces.mac": "devices_mac", "specific_data.data.network_interfaces.ips_v4_preferred": "devices_ips_v4_preferred",
-         "specific_data.data.network_interfaces.ips_v6_preferred": "devices_ips_v6_preferred", "specific_data.data.organizational_unit": "devices_organizational_unit", 
-         "specific_data.data.os.distribution": "devices_os_distribution", "specific_data.data.os.type": "devices_os_type", "specific_data.data.os.type_distribution":"devices_os_type_distribution", 
-         "adapters_data.tenable_io_adapter.asset_uuid": "asset_uuid", "specific_data.data.axonius_classification_identifier.device_type": "devices_type", "adapters_data.gui.custom_devicerole": "devices_custom_devicerole",
-         "adapters_data.gui.custom_devicetype": "devices_custom_devicetype", "specific_data.data.enrichment_u_dhs_hva": "devices_enrichment_u_dhs_hva", "adapters_data.crowd_strike_adapter.last_seen": "crowd_strike_last_seen", 
-         "specific_data.data.os.type_distribution_preferred": "devices_os_type_distribution_preferred", "adapters_data.crowd_strike_adapter.policies.policy_type": "crowd_strike_adapter_policies_policy_type",
-         "adapters_data.crowd_strike_adapter.policies.applied": "crowd_strike_adapter_policies_applied", "adapters_data.gui.custom_enrichment_fisma_id":"devices_custom_enrichment_fisma_id",
-         "specific_data.data.serial_number_preferred": "devices_serial_number_preferred", "adapters_data.gui.custom_asset_auth_status": "devices_custom_asset_auth_status", 
-         "adapters_data.gui.custom_asset_hosting": "devices_custom_asset_hosting"
-        }
+    map = {"number_of_open_approved_poa_ms": "number_of_open_approved_poams", "number_of_delayed_poa_ms": "number_of_delayed_poams"}
     df = dataQualityUtils.rename_fields(df, map)
 
-    #Remove non-printerbal characters
-    logger.info("Removing non-printable characters from string literals.")
-    df = df.map(dataQualityUtils.remove_non_printable_chars)
+    #Normalize mixed lists/scalar dates into parsable strings
+    cols = ["published_in_federal_register"]
+    df = dataQualityUtils.normalize_date_array_fields(df, cols)
 
+    # #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["ato_date", "ato_expiration", "authorization_workflow_date", "business_impact_analysis_date_completed", "business_impact_analysis_next_due_date", "contingency_plan_date_completed", "contingency_plan_next_due_date", "contingency_plan_review_date_completed",
+            "contingency_plan_test_date_completed", "contingency_plan_test_next_due_date", "contingency_plan_test_review_date_completed", "contingency_plan_training_date_completed", "contingency_plan_training_next_due_date", "privacy_impact_assessment_date_completed", 
+            "document_review_approval_date_completed"
+            ]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
 
-    #Flatten select list/numpy array/set fields to str 
-    cols = ["devices_enrichment_u_dhs_hva"]
-    df = dataQualityUtils.flatten_string_list_columns(df, cols) 
-
-    #Convert DataFrame columns containing lists or numpy arrays to PostgreSQL array
-    df = dataQualityUtils.convert_arrays_for_postgres(df)  
-  
-    #Apply DQ2:Standardize date columns to ISO 8601 format
-    cols = ["devices_first_seen", "devices_last_seen", "crowd_strike_last_seen"]    
-    df = dataQualityUtils.clean_date_fields(df, cols)   
-
-    #Apply DQ4: Convert numeric columns to Integer 
-    cols = ["adapter_list_length", ]
+    #Convert DataFrame columns containing lists or numpy arrays to PostgreSQL arrays
+    df = dataQualityUtils.convert_arrays_for_postgres(df) 
+    
+    # #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["business_impact_analysis_artifacts_loaded", "contingency_plan_artifacts_loaded", "contingency_plan_test_artifacts_loaded", "contingency_plan_training_artifacts_loaded", "days_in_current_status", "number_of_delayed_poams", "number_of_open_approved_poams", 
+            "pta_ipa_artifacts_loaded", "privacy_impact_assessment_artifacts_loaded",  ]
     df = dataQualityUtils.clean_int_fields(df, cols)
 
-
+    #Apply DQ5: Remove HTML tags.  
+    cols = ["system_mission_purpose"]
+    df = dataQualityUtils.remove_html_tags(df, cols)
 
     #Apply DQ1 & W: Not nullabe, Warnning 
-    cols = ["adapters", "devices_hostname_preferred", "devices_custom_enrichment_fisma_id"]
+    cols = ["acronym", "system_name"]
     not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
 
     #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["internal_axon_id"]
+    cols = ["system_id", "fisma_id"]
     df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
 
     #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = ["internal_axon_id"]
+    cols = ["system_id", "fisma_id"]
     df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
 
     # #Merge quarantine dataframes
@@ -225,9 +221,104 @@ def process_devices(bucket_name: str, backfill_date: Optional[str] = None) -> No
     # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
     # ##
 
-def process_software(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+def process_poam_details_report(bucket_name: str, backfill_date: Optional[str] = None) -> None:
     """
-    Handles  data cleaning and enrichement of AXONIUS software dataset. 
+    Handles  data cleaning and enrichement of the CSAM poam_details_report 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+    def _apply_mileston_flags(df: pd.DataFrame) -> pd.DataFrame:
+        """Private function to apply milestone flags"""
+        warnning_df = df.copy()    
+        warnning_df['warnings'] = ''        
+        # Apply the condition: If date > Jan 01, 2024 AND milestone = 0, set warning
+        warnning_df['warnings'] = warnning_df.apply(
+            lambda row: 'number_milestones = 0 for a poam created after 2024-01-01' if pd.to_datetime(row['create_date']) > pd.Timestamp('2024-01-01') and row['number_milestones'] == 0 else '',
+            axis=1
+        )
+        warnning_df = warnning_df[warnning_df['warnings'] != ''] 
+        return warnning_df
+
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "POAM_DETAILS_REPORT"
+    prefix = "raw_data/CSAM/"
+    base_name = prefix + "CRMA_HIVE_CSAM_" + dataset
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+    
+    target_columns = ["System ID", "System Name", "Acronym", "Portfolio","System Category", "System Operational Status", "System Type", "POAM ID", "POAM Sequence", "POAM Title", "Detailed Weakness Description",  "Created By", "Create Date", 
+                      "Days Since Creation", "Scheduled Completion Date", "Planned Start Date", "Actual Start Date", "Planned Finish Date", "Actual Finish Date", "Status", "Weakness", "Cost", "Control Risk Severity", 
+                      "User Identified Criticality", "Severity", "Workflow Status", "Workflow Status Date", "Days Until Auto-Approved", "Exclude From OMB", "Accepted Risk", "Assigned To", "Assigned Date", "Delay Reason", "Controls", 
+                      "CSFFunction", "CSFCategory", "CSFSubCategory", "Number Milestones", "Number Artifacts", "Item Identified During", "Policy Waiver Approved", "Policy Waiver Expiration", "High Value Asset", "Weakness Comments", 
+                      "POA&M Delayed Comments", "POA&M Comments"
+                    ]
+
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA', 'TBD'], pd.NA, inplace=True)
+
+    #Clean column names:
+    df = dataQualityUtils.clean_column_names(df)
+
+    #Rename columns
+    map = {"poa_m_comments": "poam_comments", "poa_m_delayed_comments": "poam_delayed_comments"}
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = [ "actual_finish_date", "actual_start_date", "assigned_date", "create_date", "planned_finish_date", "planned_start_date", "policy_waiver_expiration", "scheduled_completion_date", "workflow_status_date" ]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["cost", "days_since_creation", "days_until_auto_approved", "poam_id", "poam_sequence", "system_id", "number_milestones", "number_artifacts" ]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+    #Apply DQ5: Remove HTML tags.  
+    cols = ["poam_comments", "detailed_weakness_description"]
+    df = dataQualityUtils.remove_html_tags(df, cols)
+
+    #Apply BR1: Milestone>0 if create_date is after or 2024-01-01, else add to warnning
+    warning_df = _apply_mileston_flags(df)  
+
+    #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = ["system_id", "poam_id", "status"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = ["poam_id"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    # #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+
+    #Load to destination  
+    logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing only ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+
+def process_system_privacy_details_report(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of the CSAM system_privacy_details_report 
     
     In backfill mode, fetch the file whose name contains the backfill date and 
     overwrite existing file in /processed prefix.
@@ -243,9 +334,9 @@ def process_software(bucket_name: str, backfill_date: Optional[str] = None) -> N
     logger.info(f"Fetching data from landing zone...")
     
     # Creating variables and the dataframe
-    dataset = "SOFTWARE" 
-    prefix = "raw_data/AXONIUS/"
-    base_name = prefix + "CRMA_HIVE_AXONIUS_" + dataset
+    dataset = "SYSTEM_PRIVACY_DETAILS_REPORT"
+    prefix = "raw_data/CSAM/"
+    base_name = prefix + "CRMA_HIVE_CSAM_" + dataset
 
     if backfill_date:
         df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
@@ -254,61 +345,170 @@ def process_software(bucket_name: str, backfill_date: Optional[str] = None) -> N
 
     if df is None:
         raise ValueError("No data fetched from landing zone")
-    
-    target_columns = ["internal_axon_id", "adapters", 	"labels", "_id", "devices_count",	"specific_data.data.installed_software.app_hash", "specific_data.data.installed_software.architecture", 
-                      "specific_data.data.installed_software.category", "specific_data.data.installed_software.first_found", "specific_data.data.installed_software.has_reached_end_of_life", "specific_data.data.installed_software.installed_on",
-                      "specific_data.data.installed_software.last_used_date", "specific_data.data.installed_software.name_version", "specific_data.data.installed_software.preferred_name", "specific_data.data.installed_software.preferred_vendor",
-                      "specific_data.data.installed_software.publisher", "specific_data.data.installed_software.source", "specific_data.data.installed_software.sw_uid", "specific_data.data.installed_software.update_time", 
-                      "specific_data.data.installed_software.vendor_publisher", "specific_data.data.installed_software.version", "specific_data.data.installed_software.end_of_life", "specific_data.data.installed_software.end_of_support", 
-                      "specific_data.data.installed_software.has_reached_end_of_support",
-                      ]
+
+    target_columns = ["System ID", "Sub Organization", "System Name", "Acronym", "System Operational Status", "PII", "PTA Date Completed", "PIA Status", "PIA Date Completed", "SORN Status", "SORN Date Completed", "SORN ID",  ]
+
     logger.info("Selecting target columns...")
     df = dataQualityUtils.select_fields(df, target_columns)
 
-    #Remaname columns
-    map = {"_id": "software_id", "specific_data.data.installed_software.app_hash":"software_app_hash", "specific_data.data.installed_software.architecture": "software_architecture", 
-           "specific_data.data.installed_software.category": "software_category", "specific_data.data.installed_software.first_found": "software_first_found", "specific_data.data.installed_software.has_reached_end_of_life": "software_has_reached_end_of_life",
-           "specific_data.data.installed_software.installed_on": "software_installed_on", "specific_data.data.installed_software.last_used_date": "software_last_used_date", "specific_data.data.installed_software.name_version": "software_name_version",
-           "specific_data.data.installed_software.preferred_name": "software_preferred_name", "specific_data.data.installed_software.preferred_vendor": "software_preferred_vendor", "specific_data.data.installed_software.publisher": "software_publisher",
-           "specific_data.data.installed_software.source": "software_source", "specific_data.data.installed_software.sw_uid": "software_sw_uid", "specific_data.data.installed_software.update_time": "software_update_time",
-           "specific_data.data.installed_software.vendor_publisher": "software_vendor_publisher", "specific_data.data.installed_software.version": "software_version", "specific_data.data.installed_software.end_of_life": "software_end_of_life", 
-           "specific_data.data.installed_software.end_of_support": "software_end_of_support", "specific_data.data.installed_software.has_reached_end_of_support": "software_has_reached_end_of_support",        
-        }
-    df = dataQualityUtils.rename_fields(df, map)
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA', 'TBD'], pd.NA, inplace=True)
 
-    #Remove non-printerbal characters
-    logger.info("Removing non-printable characters from string literals.")
-    df = df.map(dataQualityUtils.remove_non_printable_chars)
-
-
-    #Convert DataFrame columns containing lists or numpy arrays to PostgreSQL arrays
-    df = dataQualityUtils.convert_arrays_for_postgres(df)
-  
+    #Clean column names:
+    df = dataQualityUtils.clean_column_names(df)
+ 
     #Apply DQ2:Standardize date columns to ISO 8601 format
-    cols = ["software_last_used_date"]    
-    df = dataQualityUtils.clean_date_fields(df, cols)   
-
+    cols = ["pta_date_completed", "pia_date_completed", "sorn_date_completed"]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
+    
     #Apply DQ4: Convert numeric columns to Integer 
-    cols = ["devices_count"]
+    cols = ["system_id"]
     df = dataQualityUtils.clean_int_fields(df, cols)
 
-
     #Apply DQ1 & W: Not nullabe, Warnning 
-    cols = ["adapters"]
+    cols = ["system_name", "acronym"]
     not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
 
     #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["internal_axon_id", "software_id"]
+    cols = ["system_id"]
     df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
 
     #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = ["internal_axon_id"]
+    cols = ["system_id"]
     df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
 
-    # #Merge quarantine dataframes
+    #Merge quarantine dataframes
     quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
 
     #warning df
+    warning_df = not_nullable_warning.copy()
+
+    #Load to destination  
+    logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing only ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+
+def process_system_points_of_contact_query(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of the CSAM system_points_of_contact_query
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "SYSTEM_POINTS_OF_CONTACT_QUERY"
+    prefix = "raw_data/CSAM/"
+    base_name = prefix + "CRMA_HIVE_CSAM_" + dataset
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+    target_columns = ["System ID", "System Name", "Sub Organization", "Acronym", "Position", "Name", "Email" ]
+
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA', 'TBD'], pd.NA, inplace=True)
+
+    #Clean column names:
+    df = dataQualityUtils.clean_column_names(df)
+    
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["system_id"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["system_name", "acronym"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = ["system_id"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    quarantine_df = quarantine_not_null.copy()
+    warning_df = not_nullable_warning.copy()
+
+    #Load to destination  
+    logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing only ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+
+def process_security_rtm_report (bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of the CSAM security_rtm_report
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "SECURITY_RTM_REPORT"
+    prefix = "raw_data/CSAM/"
+    base_name = prefix + "CRMA_HIVE_CSAM_" + dataset
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+    target_columns = ["Org", "Sub Org", "System Name", "Control Class", "Control", "Applicability", "Control Requirement", "Justification", "CSF/PF Function References", "CSF/PF Category References", "CSF/PF Subcategory References" ]
+
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA', 'TBD'], pd.NA, inplace=True)
+
+    #Clean column names:
+    df = dataQualityUtils.clean_column_names(df)
+    
+    #Apply DQ5: Remove HTML tags.  
+    cols = ["control_requirement", "justification", ]
+    df = dataQualityUtils.remove_html_tags(df, cols)
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["applicability"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = ["system_name", "control"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    quarantine_df = quarantine_not_null.copy()
     warning_df = not_nullable_warning.copy()
 
     #Load to destination  
@@ -348,15 +548,30 @@ def run_backfill_mode(bucket_name: str, hist_table_name: str, backfill_date: str
         dataset_upper = dataset.upper().strip()
 
         # call processors with backfill_date
-        if dataset_upper == "AXONIUS_DEVICES":
-            logger.info("Processing DEVICES (in backfill mode)")
-            process_devices(bucket_name, backfill_date)
+        if dataset_upper == "CSAM_SYSTEMS_GENERAL_DETAILS_QUERY":
+            logger.info("Processing SYSTEM_GENERAL_DETAILS (in backfill mode)")
+            process_systems_general_details_query(bucket_name, backfill_date)
             utility.log_memory_usage() 
 
-        if dataset_upper == "AXONIUS_SOFTWARE":
-            logger.info("Processing DEVICES (in backfill mode)")
-            process_software(bucket_name, backfill_date)
+        if dataset_upper == "CSAM_POAM_DETAILS_REPORT":
+            logger.info("Processing POAM_DETAILS (in backfill mode)")
+            process_poam_details_report(bucket_name, backfill_date)
             utility.log_memory_usage() 
+
+        if dataset_upper == "CSAM_SYSTEM_PRIVACY_DETAILS_REPORT":
+            logger.info("Processing CSAM_SYSTEM_PRIVACY_DETAILS_REPORT (in backfill mode)")
+            process_system_privacy_details_report(bucket_name, backfill_date)
+            utility.log_memory_usage() 
+
+        if dataset_upper == "CSAM_SYSTEM_POINTS_OF_CONTACT_QUERY":
+            logger.info("Processing CSAM_SYSTEM_POINTS_OF_CONTACT_QUERY (in backfill mode)")
+            process_system_points_of_contact_query(bucket_name, backfill_date)            
+            utility.log_memory_usage() 
+
+        if dataset_upper == "CSAM_SECURITY_RTM_REPORT":
+            logger.info("Processing CSAM_SECURITY_RTM_REPORT (in backfill mode)")
+            process_security_rtm_report(bucket_name, backfill_date) 
+            utility.log_memory_usage()            
 
 def main():
     start_time = time.time()
@@ -380,17 +595,27 @@ def main():
         run_backfill_mode(bucket_name, hist_table_name, backfill_date, datasets)
     else:
         logger.info(f"Running in Normal mode.")
-
-        logger.info("Processing DEVICES")
-        process_devices(bucket_name)
+        logger.info("Processing SYSTEMS_GENERAL_DETAILS_QUERY")
+        process_systems_general_details_query(bucket_name)
         utility.log_memory_usage() 
 
-        # TODO: Troubleshoot issue with missing fields preferred_name and preferred_vendor in raw data
-        # logger.info("Processing SOFTWARE")
-        # process_software(bucket_name)
-        # utility.log_memory_usage() 
-        
-    # log runtime
+        logger.info("Processing POAM_DETAILS_REPORT")
+        process_poam_details_report(bucket_name)
+        utility.log_memory_usage()
+
+        logger.info("Processing SYSTEM_PRIVACY_DETAILS_REPORT")
+        process_system_privacy_details_report(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing SYSTEM_POINTS_OF_CONTACT_QUERY")
+        process_system_points_of_contact_query(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing SECURITY_RTM_REPORT")
+        process_security_rtm_report(bucket_name)
+        utility.log_memory_usage() 
+
+    # log runtime 
     elapsed_minutes = (time.time() - start_time)/60
     logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
 

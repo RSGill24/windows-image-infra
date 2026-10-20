@@ -1,724 +1,1103 @@
-import unittest
-import numpy as np
+
 import pandas as pd
-import pandas.testing as pdt
-from datetime import date
-from crma_hive_data_quality_utilities import DataQualityUtilities
-
-class TestDataQualityUtilities (unittest.TestCase):
-    '''
-    Unit test class for testing data quality functions in the crma_hive_data_quality_utilities script
-    '''
-    def setUp(self):
-        '''
-        Initialize sample Dataframes used across multiple tests.
-        '''
-        self.dq = DataQualityUtilities()
-
-    def test_clean_date_fields_with_valid_dates(self):
-        '''
-        Test clean_date_fields with valid dates.
-        '''
-        valid_dates = pd.DataFrame({
-            "date_col":[" 2025-09-10", "  10/09/2025  ", "2025.10.07"]
-        })
-        result_df = self.dq.clean_date_fields(valid_dates, ["date_col"])
-        expected = pd.Series(pd.to_datetime(["2025-09-10", "2025-10-09", "2025-10-07"]), name="date_col").dt.date
-        pd.testing.assert_series_equal(result_df["date_col"], expected)
-
-    def test_clean_date_fields_with_invalid_dates(self):
-        '''
-        Test clean_date_fields with invalid dates.
-        '''
-        invalid_dates = pd.DataFrame({
-            "date_col":[
-                "TBD",              # Non-date string
-                "2025-02-31",       # Invalid day
-                None,               # Null 
-                ""                  # Empty string
-            ]
-        })
-        result_df = self.dq.clean_date_fields(invalid_dates, ["date_col"])
-        expected = pd.Series(pd.to_datetime([None,None,None,None]), name="date_col")
-        pd.testing.assert_series_equal(result_df["date_col"], expected)
-
-    def test_clean_date_fields_with_mixed_valid_invalid_dates(self):
-        '''
-        Test clean_date_fields with mixed valid and invalid dates.
-        '''
-        mixed_dates = pd.DataFrame({
-            "date_col":["2025-09-10", "TBD", None, ""]
-        })
-        result_df = self.dq.clean_date_fields(mixed_dates, ["date_col"])
-        expected = pd.Series(pd.to_datetime(["2025-09-10",pd.NaT,pd.NaT,pd.NaT]), name="date_col").dt.date
-        pd.testing.assert_series_equal(result_df["date_col"], expected)
-
-    def test_normalize_date_array_fields_valid_dates(self):
-        '''
-        Test normalize_date_array_fileds with mixed valid dates.
-        '''
-        mixed_scalr_list_dates = pd.DataFrame({
-            "date_col":[
-                "04/23/2011, 02/25/2020",       # comma string out of order
-                "2026-07-16"                    # single valid scalar date string
-            ]
-        })
-        result_df = self.dq.normalize_date_array_fields(mixed_scalr_list_dates, ["date_col"])
-        expected = pd.Series([[date(2020,2,25), date(2011,4,23)], [date(2026,7,16)]], name="date_col")    
-        pd.testing.assert_series_equal(result_df["date_col"], expected, check_index=False)   
-
-    def test_normalize_date_array_fields_invalid_dates(self):
-        '''
-        Test normalize_date_array_fileds with mixed invalid dates.
-        '''
-        mixed_scalr_list_dates = pd.DataFrame({
-            "date_col":[
-                "corrupted date",                   # not a date
-                None,                               # missing date value
-                "corrupted date, corrupted date"    # comma delimited, also not a date
-            ]
-        })
-        result_df = self.dq.normalize_date_array_fields(mixed_scalr_list_dates, ["date_col"])
-        expected = pd.Series([None, None, None], name="date_col")    
-        pd.testing.assert_series_equal(result_df["date_col"], expected, check_index=False)   
+import numpy as np
+from datetime import datetime, timedelta, timezone
+import logging
+import re
+import json
+import ast
+from typing import Iterable, List, Sequence, Tuple
+from typing import Optional
 
 
-    def test_clean_timestamp_fields_with_valid_timestamps(self):
-        '''
-        Test clean_timestamp_fields with valid timestamps.
-        '''
-        valid_timestamps = pd.DataFrame({
-            "ts_col": ["2025-09-10 12:00:00", "2025-01-01 00:00:59", "2025-08-31 02:05:43"]
-        })
-        result_df = self.dq.clean_timestamp_fields(valid_timestamps, ["ts_col"])
-        expected = pd.Series(pd.to_datetime(["2025-09-10 12:00:00", "2025-01-01 00:00:59", "2025-08-31 02:05:43"]), name="ts_col")
-        pd.testing.assert_series_equal(result_df["ts_col"], expected)
 
-    def test_clean_timestamp_fields_with_invalid_dates(self):
-        '''
-        Test clean_timestamp_fields with invalid timestamps.
-        '''
-        invalid_timestamps = pd.DataFrame({
-            "ts_col": [
-                "2025-13-10 12:00:00",                  # Invalid month
-                "2025-09-31 12:00:00",                  # Invalid day
-                "2025-09-10 24:00:00",                  # Invalid hour
-                "2025-09-10 12:60:00",                  # Invalid minute
-                "2025-09-10 12:00:60",                  # Invalid second
-                "TBD",                                  # Non-timestamp string
-                "",                                     # Empty string
-                None,                                   # Null 
-            ] 
-        })
-        result_df = self.dq.clean_timestamp_fields(invalid_timestamps, ["ts_col"])
-        expected = pd.Series(pd.to_datetime([None,None,None,None,None,None,None,None]), name="ts_col")        
-        pd.testing.assert_series_equal(result_df["ts_col"], expected)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
-    def test_clean_int_fields_with_valid_ints(self):
-        '''
-        Test clean_int_fields with valid numbers.
-        '''
-        valid_int_fields = pd.DataFrame({
-            "int_col": ["123", " 456 "]
-        })
-        result_df = self.dq.clean_int_fields(valid_int_fields, ["int_col"])
-        expected = pd.Series([123, 456], name="int_col", dtype = "Int64") 
-        pd.testing.assert_series_equal(result_df["int_col"], expected)
+class DataQualityUtilities:
 
-    def test_clean_int_fields_with_invalid_ints(self):
-        '''
-        Test clean_int_fields with invalid numbers.
-        '''
-        invalid_int_fields = pd.DataFrame({
-            "int_col": [
-                "string",                   # Non-int string
-                "",                         # Empty string
-                None,                       # Null
-            ]
-        })
-        result_df = self.dq.clean_int_fields(invalid_int_fields, ["int_col"]) 
-        expected = pd.Series([None, None, None], name="int_col", dtype = "Int64")
-        pd.testing.assert_series_equal(result_df["int_col"], expected)
-
-    def test_apply_not_nullable_q_constraint_correclty_splits_records_into_separate_dataframes(self):
-        '''
-        Test apply_no_not_nullable_q_constraint correclty splits records into seperate dataframes
-
-        cleaned:
-        --------------------------------
-        |A_key      |B_key      |C     |
-        --------------------------------
-        |1          |"a"        |11    |
-        |5          |"e"        |55    |
+    def select_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Select subset of columns from a dataframe
         
-
-        quartinined:
-        --------------------------------
-        |A_key      |B_key      |C     |
-        --------------------------------
-        |None       |"b"        |22    |
-        |3          |None       |33    |
-        |None       |"d"        |44    |
-        '''
-
-        not_nullable_constraint = pd.DataFrame({
-            "A_key": [ 1, None, 3, None,5],
-            "B_key": [ "a", "b", None, "d", "e"],
-            "C":[11, 22, 33, 44, 55 ]
-        })
-        cleaned_df, quarantine_df  = self.dq.apply_not_nullable_q_constraint(not_nullable_constraint, ["A_key", "B_key"])
-        expected_cleaned_df = pd.DataFrame({"A_key": [ 1.0,5.0], "B_key":["a","e"], "C":[11,55]})
-        expected_quarantine_df = pd.DataFrame({"A_key": [ None,3,None], "B_key":["b",None,"d"], "C":[22,33,44], 
-        "errors":["null values in A_key","null values in B_key","null values in A_key"]})
-        pdt.assert_frame_equal(expected_cleaned_df.reset_index(drop=True), cleaned_df.reset_index(drop=True))
-        pdt.assert_frame_equal(expected_quarantine_df.reset_index(drop=True), quarantine_df.reset_index(drop=True))
-
-    def test_apply_not_nullable_w_constraint_correclty_splits_records_into_separate_dataframes(self):
-        '''
-        Test apply_no_not_nullable_w_constraint correclty splits records into seperate dataframes
-
-        input:
-        --------------------------------
-        |A_key      |B_key      |C     |
-        --------------------------------
-        |1          |"a"        |11    |
-        |2          |"b"        |None  |
-        |3          |"c"        |None  |
-        |4          |"d"        |None  |
-        |5          |"e"        |55    |
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            select_cols(list[str]): Columns to keep
         
+        Returns:
+            pd.DataFrame: Dataframe with only the select columns
+        """
 
-        warning:
-        --------------------------------
-        |A_key      |B_key      |C     |
-        --------------------------------
-        |2          |"b"        |None    |
-        |3          |"c"        |None    |
-        |4          |"d"        |None    |
-        '''
-        not_nullable_constraint = pd.DataFrame({
-            "A_key": [ 1, 2, 3, 4, 5],
-            "B_key": [ "a", "b", "c", "d", "e"],
-            "C":[11, None, None, None, 55 ]
-        })
-        warning_df  = self.dq.apply_not_nullable_w_constraint(not_nullable_constraint, ["C"])
-        expected_warning_df = pd.DataFrame({"A_key": [ 2,3,4], "B_key":["b","c","d"], "C":[np.nan,np.nan,np.nan], 
-        "warnings":["null values in C","null values in C","null values in C"]})
-        pdt.assert_frame_equal(expected_warning_df.reset_index(drop=True), warning_df.reset_index(drop=True))
-
-    def test_apply_no_duplicate_constraint_correclty_splits_records_into_separate_dataframes(self):
-        '''
-        Test apply_no_duplicate_constraint correclty splits records into seperate dataframes
-
-        cleaned:
-        --------------------------------
-        |A_key      |B_key      |C     |
-        --------------------------------
-        |1          |"a"        |11    |
-        |2          |"b"        |22    |
-        |5          |"e"        |55    |
-
-        quartinined:
-        --------------------------------
-        |A_key      |B_key      |C     |
-        --------------------------------
-        |3          |None       |33    |
-        |3          |"d"        |44    |
-        '''
-        no_duplicates_constraint = pd.DataFrame({
-            "A_key": [ 1, 2, 3, 3,5],
-            "B_key": [ "a", "b", "c", "d", "e"],
-            "C":[11, 22, 33, 44, 55 ]
-        })
-        cleaned_df, quarantine_df  = self.dq.apply_no_duplicates_constraint(no_duplicates_constraint, ["A_key"])
-        expected_cleaned_df = pd.DataFrame({"A_key": [1,2,5], "B_key":["a","b","e"], "C":[11,22,55]})
-        expected_quarantine_df = pd.DataFrame({"A_key": [3,3], "B_key":["c","d"], "C":[33,44], 
-        "errors":["duplicates in A_key","duplicates in A_key"]})
-        pdt.assert_frame_equal(expected_cleaned_df.reset_index(drop=True), cleaned_df.reset_index(drop=True))
-        pdt.assert_frame_equal(expected_quarantine_df.reset_index(drop=True), quarantine_df.reset_index(drop=True))
+        missing = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
         
-    def test_clean_float_fields_with_valid_float(self):
-        '''
-        Test clean_int_fields with valid float values.
-        '''
-        valid_float = pd.DataFrame({
-            "float_col": ["1.5", "2.0", "3.25"]
-        })
-        result_df = self.dq.clean_float_fields(valid_float, ["float_col"])
-        expected = pd.Series([1.5, 2.0, 3.25], name="float_col")
-        pdt.assert_series_equal(result_df["float_col"],expected)
+        return df.loc[:, cols]
 
-    def test_clean_float_fields_with_invalid_float(self):
-        '''
-        Test clean_int_fields with invalid float values.
-        '''        
-        invalid_float = pd.DataFrame({
-            "float_col": [
-                "",                             # Empty string
-                "abc",                          # String
-                None                            # Null 
-                ]
-        })
+    def rename_fields(self, df: pd.DataFrame, rename_map: dict[str, str]) -> pd.DataFrame:
+        """
+        Rename columns in a dataframe
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            rename_map(dict[str, str]): Rename map
+        
+        Returns:
+            pd.DataFrame: Dataframe with renamed columns
+        """
+        logger.info("Renaming fields")
+        
+        valid_map = {old: new for old, new in rename_map.items() if old in df.columns} #Ensures to rename only existing columns
+        
+        return df.rename(columns=valid_map)
 
-        result_df = self.dq.clean_float_fields(invalid_float, ["float_col"])
-        expected = pd.Series([np.nan, np.nan, np.nan], name="float_col")
-        pd.testing.assert_series_equal(result_df["float_col"],expected)
+    def clean_date_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean and convert date columns to ISO 8601 date format
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            date_columns(list[sr]): list of date columns 
+        
+        Rules:
+            Convert to Datime dtype
+            Replace 'TBD' values with null
+            Standardize format to 'YYYY-MM-DD'(ISO 8601)
+            
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ2: Cleaning and standardizing  date columns to ISO 8601 format.")
 
-    def test_remove_html_tags(self):
-        '''
-        Test remove_html_tags with text containg tags, no tags, numbers, empty, and null
-        '''
-        html_tags = pd.DataFrame({
-            "str_col": [
-                "<p>Paragraph</p>",                 # Html tag
-                "<div>Divider</div>",               # Html tag
-                "No Tags",                          # No html tag
-                1,                                  # Number
-                "",                                 # Empty string
-                None                                # Null
-                ]
-        })
+        missing = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            df[col] = pd.to_datetime(df[col], format='mixed', errors="coerce").dt.date    
+        
+        return df
+    
+    def normalize_date_array_fields(self, df: pd.DataFrame, cols: list[str]) ->  pd.DataFrame:
+        """
+        Normalize mixed list/scalar fields into date list/scalar fields. If list then return date sorted in DESC order.
 
-        result_df = self.dq.remove_html_tags(html_tags, ["str_col"])
-        expected = pd.Series(["Paragraph", "Divider", "No Tags", "1", pd.NA, pd.NA], name="str_col", dtype= "string")
-        pd.testing.assert_series_equal(result_df["str_col"],expected)
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            date_columns(list[sr]): list of date columns 
+            
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying: Normalize mixed list/scalr fields into valid ISO 8601 timestamp formats")
 
-    def test_flatten_json_object(self):
-        '''
-        Test flatten_json_object can handle extracting value assoiated with given key and correclty
-        parse JSON string, dict, nulls, invalid json, key not found
-        '''
-        json_obj = pd.DataFrame({
-            "json_col": [
-                '{"key":"value1"}',             # JSON string
-                {"key": "value2"},              # Dict
-                None,                           # Null
-                "invalid json",                 # invalid json
-                '{"key2": "value5}'             # key does not exist
-            ]
-        })
+        for col in cols:
+            if col not in df.columns:
+                continue
 
-        result_df = self.dq.flatten_json_object(json_obj, "json_col", "key")
-        expected = pd.Series(["value1","value2", pd.NA, pd.NA, pd.NA], dtype="string", name="json_col")
-        pd.testing.assert_series_equal(result_df["json_col"], expected)
+            def clean_to_list(val):
+                # handle missing data
+                if pd.isna(val) or val == "":
+                    return None
+                #turn comma-seperated string to python list
+                if isinstance(val, str) and ',' in val:
+                    val = [item.strip() for item in val.split(',')]
 
-    def test_normalize_boolean_fields(self):
-        '''
-        Test normalize_boolean_fields for correct boolean converstion and NA handling.
-        '''
+                # force single values into a list so evertying is a list
+                if not isinstance(val, (list, tuple, np.ndarray, set)):
+                    val = [val]
 
-        boolean_values = pd.DataFrame({
-            "boolean_col": [
-                " true ",                   # True: whitespace, lowercase
-                "True",                     # True: standard
-                "TRUE",                     # True: uppercase
-                "false",                    # False: lowercase
-                "False",                    # False: standard
-                "FALSE",                    # False: uppercase
-                " other ",                  # Invalid string
-                "",                         # Empty string
-                None                        # Null
-            ]
-        })
+                # clean all elements insde list
+                parsed_series = pd.to_datetime(pd.Series(list(val)), format='mixed', errors='coerce')
 
-        result_df = self.dq.normalize_boolean_fields(boolean_values, ["boolean_col"])
-        expected = pd.Series([True,True,True,False,False,False,pd.NA,pd.NA,pd.NA], dtype="boolean", name="boolean_col")
-        pd.testing.assert_series_equal(result_df["boolean_col"], expected)
-     
-    def test_select_fields(self):
-        '''
-        Test select_fields returns a DataFrame containing only the specified columns.
-        '''
-        fields = pd.DataFrame({
-            "a_col": [1,2,3],
-            "b_col": ["a","b","c"],
-            "c_col": [True,False,True]
-        })
+                # extract only vald dates
+                clean_dates = parsed_series.dropna().dt.date.tolist()
 
-        result_df = self.dq.select_fields(fields, ["a_col","c_col"])
-        expected_df = pd.DataFrame({
-            "a_col": [1,2,3],
-            "c_col": [True,False,True]
-        })
-        pdt.assert_frame_equal( result_df, expected_df)
+                if not clean_dates:
+                    return None
+                
+                # sort text in desc order
+                clean_dates.sort(reverse=True)
 
-    def test_rename_fields(self):
-        '''
-        Test rename_fields correctly renames specified columnsin the DataFrame.
-        '''
-        fields = pd.DataFrame({
-            "old_col1": [1, 2, 3],
-            "old_col2": [4, 5, 6],
-            "keep_col": [7, 8, 9],
-        })
+                return clean_dates
+            
+            df[col] = df[col].apply(clean_to_list)
 
-        rename_map = {"old_col1":"new_col1", "old_col2":"new_col2", "old_col3":"new_col3"}
-
-        result_df = self.dq.rename_fields(fields, rename_map)
-        expected_df = pd.DataFrame({
-            "new_col1": [1, 2, 3],
-            "new_col2": [4, 5, 6],
-            "keep_col": [7, 8, 9],
-        })
-
-        pdt.assert_frame_equal( result_df, expected_df)
-
-    def test_clean_name_fields_valid_names(self):
-        '''
-        Test clean_name_fields with valid names to ensure all records are retained in clean df.
-        '''
-        df = pd.DataFrame({
-            "first_name": ["John", "Jane", "Alice"],
-            "last_name": ["Doe", "Smith", "Johnson"]
-        })
-        cols = ["first_name", "last_name"]
-
-        clean_df, quarantine_df = self.dq.clean_name_fields(df, cols)
-        pdt.assert_frame_equal(clean_df, df)
-        self.assertTrue(quarantine_df.empty)
-
-    def test_clean_name_fields_invalid_names(self):
-        '''
-        Test clean_name_fields with mixed input to insure invalid records are quarantined,
-        and valid retained.
-        '''
-        df = pd.DataFrame({
-            "first_name": ["John", "Jane123", "Alice"],
-            "last_name": ["Doe", "Smith", "@Johnson"]
-        })
-        cols = ["first_name", "last_name"]
-
-        clean_df, quarantine_df = self.dq.clean_name_fields(df, cols)
-        expected_clean_df = pd.DataFrame({
-            "first_name": ["John"],
-            "last_name": ["Doe"]
-        })
-        expected_quarantine_df = pd.DataFrame({
-            "first_name": ["Jane123", "Alice"],
-            "last_name": ["Smith", "@Johnson"],
-            "errors": ["invalid name", "invalid name"]
-        })
-        pdt.assert_frame_equal(clean_df.reset_index(drop=True), expected_clean_df.reset_index(drop=True))
-        pdt.assert_frame_equal(quarantine_df.reset_index(drop=True), expected_quarantine_df.reset_index(drop=True))
-
-    def test_clean_name_fields_missing_columns(self):
-        '''
-        Test clean_name_fields with missing columns to ensure it raises expected error and message.
-        '''
-        df = pd.DataFrame({
-            "first_name": ["John", "Jane", "Alice"]
-        })
-        cols = ["first_name", "last_name"]
-
-        with self.assertRaises(KeyError) as context:
-            self.dq.clean_name_fields(df, cols)
-        self.assertEqual(context.exception.args[0], "Required columns missing: {'last_name'}")
-
-    def test_clean_name_fields_empty_dataframe(self):
-        '''
-        Test clean_name_fields with empty df. 
-        '''
-        df = pd.DataFrame(columns=["first_name", "last_name"])
-        cols = ["first_name", "last_name"]
-
-        clean_df, quarantine_df = self.dq.clean_name_fields(df, cols)
-        self.assertTrue(clean_df.empty)
-        self.assertTrue(quarantine_df.empty)
-
-    def test_clean_name_fields_no_valid_names(self):
-        '''
-        Test clean_name_field with no valid names to ensure all records are retained 
-        '''
-        df = pd.DataFrame({
-            "first_name": ["@ABC", "123"],
-            "last_name": ["!John", "2Smith"]
-        })
-        cols = ["first_name", "last_name"] 
-
-        clean_df, quarantine_df = self.dq.clean_name_fields(df, cols)
-        expected_quarantine_df = pd.DataFrame({
-            "first_name": ["@ABC", "123"],
-            "last_name": ["!John", "2Smith"],
-            "errors": ["invalid name", "invalid name"]
-        })        
-        self.assertTrue(clean_df.empty) 
-        pdt.assert_frame_equal(quarantine_df.reset_index(drop=True), expected_quarantine_df.reset_index(drop=True))
-
-    def test_clean_email_fields_valid_emails(self):
-        '''
-        Test clean_email_fields with valid emails.
-        '''
-        df = pd.DataFrame({
-            "email": ["test@example.com", "user@domain.org", "admin@company.net"]
-        })
-        cols = ["email"]
-
-        clean_df, warning_df = self.dq.clean_email_fields(df, cols) 
-        pdt.assert_frame_equal(clean_df, df)
-        self.assertTrue(warning_df.empty)
-
-    def test_clean_email_fields_invalid_emails(self):
-        '''
-        Test clean_email_fields with some invalid emails.
-        '''
-        df = pd.DataFrame({
-            "email": ["test@example.com", "invalid-email", "user@domain", None]
-        })
-        cols = ["email"]
-
-        clean_df, warning_df = self.dq.clean_email_fields(df, cols)
-        expected_clean_df = pd.DataFrame({
-            "email": ["test@example.com", None, None, None]
-        })
-        expected_warning_df = pd.DataFrame({
-            "email": ["invalid-email", "user@domain", None],
-            "warnings": ["invalid email", "invalid email", "invalid email"]
-        })
-        pdt.assert_frame_equal(clean_df.reset_index(drop=True), expected_clean_df.reset_index(drop=True))
-        pdt.assert_frame_equal(warning_df.reset_index(drop=True), expected_warning_df.reset_index(drop=True))
-
-    def test_clean_email_fields_missing_columns(self):
-        '''
-        Test clean_email_fields with missing columns to ensure it raises expected error and message.
-        '''
-        df = pd.DataFrame({
-            "name": ["John", "Jane", "Alice"]
-        })
-        cols = ["email"]
-
-        with self.assertRaises(KeyError) as context:
-            self.dq.clean_email_fields(df, cols)
-        self.assertEqual(context.exception.args[0], "Required columns missing: {'email'}")
-
-    def test_clean_email_fields_empty_dataframe(self):
-        '''
-        Test clean_email_fields with an empty dataframe.
-        '''
-        df = pd.DataFrame(columns=["email"])
-        cols = ["email"]
-
-        clean_df, warning_df = self.dq.clean_email_fields(df, cols) 
-        self.assertTrue(clean_df.empty)
-        self.assertTrue(warning_df.empty)
-
-    def test_clean_email_fields_no_valid_emails(self):
-        '''
-        Test clean_email_fields where no valid emails exist.
-        '''
-        df = pd.DataFrame({
-            "email": ["valid@example", "@domain.org"]
-        })
-        cols = ["email"]
-
-        clean_df, warning_df = self.dq.clean_email_fields(df, cols)
-        expected_clean_df = pd.DataFrame({
-            "email": [None, None]
-        })
-        expected_warning_df = pd.DataFrame({
-            "email": ["valid@example", "@domain.org"],
-            "warnings": ["invalid email", "invalid email"]
-        })
-        pdt.assert_frame_equal(clean_df.reset_index(drop=True), expected_clean_df.reset_index(drop=True))
-        pdt.assert_frame_equal(warning_df.reset_index(drop=True), expected_warning_df.reset_index(drop=True))
+        return df
 
 
-    def test_column_has_mixed_list_and_scalar_all_lists(self):
-        '''Test  column_has_mixed_list_and_scalar when all lists '''
-        col = pd.Series([[1], [2, 3], ["abc"], [], [4]])
-        self.assertFalse(self.dq.column_has_mixed_list_and_scalar(col))
+    def clean_timestamp_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean and convert timestamp columns to ISO 8601 timestam format format    
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+    .        cols(list[sr]): list of timestamp columns     
+        Rules:
+            Convert to Datime dtype
+            Standardize format to 'YYYY-MM-DD HH:MM:SS'      
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying  DQ6:Cleaning and standardizing timestamp to ISO 8601 timestamp format ")
 
-    def test_column_has_mixed_list_and_scalar_all_scalers(self):
-        '''Test  column_has_mixed_list_and_scalar when all scalers'''
-        col = pd.Series([1, 2, 3, "abc", "", 4])
-        self.assertFalse(self.dq.column_has_mixed_list_and_scalar(col))
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            # print(df[col].astype(str).apply(repr).head())
+            df[col] = df[col].astype(str).str.strip()
+            # df[col] = pd.to_datetime(df[col], errors="coerce", utc=True, format="ISO8601")
+            df[col] = pd.to_datetime(df[col], errors="coerce", infer_datetime_format=True)
 
-    def test_column_has_mixed_list_and_scalar_mixed(self):
-        '''Test  column_has_mixed_list_and_scalar when mixed values'''
-        col = pd.Series([1, [2], 3, "abc", [], 4])
-        self.assertTrue(self.dq.column_has_mixed_list_and_scalar(col))
 
-    def test_column_has_mixed_list_and_scalar_lists_and_nulls(self):
-        '''Test  column_has_mixed_list_and_scalar when lists and nulls'''
-        col = pd.Series([[1], ["abc"], None, [], pd.NA])
-        self.assertFalse(self.dq.column_has_mixed_list_and_scalar(col))
+        return df
 
-    def test_column_has_mixed_list_and_scalar_scalers_and_nulls(self):
-        '''Test  column_has_mixed_list_and_scalar when  scalers and nulls'''
-        col = pd.Series([1, "abc", None, "", pd.NA])
-        self.assertFalse(self.dq.column_has_mixed_list_and_scalar(col))
+    def clean_timestamp_fields_iso8601_format(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean and convert timestamp columns to ISO 8601 timestam format format    
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+    .        cols(list[sr]): list of timestamp columns     
+        Rules:
+            Convert to Datime dtype
+            Standardize format to 'YYYY-MM-DD HH:MM:SS'      
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying  DQ6:Cleaning and standardizing timestamp to ISO 8601 timestamp format ")
 
-    def test_column_has_mixed_list_and_scalar_scalers_lists_and_nulls(self):
-        '''Test  column_has_mixed_list_and_scalar when  scalers, lists and nulls'''
-        col = pd.Series([1, ["xyz"], "abc", None, "", pd.NA])
-        self.assertTrue(self.dq.column_has_mixed_list_and_scalar(col))
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            # print(df[col].astype(str).apply(repr).head())
+            df[col] = df[col].astype(str).str.strip()
+            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True, format="ISO8601")
 
-    def test_column_has_mixed_list_and_scalar_all_nulls(self):
-        '''Test  column_has_mixed_list_and_scalar when  all nulls'''
-        col = pd.Series([None, pd.NA, float('nan')])
-        self.assertFalse(self.dq.column_has_mixed_list_and_scalar(col))
+        return df
 
-    def test_column_has_mixed_list_and_scalar_empty_series(self):
-        '''Test  column_has_mixed_list_and_scalar when empty input column'''
-        col = pd.Series([])
-        self.assertFalse(self.dq.column_has_mixed_list_and_scalar(col))
+    def convert_unix_timestamp_to_iso8601_format(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Converts specified columns in a DataFrame from Unix timestamp (seconds) to ISO8601 format (UTC).
+        
+        Parameters:
+            df (pd.DataFrame): The input DataFrame.
+            columns (list): List of column names to convert.
+            
+        Returns:
+            pd.DataFrame: DataFrame with converted columns.
+        """
+        logger.info("Converting Unix timestamp to ISO8601 format (UTC) ")
 
-    def test_ensure_list_already_list(self):
-        '''Test  ensure_list when input is already list'''
-        self.assertEqual(self.dq.ensure_list([1, 2]), [1, 2])
-        self.assertEqual(self.dq.ensure_list([]), [])
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            df[col] = df[col].apply(
+                lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if pd.notnull(ts) else None
+            )
+        return df
 
-    def test_ensure_list_scalar(self):
-        '''Test  ensure_list when input is scalar'''
-        self.assertEqual(self.dq.ensure_list(5), [5])
-        self.assertEqual(self.dq.ensure_list("abc"), ["abc"])
+    def clean_int_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean numberic columns to Ingeger
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of integer columns     
+        Rules:
+            Convert valid values to Integer
+            Replace invaid or missing values with null        
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ4: Converting numeric(int) columns to Integer dtype")
 
-    def test_ensure_list_null(self):
-        '''Test  ensure_list when input is null'''
-        self.assertTrue(pd.isna(self.dq.ensure_list(None)))
-        self.assertTrue(pd.isna(self.dq.ensure_list(pd.NA)))
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        # for col in cols:
+        #     df[col] = pd.to_numeric(df[col], errors="coerce")
+        #     df[col] = df[col].astype("Int64")
 
-    def test_ensure_list_tuple(self):
-        '''Test  ensure_list when input is tuple'''
-        self.assertEqual(self.dq.ensure_list((1,2)), [(1,2)])
+        for col in cols:
+            df[col] = (
+                df[col]
+                .astype("string")
+                .str.strip()
+                .str.replace(",", "", regex=False)
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = df[col].astype("Int64")
 
-    def test_ensure_list_dict(self):
-        '''Test  ensure_list when input is dictionary'''
-        self.assertEqual(self.dq.ensure_list({"a": 1}), [{"a": 1}])
+        return df
 
-    def test_convert_arrays_for_postgres_scalar_input(self):
-        '''Test convert_arrays_for_postgres with all scalar inputs - remain unchanged'''
-        df = pd.DataFrame({
-            "a": [1, 2, 3],
-            "b": ["a", "b", "c"]
-        })
-        result = self.dq.convert_arrays_for_postgres(df)
-        pd.testing.assert_frame_equal(result, df)
+    def clean_float_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean numberic columns to Float
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of float columns     
+        Rules:
+            Convert valid values to Float
+            Replace invaid or missing values with null        
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ9: Converting numeric(decimal) columns to float dtype")
 
-    def test_convert_arrays_for_postgres_list_input(self):
-        '''Test convert_arrays_for_postgres with input that contains list in some columns'''
-        df = pd.DataFrame({
-            "a": [[1, 2], [3, 4], [5, 6]],
-            "b": ["a", "b", "c"]
-        })
-        expected = pd.DataFrame({
-            "a": ['{"1","2"}', '{"3","4"}', '{"5","6"}'],
-            "b": ["a", "b", "c"]
-        })
-        result = self.dq.convert_arrays_for_postgres(df)
-        pd.testing.assert_frame_equal(result, expected)
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")  # Convert to numeric, coercing errors to NaN
+            df[col] = df[col].astype(float)  # Convert to float
 
-    def test_convert_arrays_for_postgres_numpy_array_input(self):
-        '''Test convert_arrays_for_postgres with input that contains numpy array in some columns'''
-        df = pd.DataFrame({
-            "a": [np.array([1, 2]), np.array([3, 4]), np.array([5, 6])],
-            "b": ["a", "b", "c"]
-        })
-        expected = pd.DataFrame({
-            "a": ['{"1","2"}', '{"3","4"}', '{"5","6"}'],
-            "b": ["a", "b", "c"]
-        })
-        result = self.dq.convert_arrays_for_postgres(df)
-        pd.testing.assert_frame_equal(result, expected)
+        return df
+    
+    def clean_name_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Validate and clean name columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of name columns     
+        Rules:
+            Accept only valid names 
+            Quarantine records with invalid names       
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ10: Validate and clean names")
 
-    def test_convert_arrays_for_postgres_nan_and_none_input(self):
-        '''Test convert_arrays_for_postgres with input that contains nan and None in some columns'''
-        df = pd.DataFrame({
-            "a": [[1, 2], None, np.nan],
-            "b": [None, "b", np.nan]
-        })
-        expected = pd.DataFrame({
-            "a": ['{"1","2"}', None, None],
-            "b": [None, "b", None]
-        })
-        result = self.dq.convert_arrays_for_postgres(df)
-        pd.testing.assert_frame_equal(result, expected)
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+       # name_pattern = re.compile(r"^[\w\s,'\"()-\.]+$", re.UNICODE)
+        name_pattern =re.compile(r"^(?![\d-])([a-zA-Z\s,'\"().-]+)$", re.UNICODE)
+        validity = pd.Series(True, index=df.index)        
+        for col in cols:
+            validity &= df[col].apply(lambda x: bool(name_pattern.match(str(x))))
 
-    def test_convert_arrays_for_postgres_mixed_type_input(self):
-        '''Test convert_arrays_for_postgres with input that contains mixed types in some columns'''
-        df = pd.DataFrame({
-            "a": [1, [2, 3], np.array([4, 5]), None],
-            "b": ["a", "b", "c", "d"]
-        })
-        expected = pd.DataFrame({
-            "a": [1, '{"2","3"}', '{"4","5"}', None],
-            "b": ["a", "b", "c", "d"]
-        })
-        result = self.dq.convert_arrays_for_postgres(df)
-        pd.testing.assert_frame_equal(result, expected)
+        #valid
+        clean_df =df[validity].copy()
 
-    def test_convert_arrays_for_postgres_escaping(self):
-        '''Test convert_arrays_for_postgres with input that requires escaping'''
-        df = pd.DataFrame({
-            "a":  [['a"b', 'c\\d', 'e'], ['f', 'g', 'h']],
-            "b": ["a", "b"]
-        })
-        expected = pd.DataFrame({
-            "a": ['{"a\\"b","c\\\\d","e"}', '{"f","g","h"}'],
-            'b': ["a", "b"]
-        })
-        result = self.dq.convert_arrays_for_postgres(df)
-        pd.testing.assert_frame_equal(result, expected)
+        #invalid
+        quarantine_df = df[~validity].copy()
+        quarantine_df["errors"] = "invalid name"
 
-    def test_remove_non_printable_chars_from_string(self):
-        '''Test remove_non_printable_chars with non-printable characters in a string '''
-        s = "Hello\x00World\x1F!"
-        result = self.dq.remove_non_printable_chars(s)
-        self.assertEqual(result, "HelloWorld!")
+        return clean_df, quarantine_df
+    
+    def clean_email_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Validate and clean email columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of name columns     
+        Rules:
+            Accept only valid names 
+            Add invalid to warnning, and replace with null        
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ11: Validate and clean emails")
 
-    def test_remove_non_printable_chars_from_list_of_strings(self):
-        '''Test remove_non_printable_chars with non-printable characters in a list of strings '''
-        lst = ["abc\x00", "xyz\x1F", "123"]
-        result = self.dq.remove_non_printable_chars(lst)
-        self.assertEqual(result, ["abc", "xyz", "123"])
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        clean_df = df.copy()
+        email_pattern = re.compile( r"^(?!\.)[a-zA-Z0-9._%+'-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+        validity = pd.Series(True, index=df.index)       
+        for col in cols:
+            col_valid = df[col].apply(lambda x: bool(email_pattern.match(str(x))) if pd.notnull(x) else False)
+            validity &= col_valid
+            clean_df.loc[~col_valid, col] = None
 
-    def test_remove_non_printable_chars_from_nested_list(self):
-        '''Test remove_non_printable_chars with non-printable characters in nested list '''
-        lst = ["abc\x00", ["xyz\x1F", "123"]]
-        result = self.dq.remove_non_printable_chars(lst)
-        self.assertEqual(result, ["abc", ["xyz", "123"]])
+        warning_df =df[~validity].copy()
+        warning_df["warnings"] = "invalid email"
 
-    def test_remove_non_printable_chars_from_numpy_array_of_strings(self):
-        '''Test remove_non_printable_chars with non-printable characters in a numpy array of string '''
-        nparr = np.array(["abc\x00", "xyz\x1F", "123"])
-        result = self.dq.remove_non_printable_chars(nparr)
-        expected = np.array(["abc", "xyz", "123"])
-        np.testing.assert_array_equal(result, expected)
+        return clean_df, warning_df
+      
+    def normalize_boolean_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Normalize boolean columns and make dtype boolean
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of boolean columns     
+        Rules:
+            Convert valid values values to True/False, make dtype boolean
+            Replace invaid or missing values with null        
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ3: Normalizing boolean columns")
 
-    def test_remove_non_printable_chars_remain_unchaged(self):
-        '''Test remove_non_printable_chars with no non-printable characters remain unchanged '''
-        self.assertEqual(self.dq.remove_non_printable_chars(123), 123)
-        self.assertEqual(self.dq.remove_non_printable_chars("abc"), "abc")
-        self.assertEqual(self.dq.remove_non_printable_chars([1, "abc", None]), [1, "abc", None])
-        self.assertEqual(self.dq.remove_non_printable_chars(""), "")
-        self.assertEqual(self.dq.remove_non_printable_chars(None), None)
-        self.assertEqual(self.dq.remove_non_printable_chars([]), []) 
-        np.testing.assert_array_equal(self.dq.remove_non_printable_chars( np.array([])),np.array([]) )
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            df[col]=(
+                df[col]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .map({"true": True, "false": False})
+                .astype("boolean")
+            )
 
-    def test_flatten_string_list_columns_handles_empty_and_non_list_values(self):
-        """Ensure empty lists become empty strings and non-lists are unchanged."""
-        # Arrange
-        df = pd.DataFrame(
-            {
-                "col": [[], None, "already_string", 123],
-            }
+        return df
+
+    def remove_html_tags(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean columns with html tags
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            html_columns(list[sr]): list of columns values with html tags
+        Rules:
+            Remove HTML tags
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Apply DQ5: Removing HTML tags .")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        html_tag_re = re.compile(r"<.*?>")
+        def strip_tags(value):
+            if pd.isna(value):
+                return pd.NA
+            text = re.sub(html_tag_re, "", str(value))
+            return " ".join(text.split()) if text.strip() else pd.NA
+            
+        for col in cols:
+            df[col] = df[col].apply(strip_tags).astype("string")
+
+        return df
+
+    def flatten_json_object(self, df: pd.DataFrame, col: str, key: str) -> pd.DataFrame:
+        """
+        Flatten json objects 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            col(str): Column with json value
+            key(str): the key to the select value
+        Rules:
+            Flatten json to selected field
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ7: Flattening JSON objects")
+
+        if col not in df.columns:
+            logger.error(f"Column {col} not in dataset")
+            raise KeyError(f"Column {col} not in dataset")
+    
+        def extract_key(value):
+            if pd.isna(value):
+                return pd.NA
+            
+            if isinstance(value, dict):
+                return value.get(key, pd.NA)
+            
+            if isinstance(value, str):
+                val = value.strip()
+                try:
+                    obj = json.loads(val)
+                    if isinstance(obj, dict):
+                        return obj.get(key, pd.NA)
+                except json.JSONDecodeError:
+                    pass
+                
+                try:
+                    obj = ast.literal_eval(val)
+                    if isinstance(obj, dict):
+                        return obj.get(key, pd.NA)
+                except Exception:
+                    return pd.NA
+                
+            return pd.NA
+        
+        df[col] = df[col].apply(extract_key).astype("string") 
+
+        return df
+
+    def flatten_nested_columns(
+            self,
+            df: pd.DataFrame, 
+            cols_to_pars: dict
+            ) -> pd.DataFrame:
+        """
+        Flattens specified nested dictionary columns in a DataFrame.
+
+        Args:
+            df (pd.DataFrame): Input DataFrame containing nested dictionary columns.
+            cols_to_pars (dict): Mapping of parent column names to lists of child field names.
+
+        Returns:
+            pd.DataFrame: DataFrame with new flattened columns and original parent columns removed.
+
+        """
+        logger.info("Flattening nested dictionary columns.")
+
+        for parent_col, child_cols in cols_to_pars.items():
+            if parent_col not in df.columns:
+                raise KeyError(f"Column '{parent_col}' not found in DataFrame.")
+            
+            for child_col in child_cols:
+                new_col_name = f"{parent_col}_{child_col}"
+                df[new_col_name] = df[parent_col].apply(
+                    lambda x: x.get(child_col) if isinstance(x, dict) else None
+                )
+        df = df.drop(columns=list(cols_to_pars.keys()))
+        return df
+
+    def apply_not_nullable_q_constraint(self, df: pd.DataFrame, cols: list[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Enforce not nullable constariant on the given columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            not_nullable_columns: list[str]: List of not nullable columns
+        Rules:
+            Raws with null values are removed from df and sent to quarentine_df
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame]: clean and quarantine dataframes 
+        """
+        logger.info("Applying DQ1: Enforcing Not Nullable constainst ")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        quarantine_df = df[df[cols].isnull().any(axis=1)].copy()
+        quarantine_df['errors'] = quarantine_df[cols].apply(lambda row: 'null values in ' + ', '.join([col for col in cols if pd.isnull(row[col])]), axis=1) 
+
+        cleaned_df = df.dropna(subset=cols).copy()
+
+        return cleaned_df, quarantine_df
+
+    def apply_not_nullable_w_constraint(self, df: pd.DataFrame, cols: list[str]) ->  pd.DataFrame:
+        """
+        Enforce not nullable constariant on the given columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            not_nullable_columns: list[str]: List of not nullable columns
+        Rules:
+            Raws with null are copied to warning_df
+        Returns:
+            pd.DataFrame: Warnning dataframes 
+        """
+        def _is_val_null(val):
+            if isinstance(val, (list, np.ndarray)):
+                return all(pd.isnull(val)) 
+            return pd.isnull(val)
+
+        logger.info("Applying DQ1 W: Enforcing Not Nullable warnning constraint ")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+                
+        warning_df = df[df[cols].isnull().any(axis=1)].copy()
+        warning_df['warnings'] = warning_df[cols].apply(lambda row: 'null values in ' + ', '.join([col for col in cols if _is_val_null(row[col])]), axis=1) 
+
+        return warning_df
+
+    def apply_no_duplicates_constraint(self, df: pd.DataFrame, cols: list[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Enforce no duplicates constaint on the given columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            not_nullable_columns: list[str]: List of not nullable columns
+        Rules:
+            Records with duplicate values in these columns will be removed from df and sent to quarentine_df
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame]: clean and quarantine dataframes 
+        """
+        logger.info("Applying DQ0: Enforcing no duplicates constainst ")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+
+        duplicate_masks = {col: df.duplicated(subset=[col], keep=False) for col in cols}
+        duplicate_mask = pd.concat(duplicate_masks.values(), axis=1).any(axis=1)
+
+        cleaned_df = df[~duplicate_mask].copy()
+        quarantine_df = df[duplicate_mask].copy()
+
+        def find_duplicate_columns(row):
+            duplicate_columns = [col for col in cols if duplicate_masks[col].get(row.name, False)]
+            if duplicate_columns:
+                return 'duplicates in ' + ', '.join(duplicate_columns)
+            else:
+                return ''
+
+        quarantine_df['errors'] = quarantine_df.apply(find_duplicate_columns, axis=1)
+
+        cleaned_df = df[~duplicate_mask].copy()
+        
+    
+        return cleaned_df, quarantine_df
+    
+    def clean_column_names(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Cleans and converts df columns names to confirm valid columns naming convension
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+        Rules:
+            Convert to lower case
+            Replace spaces and special characters by '_'
+            Remove consecutive underscoures 
+            Strip leadin/trailing underscores
+        Returns:
+            pd.DataFrame: Warnning dataframes 
+        """
+        
+        def _clean_name(name):
+            name = name.lower()
+            name = name.replace(" ", "_")
+            name = re.sub(r"[^\w]", "_", name)
+            name = re.sub(r"__+", "_", name)
+            name = name.strip("_")
+            return name
+
+        df.columns = [_clean_name(col) for col in df.columns]
+        return df
+
+    def column_has_mixed_list_and_scalar(self, col: pd.Series) -> bool:
+        """
+        Checks if column has mixed list and scalar values
+        
+        Parameters:
+            col(pd.Series): Input column
+        Rules:
+            If mixed values return true else 
+        Returns:
+            bool: flag 
+        """ 
+        has_list = False
+        has_scalar = False
+        for val in col:
+            if isinstance(val, list):
+                has_list = True
+            elif pd.notnull(val):
+                has_scalar = True
+            if has_list and has_scalar:
+                return True
+        return False
+    
+    def ensure_list(self, val: str) -> str:
+        """
+        Checks if column has mixed list and scalar values
+        
+        Parameters:
+            val(str): Input value
+        Rules:
+            If scalar convert to list
+        Returns:
+            str: value in list format 
+        """
+        if isinstance(val, list):
+            return val
+        elif pd.isnull(val):
+            return pd.NA  
+        else:
+            return [val]
+        
+    def convert_arrays_for_postgres(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Converts columns containing lists or numpy arrays in a pandas DataFrame to PostgreSQL array literal strings,
+        with proper escaping of special characters. Scalar values and nulls are left unchanged.
+
+        This transformation ensures compatibility when inserting data into PostgreSQL array fields.
+        Lists and arrays are converted to strings in the format: {"elem1","elem2",...}.
+        Escapes backslashes and double quotes in array elements.
+
+        Args:
+            df (pd.DataFrame): The input DataFrame to process.
+
+        Returns:
+            pd.DataFrame: The DataFrame with array columns converted to PostgreSQL array literal strings.
+        """
+        
+        logger.info("Converting Lists or numpy arrays to postgresql.")
+
+        def _to_pg_array(val):
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                return None
+            if isinstance(val, (list, np.ndarray)):
+                def _escape_elem(x):
+                    s = str(x)
+                    s = s.replace('\\', '\\\\').replace('"', '\\"')
+                    return f'"{s}"'
+                return '{' + ','.join(_escape_elem(x) for x in val) + '}'
+            return val 
+
+        for col in df.columns:
+            if df[col].apply(lambda x: isinstance(x, (list, np.ndarray))).any():
+                df[col] = df[col].apply(_to_pg_array).astype('object')
+        return df   
+    
+    def remove_non_printable_chars(self, val): 
+        """
+        Recursively removes all non-printable characters including NUL, ASCII control codes
+        from strings, lists, and numpy arrays to ensure compatibility with PostgreSQL text fields.
+
+        Examples of removed characters include: NUL ('\\x00'), tab ('\\x09'), newline ('\\x0A'), carriage return ('\\x0D'), 
+        and other ASCII control codes in the ranges '\\x00'-'\\x1F' and '\\x7F'-'\\x9F'.
+
+        Args:
+            val: A string, list, numpy array, or other value.
+
+        Returns:
+            The input value with non-printable characters removed from any contained strings.
+        """
+        if isinstance(val, str):
+            return re.sub(r'[\x00-\x1F\x7F-\x9F]', '', val)
+        elif isinstance(val, list):
+            return [self.remove_non_printable_chars(x) for x in val]
+        elif isinstance(val, np.ndarray):
+            return np.array([self.remove_non_printable_chars(x) for x in val])
+        return val
+
+
+    def extract_assest_credential_check(self, df: pd.DataFrame, output_col: str) -> pd.DataFrame:
+        """
+        Enrich df with:
+            - credential_check: 'yes'/'no' (string) or NaN
+            - scan_start_date: pandas.Timestamp or NaT
+
+        The function:
+        - operates in-place on df
+        - drops the original details_col
+        - returns df for convenience
+        """
+        logger.info("Extract credential check info from vulns->output field.")
+
+        if output_col not in df.columns:
+            raise KeyError(f"Column '{output_col}' not found in DataFrame.")
+
+        # Compile regexes (case-insensitive)
+        cred_pattern = re.compile(
+            r"credential\w*\s*checks?\s*:\s*(yes|no)\b",
+            flags=re.IGNORECASE,
         )
-        cols = ["col"]
+        date_pattern = re.compile(
+            r"scan\s*start\s*date\s*:\s*(.+)",
+            flags=re.IGNORECASE,
+        )
 
-        # Act
-        result_df = self.dq .flatten_string_list_columns(df, cols)
+        details_series = df[output_col].astype("string")
 
-        # Assert: empty list -> empty string
-        self.assertEqual(result_df.loc[0, "col"], "")
+        # Extract credential yes/no
+        df["credential_check"] = (
+            details_series.str.extract(cred_pattern, expand=False).str.lower()
+        )
 
-        #Assert: None remains None 
-        self.assertIsNone(result_df.loc[1, "col"])
+        # Extract and parse scan start date
+        df["scan_start_date"] = (
+            details_series.str.extract(date_pattern, expand=False).str.lower()
+        )
+        
+        # Drop the original details column
+        df.drop(columns=[output_col], inplace=True)
 
-        # Assert: Existing scalar string unchanged
-        self.assertEqual(result_df.loc[2, "col"], "already_string")
-
-        # Assert: Non-string scalar (int) unchanged
-        self.assertEqual(result_df.loc[3, "col"], 123)
+        return df
 
 
-if __name__ == '__main__':
-    unittest.main()
+    def extract_timestamp(self, df: pd.DataFrame, col: str) -> pd.DataFrame:
+        """
+        Convert a string timestamp column with values like:
+            '2026/4/17 8:44 central standard time (utc -05:00)'
+            '2026/4/17 5:17 utc '
+        into ISO 8601 UTC strings, in-place on `col`.
+
+        After running, df[col] will contain strings like:
+            '2026-04-17T13:44:00Z'
+        
+        """
+        logger.info("Extract timestamp from date&time string.")
+
+        if col not in df.columns:
+            raise KeyError(f"Column '{col}' not found in DataFrame.")
+
+        # Example patterns:
+        # '2026/4/17 8:44 central standard time (utc -05:00)'
+        # '2026/4/17 5:17 utc '
+        dt_pattern = re.compile(r'^\s*(\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2})', re.IGNORECASE)
+        offset_pattern = re.compile(r'\(utc\s*([+-]\d{2}:\d{2})\)', re.IGNORECASE)
+
+        def _parse_single(value):
+            if pd.isna(value):
+                return pd.NaT
+
+            text = str(value).strip()
+
+            # 1) Extract the date & time part: '2026/4/17 8:44'
+            m_dt = dt_pattern.search(text)
+            if not m_dt:
+                return pd.NaT
+            dt_part = m_dt.group(1)
+
+            # 2) Extract UTC offset from '(utc -05:00)', or fall back to 'utc' = +00:00
+            m_off = offset_pattern.search(text)
+            if m_off:
+                offset = m_off.group(1)  # e.g. '-05:00'
+            else:
+                # If offset info not provided, it is utc time
+                offset = '+00:00'
+
+            # 3) Build a parseable string and convert to UTC
+            try:
+                ts = pd.to_datetime(f"{dt_part} {offset}", format="%Y/%m/%d %H:%M %z")
+                ts_utc = ts.tz_convert("UTC")
+                return ts_utc
+            except Exception:
+                return pd.NaT
+
+        # Parse to timezone-aware UTC
+        ts_utc_series = df[col].apply(_parse_single)
+
+        # Format as ISO 8601 with 'Z' suffix
+        df[col] = ts_utc_series.dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        return df
+
+    def exclude_old_records(self, df: pd.DataFrame, timestamp_col: str, days: int) -> pd.DataFrame:
+        """
+            Filter a DataFrame in-place to keep rows where `timestamp_col` is within the past `days` days.
+
+            Args:
+                df (pd.DataFrame): The DataFrame to filter.
+                timestamp_col (str): Name of the column containing timestamps.
+                days (int): Number of days to look back from the current time.
+
+            Returns:
+                pd.DataFrame: The filtered DataFrame with only records within the past `days` days.
+
+            """       
+        logger.info("Exclude old records.")
+
+        if timestamp_col not in df.columns:
+            raise ValueError(f"Column '{timestamp_col}' not found in DataFrame.")
+        if not isinstance(days, int) or days <= 0:
+            raise ValueError("days must be a positive integer.")
+        
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors='coerce', utc=True)         
+        df.drop(df[df[timestamp_col].isna()].index, inplace=True)
+        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+        df.drop(df[df[timestamp_col].dt.date < cutoff_date].index, inplace=True)
+
+        return df
+    
+
+    def dedup_records(self, df: pd.DataFrame, dedup_col: str, timestamp_col: str) -> pd.DataFrame:
+        """
+        For each duplicate in `dedup_col`, keep only the row with the latest `timestamp_col`.
+
+        Args:
+        df (pd.DataFrame): The DataFrame to filter.
+        dedup_col (str): Name of the column containing IDs to deduplicate.
+        timestamp_col (str): Name of the column containing timestamps.
+
+        Returns:
+            pd.DataFrame: DataFrame with only the latest record per ID.
+        """
+        logger.info("Removing duplicates.")
+
+        if timestamp_col not in df.columns:
+            raise ValueError(f"Column '{timestamp_col}' not found in DataFrame.")
+        if dedup_col not in df.columns:
+            raise ValueError(f"Column '{dedup_col}' not found in DataFrame.")
+
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors='coerce', utc=True)
+        df = df.drop(df[df[timestamp_col].isna()].index)
+        df = df.sort_values(by=timestamp_col, ascending=False) 
+        df = df.drop_duplicates(subset=dedup_col, keep='first')
+        df = df.reset_index(drop=True)
+
+        return df
+
+    def flatten_string_list_columns(self, df, cols):
+        """
+        Flatten list/array-like values in the specified columns into strings.
+        """
+
+        missing = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+
+        def flatten_value(x):
+
+            # NumPy array
+            if isinstance(x, np.ndarray):
+                return ",".join(map(str, x.tolist()))
+
+            # Python list/tuple/set
+            if isinstance(x, (list, tuple, set)):
+                return ",".join(map(str, x))
+
+            # Already a scalar (string, etc.)
+            return x
+
+        for col in cols:
+            df[col] = df[col].apply(flatten_value)
+
+        return df
+
+    def standardize_sscg_scorecard(self, df: pd.DataFrame, column: str = 'scorecard') -> pd.DataFrame:
+        """
+        Standardizes the values in the specified column of a DataFrame to:
+        - 'Required for Scorecard'
+        - 'Not Required for Scorecard'
+        All other values are set to None.
+
+        Args:
+            df (pd.DataFrame): The DataFrame to process.
+            column (str): The column name to standardize. Default is 'status'.
+
+        Returns:
+            pd.DataFrame: The DataFrame with the standardized column.
+        """
+        def standardize(val):
+            v = str(val).strip().lower()
+            if 'required for scorecard' in v:
+                if 'not' in v:
+                    return 'Not Required for Scorecard'
+                else:
+                    return 'Required for Scorecard'
+            else:
+                return None
+        df[column] = df[column].apply(standardize)
+        return df
+
+
+    def normalize_software_name(
+            self, 
+            manufacturer: str, 
+            product: str
+        ) -> str:
+        """
+        Normalize a software name from manufacturer and product.
+
+        Steps:
+        - Combine manufacturer and product into a single string.
+        - Convert to lowercase.
+        - Replace hyphens and underscores with spaces.
+        - Remove non-alphanumeric characters except spaces.
+        - Remove corporate suffixes (e.g., inc, corp, llc).
+        - Collapse multiple spaces and trim leading/trailing spaces.
+
+        Args:
+            manufacturer: Software manufacturer/vendor name.
+            product: Software product name.
+
+        Returns:
+            A normalized software name as a single lowercase string.
+        """
+        corp_suffixes = [
+        'inc', 'corp', 'llc', 'ltd', 'co', 'company', 'corporation', 'plc', 'gmbh', 'ag', 'sa', 'bv', 'sarl', 'oy', 'pte', 'limited'
+        ]
+
+        name = f"{manufacturer} {product}"
+        name = name.lower()      # Lowercase
+        name = re.sub(r'[-_]', ' ', name)       # Replace hyphens and underscores with spaces
+        name = re.sub(r'[^a-z0-9 ]', '', name)       # Remove special characters except spaces
+        for suffix in corp_suffixes:                   # Remove corporate suffixes
+            name = re.sub(rf'\b{suffix}\b', '', name)
+        name = re.sub(r'\s+', ' ', name).strip()        # Clean up extra spaces
+
+        return name
+
+    def normalize_version(
+            self,
+            version: Optional[str]
+        ) -> Optional[str]:
+        """
+        Normalize a version string into a simplified form.
+
+        Behavior:
+        - Accepts None or empty strings and returns None.
+        - Strips whitespace.
+        - If a colon (:) is present, keeps only the part before the first colon
+            (e.g., "2.24.3:extra" -> "2.24.3").
+        - Splits on dots (.) and keeps only the first one or two segments:
+            - "2.24.3"   -> "2.24"
+            - "2.24"     -> "2.24"
+            - "2"        -> "2"
+        - Returns None if there is no usable content after normalization.
+
+        Args:
+            version: Raw version string (may be None).
+
+        Returns:
+            A simplified version string (e.g., "2.24") or None if not applicable.
+        """
+        if not version:
+            return None
+
+        v = str(version).strip()
+        if not v:
+            return None
+
+        # Keep only the part before the first colon
+        v = re.split(r":", v)[0].strip()
+        if not v:
+            return None
+
+        parts = v.split(".")
+        if len(parts) >= 2:
+            return f"{parts[0]}.{parts[1]}"
+        elif parts:
+            return parts[0]
+        else:
+            return None
+        
+    def flatten_boolean_array_columns(self, df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+        """
+        Flattens specified boolean array columns in a DataFrame to single boolean or None.
+        Returns a DataFrame with the columns updated.
+        """
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+
+        def flatten(arr: List[bool]) -> Optional[bool]:
+            return arr[0] if arr else None
+
+        for col in cols:
+            df[col] = df[col].apply(flatten)
+        return df
+    
+
+    def normalize_tvm_os(self, df: pd.DataFrame, raw_os_col: str) -> pd.DataFrame:
+        """
+        Given a DataFrame and the column name containing raw_os,
+        returns a DataFrame with a new normalized_tvm_os column (all lower case).
+        """
+        def _parse(val):
+            """
+            Parses a raw_os value that may be a string, list, or PostgreSQL array.
+            Returns a list of OS description strings.
+            """
+            if isinstance(val, str):
+                val = val.strip()
+                # Handle PostgreSQL array-like string: {"item1","item2"}
+                if val.startswith('{') and val.endswith('}'):
+                    inner = val[1:-1]
+                    items = re.findall(r'"([^"]+)"', inner)
+                    if items:
+                        return [item.strip() for item in items]
+                    return [item.strip().strip('"') for item in inner.split(',')]
+                # Try to parse as Python list
+                try:
+                    parsed = ast.literal_eval(val)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed]
+                except Exception:
+                    pass
+                return [val]
+            elif isinstance(val, list):
+                return [str(x).strip() for x in val]
+            else:
+                return [str(val).strip()]
+
+        def _normalize(entry):
+            """
+            Normalizes a single OS description string and returns it in lower case.
+            """
+            entry = entry.strip().lower()
+
+            # Windows Server
+            ws_match = re.search(r'windows server (\d{4})', entry)
+            if ws_match:
+                return f'windows server {ws_match.group(1)}'
+            if 'windows server 2012 r2' in entry:
+                return 'windows server 2012 r2'
+            if 'windows server 2008 r2' in entry:
+                return 'windows server 2008 r2'
+
+            # Generic Windows version
+            win_match = re.search(r'windows (11|10|8|7|vista|xp)', entry)
+            if win_match:
+                return f'windows {win_match.group(1)}'
+
+            # Red Hat Enterprise Linux
+            rh_match = re.search(r'red hat enterprise linux (\d+\.\d+)', entry)
+            if rh_match:
+                return f'linux red hat {rh_match.group(1)}'
+
+            # CentOS Linux
+            centos_match = re.search(r'centos linux (\d+\.\d+)', entry)
+            if centos_match:
+                return f'linux centos {centos_match.group(1)}'
+
+            # Ubuntu Linux
+            ubuntu_match = re.search(r'ubuntu(?: linux)? (\d+\.\d+)', entry)
+            if ubuntu_match:
+                return f'ubuntu linux {ubuntu_match.group(1)}'
+
+            # Debian Linux
+            debian_match = re.search(r'debian(?: gnu\/linux| linux)? (\d+\.\d+|\d+)', entry)
+            if debian_match:
+                return f'debian linux {debian_match.group(1)}'
+
+            # Linux Kernel X.Y or X.x
+            kernel_match = re.search(r'linux kernel (\d+\.\d+|[1-9]\.x)', entry)
+            if kernel_match:
+                return f'linux kernel {kernel_match.group(1)}'
+
+            return None  # Use None for unknowns
+
+        def _execute(val):
+            if val is None or (isinstance(val, float) and np.isnan(val)) or val == '' or val == []:
+                return np.nan
+            items = _parse(val)
+            if not items or items == ['']:
+                return np.nan
+            for item in items:
+                norm = _normalize(item)
+                if norm:
+                    return norm.lower()
+            # If none matched, return joined string or np.nan
+            joined = ', '.join([str(i).strip().lower() for i in items if str(i).strip()])
+            return joined if joined else np.nan
+
+        df = df.copy()
+        df['normalized_tvm_os'] = df[raw_os_col].apply(_execute)
+        return df

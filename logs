@@ -1,31 +1,262 @@
+import logging
+import pandas as pd
+from datetime import  date
+import urllib3
+import time
+from crma_hive_connections import Connection
+from crma_hive_utilities import Utility, Read_Write_Utility
+from crma_hive_scorecard_utilities import FismaScorecardUtility
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_input_devices(
-	device_id text,
-	fisma_id text,
-	device_last_seen timestamp,
-	device_type text,
-	devicerole text,
-	devicetype text,
-	asset_auth_status text,
-	asset_hosting text,
-    preferred_serial_number text,
-    mac text[],
-	preferred_hostname text,
-	preferred_ipv4 text,
-	preferred_os text,
-	os text[],
-	adapters text[],
-	crowd_strike_last_seen date,
-	crowd_strike_adapter_policies_policy_type text[],
-    crowd_strike_adapter_policies_applied text[],
-	edr_enabled boolean,
-	asset_id text,
-	asset_last_scan_time timestamp,	
-	last_authenticated_scan_date timestamp,
-	is_credentialed boolean,
-    etl_date date
-);
+from sqlalchemy.engine import Engine
 
-CREATE INDEX idx_fismascorecard_device_details_etl_date ON crma_hive.crma_hive_fismascorecard_input_devices USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_device_details_fisma_id ON crma_hive.crma_hive_fismascorecard_input_devices (fisma_id);
-CREATE INDEX idx_fismascorecard_device_details_asset_id_last_scan ON crma_hive.crma_hive_fismascorecard_input_devices (asset_id, asset_last_scan_time);
+# Turning off warnings
+urllib3.disable_warnings()
+
+# Setting up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+utility = Utility()
+connection = Connection()
+rw_util = Read_Write_Utility()
+fismaScorecardUtility = FismaScorecardUtility()
+
+MAIN_SCHEMA = rw_util.MAIN_SCHEMA
+
+def build_get_devices_sql() -> str:
+    """
+    Build sql command to fetch input devices.
+    """
+    sql = f"""
+        WITH 
+        -- Step 1: Select Axon device columns
+        devices AS (
+            -- 1.1: Select eligible devices
+            SELECT 
+                internal_axon_id AS device_id,
+                devices_custom_enrichment_fisma_id AS fisma_id,
+                devices_last_seen AS device_last_seen,
+                asset_uuid,
+                devices_type AS device_type,
+                devices_custom_devicerole AS devicerole,
+                devices_custom_devicetype AS devicetype,
+                devices_custom_asset_auth_status AS asset_auth_status,
+                devices_custom_asset_hosting AS asset_hosting,
+                devices_serial_number_preferred AS preferred_serial_number,
+                devices_mac AS mac,
+                devices_hostname_preferred AS preferred_hostname,
+                devices_ips_v4_preferred  AS preferred_ipv4,
+                devices_os_type_distribution_preferred AS preferred_os,
+                devices_os_type_distribution AS os,
+                adapters,
+                crowd_strike_last_seen,
+                crowd_strike_adapter_policies_policy_type,
+                crowd_strike_adapter_policies_applied,
+                CASE
+                    WHEN 'prevention' = ANY(crowd_strike_adapter_policies_policy_type) 	
+                        AND 'True' = ANY(crowd_strike_adapter_policies_applied) 
+                    THEN TRUE
+                    ELSE FALSE
+                END AS edr_enabled	
+            FROM crma_hive.crma_hive_axonius_devices  
+         	WHERE devices_last_seen >= %(lookback_date)s
+                AND devices_ips_v4_preferred IS NOT NULL
+                AND (
+                    devices_custom_enrichment_fisma_id  iLIKE 'ICE-%%'
+                    OR devices_custom_enrichment_fisma_id IS NULL
+                    OR devices_custom_enrichment_fisma_id iLIKE 'TEMPORARY'		
+                )
+                AND(
+                    devices_custom_asset_auth_status iLIKE 'AUTHORIZED' 
+                    OR devices_custom_asset_auth_status iLIKE 'TVM IMPORTED'
+                    OR devices_custom_asset_auth_status IS NULL
+                )
+                AND NOT (
+                    adapters = ARRAY['tenable_io_adapter']::text[]
+                    AND devices_custom_asset_auth_status IS DISTINCT FROM 'TVM IMPORTED'
+                )
+        ),
+        -- Step 2: Flatten asset_id array
+        device_flatten_asset_id AS (
+            SELECT 
+                device_id,
+                fisma_id,
+                device_last_seen,
+                device_type,
+                devicerole,
+                devicetype,
+                asset_auth_status,
+                asset_hosting,
+                preferred_serial_number,
+                mac,
+                preferred_hostname,
+                preferred_ipv4,
+                preferred_os,
+                os,
+                adapters,
+                crowd_strike_last_seen,
+                crowd_strike_adapter_policies_policy_type,
+                crowd_strike_adapter_policies_applied,
+                edr_enabled,
+                asset_id
+            FROM devices
+            LEFT JOIN LATERAL 
+                unnest(asset_uuid) AS asset_id ON TRUE
+        ),
+        -- Step 2: Credential Check & asset last scan time
+        device_cred_check AS (
+            SELECT	
+                d.*,
+                a.scan_last_scan_time AS asset_last_scan_time,
+                a.scan_last_authenticated_scan_date AS last_authenticated_scan_date,
+                CASE
+        			WHEN a.scan_last_authenticated_scan_date >= %(lookback_date)s
+                    THEN TRUE
+                    ELSE FALSE
+                END AS is_credentialed
+            FROM device_flatten_asset_id d
+            LEFT JOIN crma_hive.crma_hive_tvm_assets  a
+                ON d.asset_id =  a.id
+        ),
+        -- Step 3: Dedup device_id 
+                -- group by device_id -> rank by is_credentialed -> rank by asset_last_scan_time, keep top ranked
+        deduped_devices AS(	
+            SELECT *
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY device_id
+                        ORDER BY is_credentialed DESC,
+                                CASE WHEN asset_last_scan_time IS NULL THEN 0 ELSE 1 END DESC,
+                                asset_last_scan_time DESC
+                    ) AS device_rn
+                FROM device_cred_check
+            ) ranked
+            WHERE device_rn = 1 
+        )
+        SELECT 
+            device_id,
+            fisma_id,
+            device_last_seen,
+            device_type,
+            devicerole,
+            devicetype,
+            asset_auth_status,
+            asset_hosting,
+            preferred_serial_number,
+            mac,
+            preferred_hostname,
+            preferred_ipv4,
+            preferred_os,
+            os,
+            adapters,
+            crowd_strike_last_seen,
+            crowd_strike_adapter_policies_policy_type,
+            crowd_strike_adapter_policies_applied,
+            edr_enabled,
+            asset_id,
+            asset_last_scan_time,
+            last_authenticated_scan_date,
+            is_credentialed
+        FROM deduped_devices
+
+    """
+
+    return sql
+
+def update_scorecard_input_devices_table(
+        engine: Engine,
+        bucket_name: str
+    )->None:
+    """
+    Update Scorecard input devices table with incoming axonius devices and their corresponding TVM scan info 
+
+    Parameters:
+        engine (Engine): Database engine for data access.
+        bucket_name (str): Name of the storage bucket for output.
+
+    Returns:
+        None
+    """
+    etl_date= date.today()
+    logger.info(f"Updating Scorecard input devices table") 
+
+    params = fismaScorecardUtility.compute_date_params(etl_date)
+    params.pop("cve_kev_cutoff_date", None)
+
+    logger.info("Append current date devices to table.")
+    logger.info("Lookback date: %s", params["lookback_date"])
+
+    logger.info("Build query to get device and their scan data.")
+    sql = build_get_devices_sql()
+
+    logger.info("Excecute  query.")
+    df = rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql,
+        params=params
+    )
+    
+    if df is not None:
+        logger.info(f"Device data received. Total number of devices: {len(df)}")         
+        logger.info(f"Load device score dataset to target table.")
+        df["etl_date"] = etl_date
+        dataset = "crma_hive_fismascorecard_input_devices"
+        rw_util.truncate_and_load_table(
+            engine=engine,
+            df=df,
+            schema_name=MAIN_SCHEMA,
+            table_name=dataset,
+            exist_type="append"    
+        )
+        logger.info(f"Post load validation check passed for table '{dataset}' in '{MAIN_SCHEMA}' schema")
+        if rw_util.post_load_validation(
+                engine=engine,
+                df=df,
+                schema_name=MAIN_SCHEMA,
+                table_name=dataset
+            ):
+            logger.info(f"Post load validation check passed for table '{dataset}' in '{MAIN_SCHEMA}' schema")
+
+            ##Parallel loading##
+            logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+            logger.info(f"Loading table '{dataset}' to '{MAIN_SCHEMA}' schema")     
+            engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+            rw_util.truncate_and_load_table(
+                engine=engine2, 
+                df=df,
+                schema_name=MAIN_SCHEMA,
+                table_name=dataset,
+                exist_type="append"
+            )          
+        else:
+            raise RuntimeError(f"Post load validation check failed for {dataset} in '{MAIN_SCHEMA}' schema")
+       
+        fismaScorecardUtility.archive_to_s3(
+            df=df,
+            bucket_name=bucket_name,
+            dataset=dataset
+        )
+            
+    else:
+        logger.warning("Query returned no data")      
+         
+
+def main():
+
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    engine = connection.postgres_engine("edae-crma-hive") 
+
+
+    update_scorecard_input_devices_table(engine=engine, bucket_name=bucket_name)       
+      
+    utility.log_memory_usage() 
+    elapsed_minutes = (time.time() - start_time) / 60 
+    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+
+
+if __name__ == "__main__":
+    main()

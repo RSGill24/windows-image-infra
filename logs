@@ -1,916 +1,1066 @@
-"""
-need to create a composite key that will map neatly/semi-neatly between SC and VM. if we can update the scan_id key then ingestion
-of vm data should just update previous data
-
-what if VM is missing lots of data?
-how will asset tags affect this?
-will we need to roll up subs into GSS/MAJ?
-
-composite key:
-https://developer.tenable.com/docs/vm-and-was-integrations#data-model
-
-needs FISMA ID (non sub). if VM finding not in SC, needs to use FISMA ID tag instead
-
-vulns:
-asset.uuid + plugin ID + port + port protocol
-does sc have an asset uuid? or what could we use in place of it?
-
-compliance
-asset.uuid + check_id?
-SC has compliance_x_id's in the pluginText that i could parse out. need to verify if those are the same?
-
-if an SC asset doesn't map to an axonius asset, can we safely assume we can't reconcile that?
-"""
-
+import csam_api_client
+from csam_api_client.models.poam_severity import PoamSeverity
 import os
+import logging
 import polars as pl
-from lib import LOG_DIR
-from snow_helpers import *
-from lib import IS_MAIN_BRANCH
-from sqlalchemy import create_engine, inspect
-from psycopg2 import OperationalError
-from sqlalchemy import VARCHAR, INTEGER, DateTime, DOUBLE_PRECISION, JSON
-import polars as pl
-from sara_tenable_findings import tenable_vm, tenable_vm_standard_filters as tvsf
-import os
-import axonius_api_client as axonapi
-import json
-import time
-import logging 
-import polars as pl
-import os
-import glob
-from snow_findings_ingest import vm_datetime_conv
-ax_id = 'internal_axon_id'
+import jinja2
+import datetime
+import polars
+from pandas.tseries.holiday import USFederalHolidayCalendar
+from pandas.tseries.offsets import CustomBusinessDay
+from dateutil.parser import parse
+from dateutil.parser._parser import ParserError
+import ipaddress
+from lib import set_file_handler, set_stream_handler, get_unstable_logger, set_unstable, IS_MAIN_BRANCH
+from pprint import pformat
+from functools import partial
+from html import unescape
+from functools import lru_cache
+import concurrent.futures as cf
+
+from csam_helpers import (
+    DEFAULT_RCA,
+    CSAM_CONFIG,
+    get_system_level_api_call,
+    csam_retry,
+    RLThreadPoolExecutor,
+    CSAM_RATE_LIMIT,
+    TEST_POAM_DELIM,
+    get_poc_report,
+    POAM_CRITICALITY_MAPPING,
+    get_csam_poc_position,
+    get_assignee,
+    SCD_DELTA,
+    submit_to_csam,
+    post_draft_poam,
+    get_control_imp,
+    post_poam_association,
+    STANDARD_POAM_CLOSURE_MILESTONE,
+    STANDARD_POAM_INITIATION_MILESTONE,
+    post_draft_poam_milestone,
+    post_poam_milestone_note,
+    put_poam_agencydefined,
+    post_poam_asset_list,
+    post_poam_findings_list,
+    APPROVAL_WORKFLOW,
+    post_poam_workflow
+)
+
+from snow_helpers import (
+    SNOW_API,
+    get_latest_snow_table,
+    get_n_transform_snow,
+    SNOW_QUERIES,
+    SNOW_POAM_TABLE_NAME,
+    SNOW_WEAKNESS_TRACKING_TABLE_NAME,
+    SNOW_MILESTONE_TABLE_NAME,
+    SNOW_USERS_TABLE_NAME,
+    SNOW_FINDINGS_TABLE_NAME,
+    SNOW_FISMA_INVENTORY_NAME,
+    SNOW_TIME_FORMAT,
+    send_to_snow,
+    snow_csam_poam_table_perms_check,
+    dedupe_snow_milestones,
+    canonicalize_snow_action_numbers
+)
+
+
+US_BUSINESS_DAY = CustomBusinessDay(calendar=USFederalHolidayCalendar())
+
+import warnings
+warnings.simplefilter(action="ignore", category=FutureWarning)
+warnings.simplefilter(action="ignore", category=UserWarning)
+
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 FORMATTER = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-_name = 'wt_fix_script'
+_name = "sara_wt_poam_automation"
 logger = logging.getLogger(_name)
-logger.propagate = False
+logger.propagate=False
 logger.setLevel(logging.DEBUG)
 
 logger = set_file_handler(logger, f"{_name}.log")
 logger = set_stream_handler(logger)
 
-def get_snow_find(api=SNOW_API, delete_file=False):
+unstable_logger, unstable_fn_path = get_unstable_logger(_name)
 
-    if "portaltest" in api:
-        fn_prefix = 'test'
-    elif 'portaluat' in api:
-        fn_prefix = 'uat'
-    elif "portaltdev" in api:
-        fn_prefix = 'dev'
-    elif "icetest" in api:
-        fn_prefix = 'sandbox'
-    else:
-        fn_prefix = "prod"
+def get_rca(findings_df):
 
-    latest_findings_tmp_file = fn_prefix+'sc_lf_trimmed.parquet'
-    if delete_file:
+    rca = f"{findings_df['rca_description'].unique()[0]}"
+    # asked by Core to skip poam generation for missing rca
+    if not rca:
+        logger.warning("RCA missing for %s, using default", findings_df['number'].unique()[0])
+        rca = DEFAULT_RCA
+    return  rca.upper()
+
+# Heather says she doesn't want hyperlinks
+# def description_hyperlink(link, link_text):
+#     env = jinja2.Environment(loader=jinja2.FileSystemLoader("templates/"))
+#     temp = env.get_template("desc_hyperlink.txt")
+#     return temp.render(link=link, link_text=link_text)
+
+class WeaknessTrackerPoam:
+    """class to help organize things need for a poam based on the WT"""
+    def __init__(self, sys_id):
+        self.sys_id = sys_id
+        self.draft_poam: csam_api_client.PoamUpdate = None
+        self.poam: csam_api_client.PoamUpdate = None
+        self.draft_milestones = []
+        self.milestones = []
+        self.assets = None
+        self.findings = None
+        self.controls = []
+        self.iid = None
+        self.assignee: csam_api_client.Person = None
+        self.isso: csam_api_client.Person = None
+        self.number = None
+        self.failed = False
+
+    def get_draft_milestones(self):
+        if self.poam:
+            return [(self.poam.system_id, self.poam.poam_id, m) for m in self.draft_milestones]
+        
+    def get_draft_iid(self):
+        if self.poam and self.iid:
+            return self.poam.system_id, self.poam.poam_id, self.iid
+        
+    def __repr__(self):
+        return f"""{self.number}, {self.sys_id}
+POA&M: {self.poam}
+Assignee: {self.assignee}"""
+
+def wtp_failed_log(logger, wtps, fs: list) -> None:
+    if not fs:
+        return
+    for f in fs:
+        idx, draft, exc = f
+        wtp = wtps[idx]
+        logger.error("POAM Issue with %s: Got '%s'\n\nwhen submitting '%s'", wtp.number, str(exc), draft)
+
+log_failed = partial(wtp_failed_log, unstable_logger)
+
+def del_files(files):
+    for _name in files:
         try:
-            os.remove(latest_findings_tmp_file)
-        except:
-            pass
+            os.remove(_name)
+        except FileNotFoundError:
+            logger.exception("")
 
-    if os.path.exists(latest_findings_tmp_file):
-        logger.info("Pre-existing Findings Table data found. Reading Parquet file %s", latest_findings_tmp_file)
-        latest = pl.scan_parquet(latest_findings_tmp_file)
-    else:
-        logger.info("No pre-existing Findings Table data found. Performing GET call to Service Now for latest Finding Table data")
-        latest = get_latest_snow_table(SNOW_FINDINGS_TABLE_NAME, api, sysparm_fields=['sys_id', 'scan_id', 'state', 'weakness_tracking'])#, sysparm_query=f"state!=mitigated") #sysparm_fields="sys_id,scan_id,id,state,days_since_discover,first_discovered,last_observed,poa_m_required,solution,finding_type".split(','))
+def get_a_tag(name, link, target="_blank"):
+    return f'<a href="{link}" target="{target}">{name}</a>'
 
-        if latest.select(pl.len()).collect().item():
-            logger.info("Writing data to Parquet file: %s", latest_findings_tmp_file)
-            latest.sink_parquet(latest_findings_tmp_file)
-    sc_snowfindings = latest.select('sys_id', 'scan_id', 'state', 'weakness_tracking').collect()
-    return sc_snowfindings
+def purge_test_poams():
+    ### removes all POAMs generated by this script (i.e. any POAM with the value assigned to TEST_POAM_DELIM in POAM Title)
+    ### purge todo: remove
+    if IS_MAIN_BRANCH:
+        return
+    api = csam_api_client.ApiClient(CSAM_CONFIG)
+    system_poam_api = csam_api_client.PoamDetailsApi(api)
+    systems_api = csam_api_client.SystemsApi(api)
+    systems = systems_api.v1_systems_get(_request_timeout=300)
+    systems_ids = [x.id for x in systems] #list of csam system ids
+    poams_by_system_id = get_system_level_api_call(system_poam_api.v1_systems_system_id_poams_get, systems_ids, _request_timeout=300)
+    poam_status = csam_api_client.PoamStatus
+    all_poams = [poam for poams in poams_by_system_id.values() for poam in poams]
+    already_created = [p for p in all_poams if TEST_POAM_DELIM in p.title]
+    if already_created:
+        logger.info("Purging CSAM")
+        with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+            threads = [executor.submit(csam_retry(system_poam_api.v1_systems_system_id_poams_poam_id_delete_with_http_info), p.system_id, p.poam_id) for p in already_created]
+        poams_by_system_id = get_system_level_api_call(system_poam_api.v1_systems_system_id_poams_get, systems_ids, _request_timeout=300)#, exclude=[6559])
+        all_poams = [poam for poams in poams_by_system_id.values() for poam in poams]
 
-def get_snow_weak(api=SNOW_API, delete_file=False):
+    if "iceserviceportal." not in SNOW_API:
+        logger.info('Purging SNow CSAM table')
+        snow_poams = get_latest_snow_table(SNOW_POAM_TABLE_NAME, SNOW_API, offset_limit=5000)
+        to_delete = snow_poams.filter(pl.col("poam_title").str.contains(TEST_POAM_DELIM.replace("$", "\\$")))[['sys_id']].with_columns(pl.lit("DELETE").alias('HTTP Action'))
+        send_to_snow(to_delete, SNOW_POAM_TABLE_NAME)
 
-    if "portaltest" in api:
-        fn_prefix = 'test'
-    elif 'portaluat' in api:
-        fn_prefix = 'uat'
-    elif "portaltdev" in api:
-        fn_prefix = 'dev'
-    elif "icetest" in api:
-        fn_prefix = 'sandbox'
-    else:
-        fn_prefix = "prod"
-
-    latest_findings_tmp_file = fn_prefix+'sc_wt_trimmed.parquet'
-    if delete_file:
-        try:
-            os.remove(latest_findings_tmp_file)
-        except:
-            pass
-
-    if os.path.exists(latest_findings_tmp_file):
-        logger.info("Pre-existing Findings Table data found. Reading Parquet file %s", latest_findings_tmp_file)
-        latest = pl.scan_parquet(latest_findings_tmp_file)
-    else:
-        logger.info("No pre-existing Findings Table data found. Performing GET call to Service Now for latest Finding Table data")
-        latest = get_latest_snow_table(SNOW_WEAKNESS_TRACKING_TABLE_NAME, api)
-
-        if latest.select(pl.len()).collect().item():
-            logger.info("Writing data to Parquet file: %s", latest_findings_tmp_file)
-            latest.sink_parquet(latest_findings_tmp_file)
-    wts = latest.collect()
-    return wts
-
-def set_stream_handler(logger):
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(FORMATTER)
-    stream_handler.setLevel(logging.DEBUG)
-    logger.addHandler(stream_handler)
-    return logger
-
-DB_URL = "eda-dive-np.cqxg4wshaxwj.us-gov-west-1.rds.amazonaws.com"
-DB_URI = f"postgresql://{os.environ['EDAE_USER']}:{os.environ['EDAE_PW']}@{DB_URL}:5432/vetdb_fqt"
-
-def get_all_table_batch(schema, table_name, query, batch_size: int = 10_000, db_url: str=DB_URI):
-    while True:
-        try:
-            engine = create_engine(
-                db_url,
-                pool_size=10,
-                max_overflow=20,
-                pool_timeout=30,
-                pool_recycle=1800,
-                pool_pre_ping=True,
-                connect_args={
-                    "keepalives": 1,
-                    "keepalives_idle": 30,
-                    "keepalives_interval": 10,
-                    "keepalives_count": 5
-                },
-                execution_options={'stream_results': True, 'yield_per': batch_size}
-            )
-            insp = inspect(engine)
-            columns_table = insp.get_columns(table_name, schema)
-
-            # build schema dtypes to override so we don't have to rely on infer_schema_length
-            override = {}
-            for c in columns_table:
-                col_name = c['name']
-                col_type = c['type']
-                if isinstance(col_type, (VARCHAR, JSON)):
-                    override[col_name] = pl.String
-                elif isinstance(col_type, INTEGER):
-                    override[col_name] = pl.Int32
-                elif isinstance(col_type, DOUBLE_PRECISION):
-                    override[col_name] = pl.Float32
-                elif isinstance(col_type, DateTime):
-                    override[col_name] = pl.Datetime('ns', "UTC")
-
-            with engine.connect() as conn:
-                for _df in pl.read_database(query, conn, iter_batches=True, batch_size=batch_size, schema_overrides=override):
-                    yield _df
-            return
-        except OperationalError as e:
-            continue
-
-
-fields = [
-    (ufid:='specific_data.data.enrichment_u_fisma_id'),
-    (customfid:='adapters_data.gui.custom_enrichment_fisma_id'),
-    'specific_data.data.network_interfaces.net_bios_options',
-    'specific_data.data.hostname_fqdn_preferred',
-    (schid:='adapters_data.tenable_security_center_adapter.host_uuid'),
-    (repo:='adapters_data.tenable_security_center_adapter.repository_name'),
-    (tvmaid:='adapters_data.tenable_io_adapter.asset_uuid'),
-    (tags:='adapters_data.tenable_io_adapter.tags'),
-    (ax_uuid:='specific_data.data.uuid')
-]
-
-def get_axon():
-    today = datetime.datetime.today().strftime("%Y%m%d")
-    faxdevs = f"ax_devs_{today}.parquet"
-    if os.path.exists(faxdevs):
-        axdevs = pl.read_parquet(faxdevs)
-    else:
-        fraw = f'ax_devs_raw_{today}.json'
-        # Axonius connection
-        connect_args: dict = axonapi.get_env_connect()
-        client: axonapi.Connect = axonapi.Connect(**connect_args,)
-        apiobj: axonapi.api.assets.AssetMixin = client.devices
-        client.LOG = set_stream_handler(client.LOG)
-        client.devices.LOG = set_stream_handler(client.devices.LOG)
-        ax_fields = apiobj.fields.get()
-        mac_fields = sorted([f['name'] for t, fields in ax_fields.items() for f in fields if "mac" in f['name'] and not any(x in f['name'] for x in ["details", "random", "machine", "remote", 'conflict'])])
-        if os.path.exists(fraw):
-            with open(fraw) as file:
-                axdevs_raw = json.load(file)
-        else:
-            relevant_fields = fields + mac_fields
-            axdevs_raw=client.devices.get(fields=relevant_fields)
-            with open(fraw, "w") as file:
-                json.dump(axdevs_raw, file)
-
-        from collections import defaultdict
-        f_dtype = defaultdict(set)
-        for res in axdevs_raw:
-            for k, v in res.items():
-                f_dtype[k].add(type(v))
-        modified = []
-        to_check = [k for k,v in f_dtype.items() if len(v) > 1]
-        for res in axdevs_raw:
-            for f in to_check:
-                if f not in res:
-                    continue
-                # if isinstance(res[f], str):
-                if list in f_dtype[f] and type(res[f]) != list:
-                    res[f] = [res[f]]
-            modified.append(res)
-        axdevs = pl.DataFrame(modified, infer_schema_length=None)
-        for col in mac_fields:
-            if col not in axdevs:
-                continue
-            dtype = axdevs.schema[col]
-            if dtype != pl.String:
-                continue
-            expr = pl.col(col).cast(pl.List(pl.String))
-            axdevs = axdevs.with_columns(expr)
-        # compile all mac address cols into single list of non null unique values
-        axdevs = axdevs.with_columns(
-                    [pl.col(x).fill_null(pl.lit([])) for x in mac_fields if x in axdevs.columns]
-            )
-        app_cols = [x for x in mac_fields if x in axdevs.columns]
-        axdevs = axdevs.with_columns(
-            pl.concat_list(
-                pl.col(app_cols)
-            )
-            .list.eval(
-                pl.element()
-                .str.replace_all("-", ":")
-                .str.to_uppercase()
-            )
-            .list.drop_nulls()
-            .list.unique()
-            .alias('axon_macs')
-        ).drop(app_cols)
-        axdevs.write_parquet(faxdevs, use_pyarrow=True)
-
-    def ts_from_path(path: str):
-        _date = path.split('.')[0].split('_')[-1]
-        dt_obj = datetime.datetime.strptime(_date, "%Y%m%d")
-        return dt_obj
-
-    historical_files = sorted(glob.glob("ax_devs*.parquet"), key=ts_from_path)
-    oldest = historical_files[0]
-    latest = historical_files[-1]
-    target_ts = ts_from_path(latest)
-
-    target_scema = (yield_schema := pl.scan_parquet(oldest).drop('adapter_list_length').collect_schema())
-
-    def null_of(dtype: pl.DataType) -> pl.Expr:
-        return pl.lit(None, dtype=dtype)
-
-    lfs = []
-    for file in historical_files:
-        ts = ts_from_path(file)
-        lf = pl.read_parquet(file)
-        missing = [c for c in target_scema if c not in lf.columns]
-        lf = lf.drop('adapter_list_length')
-        if missing:
-            lf = lf.with_columns(*[null_of(target_scema[c]).alias(c) for c in missing])
-        casts = []
-        for c in lf.columns:
-            if c in target_scema and lf.schema.get(c) != target_scema[c]:
-                casts.append(pl.col(c).cast(target_scema[c], strict=False).alias(c))
-        if casts:
-            lf = lf.with_columns(*casts)
-
-        lf = lf.select(list(target_scema.keys()))
-
-        lfs.append(lf)
-
-    hist = pl.concat(lfs, how='vertical_relaxed', rechunk=True)
-    keys = [ax_id]
-
-    old_sc_tags = (
-        hist
-        .group_by(keys, maintain_order=True)
-        .agg(
-            pl.col(schid).drop_nulls().unique()
+                    # purging canned milestone generated
+        _name = SNOW_MILESTONE_TABLE_NAME
+        tmp_file, offset_limit, fields, sysparm_query = SNOW_QUERIES[_name]
+        snow_ms = get_n_transform_snow(_name, offset_limit=offset_limit, fields=fields, sysparm_query=sysparm_query)
+        to_delete = (
+            snow_ms
+            .filter(pl.col('sys_created_by').str.contains("VAFT") & pl.col('description').str.contains('<p>'))
+            .select(pl.col('sys_id'), pl.lit("DELETE").alias("HTTP Action"))
         )
-    )
-
-    axdevs = pl.read_parquet(latest).join(old_sc_tags, on=ax_id, how="left")
-
-    axdevs = (
-        axdevs
-        .with_columns(pl.col(pl.List).list.eval(pl.element().explode().drop_nulls().unique()))
-    )
-    return axdevs
-
-rid = "Rule-ID"
-sid = "STIG-ID"
-sidrid = "sidrid"
-def get_vm():
-    ak = os.environ['TENABLE_VM_ACCESS_KEY']
-    sk = os.environ['TENABLE_VM_SECRET_KEY']
-    tio = tenable_vm.get_io_api_client(ak, sk)
-
-    to_do = [
-        # scan analysis vulns
-        {
-            "query_method": tenable_vm.get_vulns_exports,
-            "filters": {
-                            "severity": list(tvsf.VulnSeverity)[1:],
-                            # "plugin_type": 'active' # looks like the available types are combined,local,remote,summary, or null...
-                        },
-            "kwargs": {
-                "no_nnm": True,
-                "flatten": True
-            },
-            'finding_type': "tenable_vuln",
-        },
-        # compliance
-        {
-            "query_method": tenable_vm.get_compliance_exports,
-            "filters": {
-                            # todo. do we want to filter these? how else to check for man checks
-                            "compliance_results": [tvsf.ComplianceResults.FAILED] #tvsf.ComplianceResults.ERROR, ] do we want error? #, tvsf.ComplianceResults.WARNING] don't want manchecks
-                        },
-            "kwargs": {
-                "flatten": True
-            },
-            'finding_type': "tenable_compliance",
-        }
-    ]
-
-    if os.path.exists((fn:="assets.parquet")):
-        assets = pl.scan_parquet(fn)
-    else:
-        assets = tenable_vm.get_assets(tio, filter_null_tags=False)
-        assets.sink_parquet(fn)
-    assets = assets.rename({x:x+"_asset" for x in assets.collect_schema().names()})
-
-    logger.info("Fetching latest Tenable Findings (Vuln/Compliance) from Database")
-    vm = pl.LazyFrame()
-    for query in to_do:
-        finding_type = query['finding_type']
-        if os.path.exists((fn:=f"{finding_type}_raw.parquet")):
-            _df = pl.scan_parquet(fn)
-            logger.info("Existing %s parquet found. Using existing parquet", finding_type)
-        else:
-            query_method = query['query_method']
-            _df = query_method(tio, query['filters'], **query['kwargs'])
-            _df.sink_parquet(fn)
-            _df = pl.scan_parquet(fn)
-
-        # join assets, and remove any asset data the vuln/comp export returns
-        # there's too much of a discrepancy between how vuln and comp exports
-        # treat asset information
-        _df = _df.join(assets, left_on='asset_uuid', right_on='id_asset')
-        _df = _df.rename({"asset_uuid": "id_asset"})
-        # _df = _df.drop(pl.col('^asset_.*$'))
-
-        vm = pl.concat([vm, _df], how='diagonal_relaxed')
-        del _df
-
-    vm = vm.select('id_asset', ccfi, 'plugin_id', 'port_port', 'port_protocol', 'reference', 'scan_asset', 'sources_asset', 'compliance_benchmark_name', 'compliance_benchmark_version', 'last_seen').collect()
-    vm = vm.with_columns(
-        [
-            pl.when(
-                pl.col('reference').is_not_null()
-            ).then(
-                pl.col('reference').list.eval(
-                        pl.when(
-                            pl.element().struct.field('framework').eq(framework)
-                        ).then(
-                            pl.element().struct.field('control').str.split('r').list.first()
-                        ).otherwise(None)
-                    )
-                    .list.drop_nulls()
-                    .list.first()
-                    .alias(framework)
-            ).otherwise(None)
-            for framework in [rid, sid]
-        ]
-    )
-    vm = vm.with_columns((pl.col(sid)+pl.col(rid)).alias(sidrid))
-
-    vm = vm.with_columns(
-        pl.when(
-            pl.col(ccfi).is_not_null()
-        ).then(
-            pl.col('id_asset').str.replace_all('-', "").str.to_lowercase()+pl.col(ccfi)
-        ).when(
-            pl.col(ccfi).is_null()
-        ).then(
-            pl.col('id_asset').str.replace_all('-', "").str.to_lowercase()+pl.col('plugin_id').cast(pl.String)+pl.col('port_port').cast(pl.String)+pl.col('port_protocol')
-        ).otherwise(None)
-        .alias('comp_key')
-    )
-    vm = vm.sort(pl.col("last_seen").str.to_datetime("%+"), descending=True).unique(subset='comp_key', keep='first', maintain_order=True)
-    return assets, vm
-# vm_datetime_conv('last_seen')
-
-PO_FIELD_MARKUP_MAPPING = {
-    (ccm:="compliance_check_name"): "compliance-check-name",
-    (cr:="compliance_result"): "compliance-result",
-    (ce:="compliance_error"): "compliance-error",
-    (cct:="compliance_check_type"):"compliance_check_type",
-    (cbn:="compliance_benchmark_name"):"compliance-benchmark-name",
-    (cbv:="compliance_benchmark_version"):"compliance-benchmark-version",
-    (ccri:="compliance_control_id"):"compliance-control-id",
-    (ccfi:="compliance_full_id"):"compliance-full-id",
-    (cchi:="compliance_check_id"):"compliance-check-id",
-}
-sc_to_get = [
-    ("tenable_findings_active", """select {sql_cols} from {schema}."{table_name}" where "severity" != 'Info'"""),
-    ("tenable_findings_compliance", """select {sql_cols} from {schema}."{table_name}" """)
-]
-def get_sc(save_file, to_do=sc_to_get):
-
-    REPORTS_SCHEMA = "vaft"
-    MAX_DF_SIZE = 10000
-    sql_cols = "*"
-    # query = """select {sql_cols} from {schema}."{table_name}" where "severity" != 'Info'"""
-    dont_need = [
-    'exploitAvailable', 'bid', 'keyDrivers', 'acceptRisk', 'acrScore', 'hostUniqueness', 
-    'recastRiskRuleComment', 'vprScore', 'cvssV3TemporalScore', 'cvssV3BaseScore', 'hasBeenMitigated', 
-    'temporalScore', 'exploitEase', 'cvssV3Vector', 'pluginPubDate', 'version', 
-    'vprContext', 'assetExposureScore', 'cvssVector', 'seolDate', 'riskFactor', 'recastRisk', 'baseScore', 'acceptRiskRuleComment', 'vulnPubDate', 
-    'exploitFrameworks', 'stigSeverity', 'patchPubDate', 'pluginModDate'
-    ]
-
-    patterns = [pl.col('pluginText').str.extract(rf"<\w*:*{sub}>([\S\s]*?)</\w*:*{sub}>").alias(rep) for rep, sub in PO_FIELD_MARKUP_MAPPING.items()]
-
-    if os.path.exists(save_file):
-        sc = pl.read_parquet(save_file)
-    else:
-        sc = pl.DataFrame()
-        for table_name, query in to_do:
-            q = query.format(sql_cols=sql_cols, schema=REPORTS_SCHEMA, table_name=table_name)
-            for _df in get_all_table_batch(REPORTS_SCHEMA, table_name, q, batch_size=MAX_DF_SIZE):
-                _df = _df.drop(dont_need)
-                _df = _df.with_columns(patterns)
-                _df = _df.drop('pluginText')
-                sc = pl.concat([sc, _df])
-                del _df
-        if not sc.is_empty():
-            sc.write_parquet(save_file, use_pyarrow=True)
-
-    return sc
-
-
-
-
+        send_to_snow(to_delete, SNOW_MILESTONE_TABLE_NAME)
 
 
 def main():
 
-    axdevs = get_axon()
-    assets, vm = get_vm()
-
-    # compile available asset name values into one column
-    right_cols = ['specific_data.data.hostname', 'specific_data.data.hostname_fqdn_preferred', 'specific_data.data.name']
-    axdevs = axdevs.with_columns(
-            pl.concat_list(
-                *[x.fill_null(pl.lit([])) for x in [pl.col(c).cast(pl.List(pl.String)) if type(axdevs.schema[c]) == pl.String else pl.col(c) for c in right_cols]]
-            )
-            .list.eval(
-                pl.when(pl.element().str.contains(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'))
-                .then(pl.element())
-                .otherwise(
-                    pl.element().str.split('\\').list.last().str.split('.').list.first().str.to_lowercase()
-                )
-            )
-            .list.drop_nulls()
-            .list.unique()
-            .alias('axon_names')
-        ).drop(right_cols)
-
-    # axdevs filters
-    # this one is to help remove ambigous FISMA IDs. in 99% of cases this is fine,
-    # but there may be instances where there are multiple enrichment: u_fisma_id reporting
-    axdevs = axdevs.filter((pl.col(ufid).list.len()<=1) | (pl.col(ufid).is_null()))
-
-    sc_findings = get_sc("tenable_sc.parquet")
-    sc_findings = sc_findings.filter(pl.col('repository').str.starts_with("ICE"))
-
-    snow_findings = get_snow_find()
-    wts = get_snow_weak()
-
-    # join snow findings
-    sc_findings = sc_findings.join(snow_findings, left_on='vulnUniqueness', right_on="scan_id", coalesce=False, how='left', suffix="_ft")
-
-    # join wts
-    sc_findings = sc_findings.join(
-        wts,
-        left_on=pl.col('weakness_tracking').struct.field('value'),
-        right_on=pl.col('sys_id'),
-        suffix='_wt',
-        how="left"
-    )
-
-    total_sc = len(sc_findings)
-
-    # mitigate compliance man checks, except if there's a poam
-    man_check = (pl.col(ccfi).is_not_null() & pl.col('severity').eq('Medium'))
-    man_check_with_poam = sc_findings.filter(man_check & pl.col('poa_m_id').struct.field('value').is_not_null())
+    @lru_cache
+    def get_system_acronym(sys_id):
+        return systems[sys_id].acronym
     
-    # man check with no poams
-    sc_to_mit = sc_findings.filter(man_check & pl.col('poa_m_id').struct.field('value').is_null())
-    sc_findings = sc_findings.filter(~man_check)
+    today = datetime.date.today()
 
-    total_sc_no_manchecks = len(sc_findings)
+    # init specific apis
+    api = csam_api_client.ApiClient(CSAM_CONFIG)
+    system_poam_api = csam_api_client.PoamDetailsApi(api)
+    systems_api = csam_api_client.SystemsApi(api)
+    
+    # to get the assignee for each ISSO, use the POC Report from
+    # CSAM to find the ISSO for each System
+    poc_report = get_poc_report(api)
 
-    # for some reason, there are some non UNI repositories still reporting, there should be mitigated
-    # since everything was supposed to be moved over. so any FIND should get removed/'mitigated'
-    sc_to_mit = pl.concat([sc_to_mit, sc_findings.filter(pl.col('hostUUID').is_null())])
-    sc_findings = sc_findings.filter(~pl.col('hostUUID').is_null())
-
-    sc_findings = sc_findings.with_columns(
-            [
-                pl.col('xref').str.extract(rf"{framework} #([\w-]+),*").str.split('r').list.first().alias(framework)
-                for framework in [rid, sid]
-            ]
-        )
-    sc_findings = sc_findings.with_columns((pl.col(sid)+pl.col(rid)).alias(sidrid))
-
-    sc_findings = sc_findings.with_columns(
-        pl.col('netbiosName')
-            .str.split("\\")
-            .list.last()
-            .str.to_lowercase()
-            .name.keep(),
-        pl.col('dnsName')
-            .str.split(".")
-            .list.first()
-            .str.to_lowercase()
-            .name.keep(),
-    )
-
-    sc_asset_sum_cols = ['ip', 'uuid', 'macAddress', 'netbiosName', 'dnsName', 'hostUUID', 'uniqueness', 'repository']
-    sc_findings_asset_agg = sc_findings.group_by('hostUUID').agg([pl.col(x).drop_nulls().unique() for x in sc_asset_sum_cols if x != "hostUUID"])
-    sc_findings_asset_agg = sc_findings_asset_agg.with_columns(
-        pl.col('dnsName').list.eval(pl.element().str.split('.').list.get(0).str.to_lowercase()).list.drop_nulls().list.unique()
-    )
-
-    for x in sc_asset_sum_cols:
-        if x == "hostUUID":
+    # loops thru tmp_files and pulls the requisite SNOW tables for analysis
+    results = {}
+    for _name in [SNOW_WEAKNESS_TRACKING_TABLE_NAME, SNOW_MILESTONE_TABLE_NAME, SNOW_USERS_TABLE_NAME, SNOW_FISMA_INVENTORY_NAME]:
+        tmp_file, offset_limit, fields, sysparm_query = SNOW_QUERIES[_name]
+        if os.path.exists(tmp_file):
+            logger.debug("Loading %s", tmp_file)
+            results[_name] = pl.read_parquet(tmp_file)
             continue
-        assert sc_findings_asset_agg[x].list.len().max() == 1
-        sc_findings_asset_agg = sc_findings_asset_agg.explode(x)
+        results[_name] = get_n_transform_snow(_name, offset_limit=offset_limit, fields=fields, sysparm_query=sysparm_query)
 
-    # if a device is not found in axonius, assume doesn't exist and mitigate?
-    possible_decomd_sc_assets = sc_findings_asset_agg.filter(
-        ~pl.col('netbiosName').is_in(axdevs['axon_names'].explode().implode()) 
-        & ~pl.col('dnsName').is_in(axdevs['axon_names'].explode().implode()) 
-        & ~pl.col('hostUUID').is_in(axdevs[schid].explode().implode())
+    # assigned each result to a variable
+    # latest_findings = results[SNOW_FINDINGS_TABLE_NAME]
+    latest_weakness_trackers = results[SNOW_WEAKNESS_TRACKING_TABLE_NAME]
+
+    snow_draft_milestones = results[SNOW_MILESTONE_TABLE_NAME]
+    snow_users = results[SNOW_USERS_TABLE_NAME]
+    fisma_inventory = results[SNOW_FISMA_INVENTORY_NAME]
+
+    # strip u_fisma_id whitespace, otherwise joins later may miss stuff
+    fisma_inventory = fisma_inventory.with_columns(pl.col('u_fisma_id').str.strip_chars())
+
+    latest_weakness_trackers = latest_weakness_trackers.with_columns(
+        [pl.col(k).replace_strict({"false":False, "true":True}).cast(pl.Boolean) for k in ['kev', 'skip_poam', 'baselined', 'poa_m_date_reached', 'required_poam', 'risk_accepted']]
     )
-
-    sc_findings_asset_agg = sc_findings_asset_agg.filter(~pl.col('hostUUID').is_in(possible_decomd_sc_assets['hostUUID'].implode()))
-
-    sc_to_mit = pl.concat([sc_to_mit, sc_findings.filter(pl.col('hostUUID').is_in(possible_decomd_sc_assets['hostUUID'].implode()))], how='diagonal')
-
-    sc_findings = sc_findings.filter(~pl.col('hostUUID').is_in(possible_decomd_sc_assets['hostUUID'].implode()))
-
-    total_possible_axdevs = (
-        axdevs
-        .explode('adapters_data.tenable_security_center_adapter.host_uuid')
-        .explode('adapters_data.tenable_io_adapter.asset_uuid')
-        .explode(ufid)
-    )
-
-    total_possible_axdevs_names = total_possible_axdevs.explode('axon_names')
-
-    sc_ax_asset_ids = sc_findings_asset_agg.join(
-        total_possible_axdevs,
-        left_on='hostUUID',
-        right_on='adapters_data.tenable_security_center_adapter.host_uuid',
-        how='left'
-    ).group_by('hostUUID').agg('adapters_data.tenable_io_adapter.asset_uuid').with_columns(pl.col('adapters_data.tenable_io_adapter.asset_uuid').list.unique().list.drop_nulls())
-
-    sc_dev_no_axon = sc_findings_asset_agg.join(
-        total_possible_axdevs,
-        left_on='hostUUID',
-        right_on='adapters_data.tenable_security_center_adapter.host_uuid',
-        how='left').filter(pl.col('internal_axon_id').is_null())
-
-    from itertools import product
-    left_cols = ['netbiosName', 'dnsName']
-    cols = list(product(left_cols, ['axon_names']))
-
-    # attempting to correlate using name
-    sc_dev_no_axon_join_name = (
-        pl.concat(
-            [
-                (
-                    sc_dev_no_axon[sc_findings_asset_agg.columns]
-                    .join(
-                        total_possible_axdevs_names, 
-                        left_on=pl.col(l).str.split('\\').list.last().str.split('.').list.get(0).str.to_lowercase(), 
-                        right_on=pl.col(r).str.split('\\').list.last().str.split('.').list.get(0).str.to_lowercase(), 
-                        how='left', 
-                        coalesce=False
-                    )
-                ) 
-                for l,r in cols
-            ]
+    # find WT's requiring a POAM
+    poam_required = latest_weakness_trackers.filter(
+            (pl.col('state').eq("poa&m") | pl.col("required_poam")) & 
+            # filter if ISSO selects to skip, or finding is baselined
+            ~(pl.col("skip_poam") | pl.col("baselined") | pl.col('risk_accepted')) &
+            # need to filter if there's already a POAM ID
+            pl.col('poa_m_id').struct.field('value').is_null()
         )
-        .group_by('hostUUID')
-        .agg(
-            *[pl.col(col).first() for col in sc_findings_asset_agg.columns if col != 'hostUUID'],
-            *[pl.col(col).drop_nulls().unique() for col in [schid, tvmaid, ax_id, ufid, 'axon_names']],
-            pl.col('axon_macs').flatten().drop_nulls().unique(),
-            pl.col('specific_data.data.last_seen').flatten().drop_nulls().unique()
-        )
-    )
-    _cols = list(set(["ip", "repository", "hostUUID", "adapters_data.tenable_security_center_adapter.host_uuid", "adapters_data.tenable_io_adapter.asset_uuid", "internal_axon_id", "specific_data.data.enrichment_u_fisma_id", "axon_names","netbiosName", "dnsName", "axon_macs",  "macAddress", 'specific_data.data.last_seen'] + left_cols))
-    sc_dev_no_axon_join_name[_cols].write_excel('sc_dev_no_axon_join_name.xlsx', autofit=True)
-    possible_sc_dev_no_axon_corr = sc_dev_no_axon_join_name.filter(
-        (pl.col('axon_names').list.len()<2)
-        & (pl.col(schid).list.len()==0) 
-        & (pl.col(ax_id).list.len()==1)
-        & (pl.col(tvmaid).list.len()==1)
-    )
-    # some exmaples seem to be twerkstations where the machine name has changed. perhaps reimaged? 
-    # what to do with these? leaving these out for possible_sc_dev_no_axon_corr
-    ambig_ax_names = sc_dev_no_axon_join_name.filter(
-        (pl.col('axon_names').list.len()>1)
-    )
-
-    # dnsname and .name correlate, but mac address doesn't. does mac mismatch necessarily mean it doesn't correlate?
-    possible_sc_dev_no_axon_corr_mac_mismatch = possible_sc_dev_no_axon_corr.filter(~pl.col('macAddress').str.to_uppercase().is_in(pl.col('axon_macs')))
-    possible_sc_dev_no_axon_corr_mac_mismatch[_cols].write_excel('possible_sc_dev_no_axon_corr_mac_mismatch.xlsx', autofit=True)
-    # dnsname and .name correlate and so does mac address
-    possible_sc_dev_no_axon_corr_mac = possible_sc_dev_no_axon_corr.filter(pl.col('macAddress').str.to_uppercase().is_in(pl.col('axon_macs')))
-    possible_sc_dev_no_axon_corr_mac[_cols].write_excel('possible_sc_dev_no_axon_corr.xlsx', autofit=True)
-
-    sc_asset_repo_map = axdevs.select(pl.col(schid).list.explode()).join(sc_findings_asset_agg.select(pl.col('hostUUID'), pl.col('repository').alias("sc_repo")), left_on=schid, right_on="hostUUID", coalesce=False)
-    # sc_asset_repo_map = axdevs.select(pl.col(schid).list.explode()).join(sc_findings_asset_agg.select(pl.col('hostUUID'), pl.col('repository').struct.field('name').alias("sc_repo")), left_on=schid, right_on="hostUUID", coalesce=False)
-
-    missing = lambda x: ((pl.col(x).list.len()==0) | (pl.col(x).is_null()))
-
-    no_sc_no_vm = axdevs.filter(missing(tvmaid) & missing(schid))
-    no_sc_one_vm = axdevs.filter((pl.col('adapters_data.tenable_io_adapter.asset_uuid').list.len()==1) & missing(schid))
-    one_sc_no_vm = axdevs.filter(missing(tvmaid) & (pl.col('adapters_data.tenable_security_center_adapter.host_uuid').list.len()==1))
-    mult_sc_no_vm = axdevs.filter(missing(tvmaid) & (pl.col('adapters_data.tenable_security_center_adapter.host_uuid').list.len()>1))
-
-    # f"""("internal_axon_id" in [{','.join([f'"{x}"' for x in mult_sc_one_vm.filter(pl.col(ufid).is_null())['internal_axon_id'].to_list()])}])"""
-    # many SC adpaters to 1 VM
-    mult_sc_one_vm = axdevs.filter((pl.col('adapters_data.tenable_io_adapter.asset_uuid').list.len()==1) & (pl.col('adapters_data.tenable_security_center_adapter.host_uuid').list.len()>1))
-    mult_sc_one_vm = mult_sc_one_vm.explode(schid).join(
-        sc_asset_repo_map,
-        on=schid,
-    ).explode(ufid).explode(tvmaid)
-
-    cols_of_interest = ['adapters_data.gui.custom_enrichment_fisma_id', 'adapters_data.tenable_io_adapter.asset_uuid', 'adapters_data.tenable_security_center_adapter.host_uuid', 'adapters_data.tenable_security_center_adapter.host_uuid_right', 'adapters_data.tenable_security_center_adapter.repository_name', 'hostUUID', 'internal_axon_id', 'labels', 'sc_repo', 'specific_data.data.enrichment_u_fisma_id', 'specific_data.data.hostname', 'specific_data.data.hostname_fqdn_preferred', 'specific_data.data.last_seen', 'specific_data.data.name', 'specific_data.data.network_interfaces.ips', 'specific_data.data.network_interfaces.mac', 'specific_data.data.os.type']
-    # filter those where the enrichment_u_fisma_id equals the SC repo
-    # NOTE!!! if enrichment_u_fisma_id is NULL, the com
-    fisma_rollup_mask = pl.col(ufid).str.split('-').list.get(3, null_on_oob=True) == pl.col('sc_repo').str.split('-').list.get(3, null_on_oob=True)
-    mult_sc_one_vm_matches = mult_sc_one_vm.filter(fisma_rollup_mask)
-
-    # if it doesn't match the SC repo, then we can assume any assets in this group can be
-    # mitigated in WT. clearly you can't have an asset in a single repo
-    # need to be careful and documents these findings and why we move them to mitigated
-    mult_sc_one_vm_no_matches = mult_sc_one_vm.filter(pl.col(ufid).str.split('-').list.get(3, null_on_oob=True) != pl.col('sc_repo').str.split('-').list.get(3, null_on_oob=True))
-
-    # many SC to many VM
-    mult_sc_mult_vm = axdevs.filter((pl.col('adapters_data.tenable_io_adapter.asset_uuid').list.len()>1) & (pl.col('adapters_data.tenable_security_center_adapter.host_uuid').list.len()>1))
-
-    # these are findings that are from 2 separate assets in separate SC repos, which correlate to a single asset
-    # in axonius. 1 'asset' is in a duplicate in a separate repo, and there any findings related to those devices
-    # can be assumed to be "mitigated"
-    sc_repo_vm_tag_mismatch = sc_findings.filter(
-            (pl.col('hostUUID').is_in(mult_sc_one_vm_no_matches['hostUUID'].implode()))
-        )
-
-    sc_to_mit = pl.concat([sc_to_mit, sc_repo_vm_tag_mismatch], how='diagonal')
-    sc_findings = sc_findings.filter(
-            ~(pl.col('hostUUID').is_in(mult_sc_one_vm_no_matches['hostUUID'].implode()))
-        )
-
-    # some axon devs have multiple sc hostuuids and/or multiple tvm assetuuids. filtering those out since 1to1 is easier to correlate
-    one_sc_one_vm = axdevs.filter(
-            (pl.col('adapters_data.tenable_io_adapter.asset_uuid').list.len()==1) 
-            & (pl.col('adapters_data.tenable_security_center_adapter.host_uuid').list.len()==1)
-        ).explode(schid).explode(tvmaid).explode(ufid)
-
-    _other_cols = [x for x in possible_sc_dev_no_axon_corr_mac.columns if x in axdevs.columns]
-    reconciliable_axdevs = pl.concat(
-            [
-                one_sc_one_vm, #seems like an obvious matchup
-                mult_sc_one_vm_matches, #when multiple sc, only matching where axon dev u_fisma_id matches
-                (
-                    possible_sc_dev_no_axon_corr_mac
-                    .explode(schid)
-                    .explode(tvmaid)
-                    .explode(ax_id)
-                    .explode(ufid)
-                    .explode('specific_data.data.last_seen') # sc asset doesn't have a direct match, but dns and mac addresses correlate
-                )
-            ], 
-            how='diagonal'
-        ).with_columns(pl.concat_list(schid, "hostUUID").list.drop_nulls().list.unique().list.explode().alias('reconcil_sc_hostuuid'))
-
-
-    # in some instances, the axon data doesn't have u_fisma_id. doing some spot checks the TVM adapter tag has "NO-FISMA-ID"
-    # that should be fine here, i dont think it's 100% necessary to have a fisma_id to reconcile, especially given
-    # there is still on going issues with proper TVM fisma tagging and axon tagging
-    sc_reconcil_asset = (
-        sc_findings.join(
-            reconciliable_axdevs, left_on='hostUUID', right_on='reconcil_sc_hostuuid', coalesce=False, how='inner'
-        ).group_by('vulnUniqueness')
-        .agg(
-            *[pl.col(col).first() for col in sc_findings.columns if col != 'vulnUniqueness'],
-            *[pl.col(col).drop_nulls().unique().first() for col in [schid, tvmaid, ax_id, ufid, 'reconcil_sc_hostuuid']]
-        )
-    )
-
-
-    sc_non_reconcil_af = sc_findings.filter(
-        ~(pl.col('hostUUID').is_in(reconciliable_axdevs['reconcil_sc_hostuuid'].implode()))
-    )
-
-    owfps_mask = pl.col('repository').str.contains("OWFPS")
-    icon_mask = pl.col('repository').str.contains("ICON")
-    others_mask = ~icon_mask & ~owfps_mask
-
-    # count of total SC findings unique assets not reconciled
-    sc_findings_unique_assets_non_reconcil = sc_non_reconcil_af.unique('hostUUID')
-    sc_findings_unique_assets_non_reconcil_owfps = sc_findings_unique_assets_non_reconcil.filter(owfps_mask)
-    sc_findings_unique_assets_non_reconcil_icon = sc_findings_unique_assets_non_reconcil.filter(icon_mask)
-    sc_findings_unique_assets_non_reconcil_all_others = sc_findings_unique_assets_non_reconcil.filter(others_mask)
-
-    # count of total findings not reconciled
-    len(sc_non_reconcil_af)
-    # total findings overall
-    len(sc_findings)
-    # pull crowdstrike info
-
-    sc_reconcil_asset = sc_reconcil_asset.with_columns(
-        pl.when(
-            pl.col(ccfi).is_not_null()
-        ).then(
-            pl.col(tvmaid).str.replace_all('-', "").str.to_lowercase()+pl.col(ccfi)
-        ).when(
-            pl.col(ccfi).is_null()
-        ).then(
-            pl.col(tvmaid).str.replace_all('-', "").str.to_lowercase()+pl.col('pluginID').cast(pl.String)+pl.col('port').cast(pl.String)+pl.col('protocol')
-        ).otherwise(None)
-        .alias('comp_key')
-    )
-
-
-    # need to handle duplicate SC assets that have the same comp key. it seems SC has two hostUUIDs for the same asset. perhaps agent changes
-    sc_dupes_to_review = sc_reconcil_asset.filter(pl.col('comp_key').is_duplicated()).sort(['firstSeen']).unique(subset='comp_key', keep='last', maintain_order=True)
-    sc_dupes_to_reconcil = sc_reconcil_asset.filter(pl.col('comp_key').is_duplicated()).sort(['firstSeen']).unique(subset='comp_key', keep='first', maintain_order=True)
-    import xlsxwriter
-    wb = xlsxwriter.Workbook('sc_compkey_dupes_to_review.xlsx', options={"remove_timezone": True})
-    sc_dupes_to_review.select('hostUUID', 'vulnUniqueness', 'dnsName', 'macAddress', pl.col("^sys_id.*$"), 'number', 'poa_m_id', 'comp_key').write_excel(wb, autofit=True)
-    wb.close()
-
-    # vic wanted to see the ones that have poams to review further
-    # for_vic = pl.concat([sc_dupes_to_reconcil.filter(pl.col('comp_key').is_in(sc_dupes_to_review.filter(pl.col('poa_m_id').struct.field('value').is_not_null())['comp_key'])).with_columns(pl.lit(True).alias('TO KEEP')), sc_dupes_to_review.filter(pl.col('poa_m_id').struct.field('value').is_not_null()).with_columns(pl.lit(False).alias('TO KEEP'))]).sort('comp_key')
-    # wb = xlsxwriter.Workbook('sc_compkey_dupes_to_review_with_poams.xlsx', options={"remove_timezone": True})
-    # sc_dupes_to_review.select('hostUUID', 'vulnUniqueness', 'dnsName', 'macAddress', pl.col("^sys_id.*$"), 'number', 'poa_m_id', 'comp_key', 'TO KEEP').write_excel(wb, autofit=True)
-    # wb.close()
-
-    sc_dupes_to_mit = sc_dupes_to_review.filter(pl.col('poa_m_id').struct.field('value').is_null())
-    sc_to_mit = pl.concat([sc_to_mit, sc_dupes_to_mit], how='diagonal')
-    sc_dupes_with_poam = sc_dupes_to_review.filter(pl.col('poa_m_id').struct.field('value').is_not_null())
-
-    sc_reconcil_asset = sc_reconcil_asset.sort(['firstSeen']).unique(subset='comp_key', keep='first', maintain_order=True)
-
-    # !!!! filter VM data with stuff we can't reconcil...ie no axon data, no-fisma-id, etc
-
-    # tryna isolate vm findings that have an agent scan OR a cred network scan
-    vm.filter(pl.col('sources_asset').list.eval(pl.element().struct.field('name')).list.contains("NESSUS_AGENT"))
-    vm.filter(pl.col('scan_asset').struct.field('last_authentication_scan_status').eq("Success"))
-
-    rel_cols = """xref	pluginID	pluginInfo	compliance_check_name	compliance_result	compliance_error	compliance_check_type	compliance_benchmark_name	compliance_benchmark_version	compliance_control_id	compliance_full_id	compliance_check_id	Rule-ID	STIG-ID	sidrid
-    """.split()
-
-    sc_find_w_poam = sc_findings.filter(pl.col('poa_m_id').struct.field('value').is_not_null())
-    sc_find_w_poam_owfps = sc_find_w_poam.filter(owfps_mask)
-    print(f"""
-    Total SC Assets: {len(sc_findings_asset_agg)}
-    Total SC Assets not reconciled: {len(sc_findings_unique_assets_non_reconcil)}
-    Total SC Assets not reconciled - OWFPS: {len(sc_findings_unique_assets_non_reconcil_owfps)}
-    Total SC Assets not reconciled - ICON: {len(sc_findings_unique_assets_non_reconcil_icon)}
-    Total SC Assets not reconciled - All others: {len(sc_findings_unique_assets_non_reconcil_all_others)}
+     
     
-    Total SC Findings: {total_sc_no_manchecks}
-    Total SC Findings not mitigated: {len(sc_findings.filter(pl.col('state').ne('mitigated')))}
-    SC Findings to mitigate: {len(sc_to_mit)}
-    SC Findings with assets reconciled: {len(sc_reconcil_asset)}
-    SC Findings reconciled with 'comp_key': {len(sc_reconcil_asset.filter(pl.col('comp_key').is_in(vm['comp_key'].implode())))}
-    SC Findings reconciled with 'comp_key' - OWFPS: {len(sc_reconcil_asset.filter(pl.col('comp_key').is_in(vm['comp_key'].implode()) & owfps_mask))}
-    SC Findings reconciled with 'comp_key' - ICON: {len(sc_reconcil_asset.filter(pl.col('comp_key').is_in(vm['comp_key'].implode()) & icon_mask))}
-    SC Findings reconciled with 'comp_key' - All Others: {len(sc_reconcil_asset.filter(pl.col('comp_key').is_in(vm['comp_key'].implode()) & (others_mask)))}
+        # grab list of POC from the System_Points_of_Contact_Query Systems report in CSAM
+    poam_required = (
+            poam_required
 
-    SC Findings with assets not reconciled: {len(sc_non_reconcil_af)}
-    SC Findings with assets not reconciled - OWFPS: {len(sc_non_reconcil_af.filter(owfps_mask))}
-    SC Findings with assets not reconciled - ICON: {len(sc_non_reconcil_af.filter(icon_mask))}
-    SC Findings with assets not reconciled - All others: {len(sc_non_reconcil_af.filter(others_mask))}
+            # this joins the FISMA Inventory table so we can get CSAM defined FISMA System Name
+            .join(
+            fisma_inventory.select('u_acronym', 'u_fisma_id', 'u_csam_id', 'sys_id', pl.col('u_active').replace_strict({"false":False, "true":True}).cast(pl.Boolean)), 
+            left_on=pl.col('fisma_system').struct.field('value'), 
+            right_on=pl.col('sys_id'), 
+            how='left',
+            suffix="_inv")
 
-    Man Check Compliance Findings with POAMs:
-    {man_check_with_poam['weakness_tracking'].n_unique()} Weakness Records totaling {len(man_check_with_poam)} Findings across {man_check_with_poam['fisma_system'].n_unique()} systems have POAMs associated
-    These {man_check_with_poam['weakness_tracking'].n_unique()} records, will migrated directly and have no way to auto-close (manual closure required)
+    )
+
+    # add filter to remove non-active findings so those aren't having poams generated
+    active_mask = pl.col('u_active')
+    non_active_wts = poam_required.filter(~active_mask)
+    unstable_logger.warning(
+        "Identified the following WEAKs where the FISMA System is not active. Count: %s\n%s",
+        len(non_active_wts),
+        "\n".join([str(r) for r in non_active_wts['number', 'u_fisma_id', 'u_acronym'].sort('u_acronym', "number").rows()])
+        )
+    poam_required = poam_required.filter(active_mask)
+
+    # list systems to exclude
+    # According to Michael Clunn on 6 April 2026
+    # systems to exempt from WTT:
+    to_exclude = (
+        fisma_inventory
+        .filter(
+            # OWFPS ('ICE-06559-GSS-06559')
+            pl.col('u_fisma_id').eq('ICE-06559-GSS-06559')
+            # ICON (and subs) ('ICE-06560-GSS-06560')
+            | pl.col('u_fisma_id').str.split('-').list.get(3, null_on_oob=True).str.strip_chars().eq('06560')
+            # EOC (and subs) ('ICE-03434-GSS-03434')
+            | pl.col('u_fisma_id').str.split('-').list.get(3, null_on_oob=True).str.strip_chars().eq('03434')
+            # ADEX (and subs) ("ICE-00221-MAJ-00221")
+            | pl.col('u_fisma_id').str.split('-').list.get(3, null_on_oob=True).str.strip_chars().eq('00221')
+            # TIII_Ops (and subs) ("ICE-08329-MAJ-08329")
+            | pl.col('u_fisma_id').str.split('-').list.get(3, null_on_oob=True).str.strip_chars().eq('08329')
+        )
+    )['u_fisma_id']
+
+
+
+    try:
+        poam_required = poam_required.filter(~pl.col('u_fisma_id').is_in(to_exclude))
+    except NameError:
+        pass
+
+    # get systems from CSAM
+    _systems = pl.DataFrame([s.__dict__ for s in systems_api.v1_systems_get(_request_timeout=300)], infer_schema_length=None)
+    systems_ids = _systems.filter(pl.col('id').is_in(poam_required['u_csam_id'].unique().cast(pl.Int32)))['id']
+    systems = get_system_level_api_call(systems_api.v1_systems_id_get, systems_ids, _request_timeout=300)
+
+    csam_system_id = 'csam_system_id'
+    fisma_id_by_csam_id = (
+        polars.DataFrame([(sys.id, sys.external_id) for sys in systems.values()], schema=[csam_system_id, 'u_fisma_id'], orient='row')
+        # need to strip, api returs fisma id's with whitespace
+        .with_columns(pl.col('u_fisma_id').str.strip_chars())
+    )
+
+    poam_required = (
+        poam_required
+            # does a similar join using direct data from CSAM
+            .join(
+            fisma_id_by_csam_id, 
+            on=polars.col('u_fisma_id'),
+            how='left', 
+            coalesce=True,
+            suffix="_csam"
+        )
+    )
     
-    Overall Findings w/POAMs:
-    {sc_find_w_poam['weakness_tracking'].n_unique()} Weakness Records totaling {len(sc_find_w_poam)} Findings across {sc_find_w_poam['fisma_system'].n_unique()} systems have POAMs associated
-    These record will be migrated directly and may or may not be part of auto-closure depending on if reconcilable. If not reconcilable, they will be handled in the same manner to manual check findings w/POAMs are handled.
+    poam_status = csam_api_client.PoamStatus
+
+    # get all poams per system
+    poams_by_system_id = get_system_level_api_call(system_poam_api.v1_systems_system_id_poams_get, systems_ids, _request_timeout=300)
+    closed_statuses = {poam_status.COMPLETED, poam_status.CANCELLED}
+
+    # this helps identify duplicates
+    # open_poams_by_system = {sys_id: [p for p in poams if p.status not in closed_statuses] for sys_id, poams in poams_by_system_id.items()}
+
+    # use this to get a count of how many instances of a particular title there are to calculate dedupe suffix
+    poams_titles_by_system = {sys_id: [p.title for p in poams if p.status not in closed_statuses] for sys_id, poams in poams_by_system_id.items()}
     
-    {sc_find_w_poam_owfps['weakness_tracking'].n_unique()} Weakness Records totaling {len(sc_find_w_poam_owfps)} Findings across OWFPS have POAMs associated.
- 
-    """)
+    # there's a mismatch between what is in the SNow FISMA Inventory and the systems
+    # defined in CSAM Beta. Therefore there are times where there isn't a proper system ID
+    is_null = poam_required.filter(polars.col(csam_system_id).is_null())
+    logger.warning("%s with %s as null discarded", len(is_null), csam_system_id) # if not is_null.is_empty() most likely because using TEST fisma inventory which lags behind prod
+    poam_required = poam_required.filter(polars.col(csam_system_id).is_not_null())
 
-    # 
+    without_proper_fisma_id = is_null.unique(subset=['fisma_system', 'u_fisma_id'])['fisma_system', 'u_fisma_id'].to_dicts()
+    if without_proper_fisma_id:
+        unstable_logger.warning("THESE DONT HAVE PROPER FISMA ID IN CSAM: %s", pformat(without_proper_fisma_id))
 
-    sc_non_reconcil_comp_key = sc_reconcil_asset.filter(~pl.col('comp_key').is_in(vm['comp_key'].implode()))
+    if poam_required.is_empty():
+        logger.info("No WTs to create...quitting")
+        return
+    
+    latest_findings_fn = 'tests'+'\\latest_findings_wtp.parquet'
+    if not os.path.exists(latest_findings_fn):
+        def get_latest_finds(sys_id, num_finds):
+            # it's possible if it's a new WT, but goes straight to POAM that the total_findings hasn't been
+            # updated yet, therefore num_finds=''. in this case, reduce limit to 0 to pull everything
+            try:
+                _limit = int(num_finds)+100
+            except ValueError:
+                _limit = 0
 
-    sc_reconcil_comp_key = (
-        sc_reconcil_asset
-        .filter(pl.col('comp_key').is_in(vm['comp_key'].implode()))
-    ).filter(pl.col('sys_id').is_not_null())
+            _df = get_n_transform_snow(SNOW_FINDINGS_TABLE_NAME, offset_limit=500, limit=_limit, fields=[], sysparm_query=f"weakness_tracking={sys_id}").unique()
+            return _df
 
-    assert sc_reconcil_comp_key.filter(pl.col('comp_key').is_duplicated()).is_empty(), "Crap!! got some dupes we need to address"
+        with cf.ThreadPoolExecutor(max_workers=4) as ex:
+            latest_findings_dfs = [ex.submit(get_latest_finds, sys_id, num_finds) for sys_id, num_finds in poam_required['sys_id', 'total_findings'].rows()]
+        latest_findings = pl.concat([f.result() for f in latest_findings_dfs])
 
-    sc_snow_findings_to_mit = (
-        sc_findings.filter(
-            pl.col('poa_m_id').struct.field('value').is_null() 
-            & ~pl.col('vulnUniqueness').is_in(sc_reconcil_comp_key['vulnUniqueness'].implode())
+        # latest_findings_dfs = []
+        # for sys_id, num_finds in poam_required['sys_id', 'total_findings'].rows():
+        #     _df = get_n_transform_snow(SNOW_FINDINGS_TABLE_NAME, offset_limit=500, limit=int(num_finds)+100, fields=[], sysparm_query=f"weakness_tracking={sys_id}")
+        #     latest_findings_dfs.append(_df)
+        # latest_findings = pl.concat([latest_findings_dfs])
+
+        # convert CATs
+        latest_findings = latest_findings.with_columns(pl.col('cat').replace_strict({"3": "III", "2": "II", "1":"I"}, default=None))
+
+        # SNow returns booleans as strings, convert to proper bool, do this for both FINDs and WEAKs
+        latest_findings = latest_findings.with_columns(
+            [pl.col(k).replace_strict({"false":False, "true":True}).cast(pl.Boolean) for k in ['kev', 'poa_m_required']]
         )
-    )
-
-    # what to do with these? 163 poams: probably just leave them
-    sc_snow_findings_with_poam_non_reconcil = (
-        sc_findings.filter(
-            pl.col('poa_m_id').struct.field('value').is_not_null() 
-            & ~pl.col('vulnUniqueness').is_in(sc_reconcil_comp_key['vulnUniqueness'].implode())
-        )
-    )
-
-    sc_to_mit = pl.concat([sc_to_mit, sc_snow_findings_to_mit], how='diagonal')
-    _sc_to_mit = (
-        sc_to_mit
-        .filter(pl.col('sys_id').is_not_null() & pl.col('state').ne('mitigated'))
-        .select(pl.col('sys_id'), pl.lit('mitigated').alias('state'), pl.lit("PATCH").alias("HTTP Action"))
-    )
-
-    _sc_reconcil_comp_key = sc_reconcil_comp_key.select(
-            pl.lit('PATCH').alias("HTTP Action"),
-            pl.col('sys_id'),
-            pl.col('comp_key').alias('scan_id')
-        ).filter(pl.col('sys_id').is_not_null())
-
-    from snow_helpers import send_to_snow
-
-    assert _sc_reconcil_comp_key.filter(pl.col('sys_id').is_in(_sc_to_mit['sys_id'].implode())).is_empty(), "Reconile findings in findings to mitigate"
-    assert _sc_to_mit.filter(pl.col('sys_id').is_in(_sc_reconcil_comp_key['sys_id'].implode())).is_empty(), "To mitigate findings in finding to reconcile"
-
-    _retries = 5
-    retries = _retries
-
-    while retries:
-        if not _sc_to_mit.is_empty():
-            send_to_snow(_sc_to_mit, SNOW_FINDINGS_TABLE_NAME)
-        if not _sc_reconcil_comp_key.is_empty():
-            send_to_snow(_sc_reconcil_comp_key, SNOW_FINDINGS_TABLE_NAME)
-
-        checks = get_snow_find(delete_file=True)
-
-        recheck_mit = _sc_to_mit.join(
-            checks,
-            on='sys_id'
-        )
-        recheck_mit = recheck_mit.filter(pl.col('state').ne(pl.col('state_right')))[_sc_to_mit.columns]
-        if not recheck_mit.is_empty():
-            logger.debug("%s finding to mitigate failed, retrying: retries left %s", len(recheck_mit), retries)
-        _sc_to_mit = recheck_mit.clone()
-
-        recheck_reconcil = _sc_reconcil_comp_key.join(
-            checks,
-            on='sys_id'
-        )
-        recheck_reconcil = recheck_reconcil.filter(pl.col('scan_id').ne(pl.col('scan_id_right')))[_sc_reconcil_comp_key.columns]
-        if not recheck_reconcil.is_empty():
-            logger.debug("%s finding to reconcile failed, retrying: retries left %s", len(recheck_reconcil), retries)
-        _sc_reconcil_comp_key = recheck_reconcil.clone()
-
-        if _sc_reconcil_comp_key.is_empty() and _sc_to_mit.is_empty():
-            break
-        retries -= 1
+        latest_findings.write_parquet(latest_findings_fn, use_pyarrow=True)
     else:
-        logger.debug("Failed after %s retries", _retries)
-        if not _sc_reconcil_comp_key.is_empty():
-            failed_fn = "failed_reconciled.xlsx"
-            logger.debug("Writing failed to %s", failed_fn)
-            _sc_reconcil_comp_key.write_excel(failed_fn)
-        if not _sc_to_mit.is_empty():
-            failed_fn = "failed_mitigated.xlsx"
-            logger.debug("Writing failed to %s", failed_fn)
-            _sc_to_mit.write_excel(failed_fn)
+        latest_findings = pl.read_parquet(latest_findings_fn)
+
+    # remove duplicates, perhaps multithreading isn't stable
+    latest_findings = latest_findings.unique("sys_id")
+
+    # Enum dtype to ensure we're getting the proper max severity
+    severity_enum = pl.Enum(reversed(POAM_CRITICALITY_MAPPING.keys()))
+    latest_findings = latest_findings.with_columns(
+        pl.col('severity').cast(severity_enum)
+    )
+
+    poam_required = poam_required.with_columns(
+        pl.col('severity').cast(severity_enum)
+    )
+        
+    # WTs dont have direct references to the FINDs it is associated
+    # This join creates that association since the FIND does have a WEAK reference
+    ft_suffix = "_finding_table"
+    poam_required = poam_required.join(
+            latest_findings, 
+            left_on=pl.col('sys_id'), 
+            right_on=pl.col('weakness_tracking').struct.field('value'), 
+            suffix=ft_suffix
+        )
+
+    # pull out the hostname from the netbios, and lower for easier processing
+    poam_required = poam_required.with_columns(
+        polars.col('netbios_name')
+        .str.split("\\")
+        .list.last()
+        .str.to_lowercase()
+        .alias("_netbios_name")
+    )
+
+    # do something similar with dns name. looks like most of the time
+    # the left most subdomain is the unique ID
+    poam_required = poam_required.with_columns(
+        polars.col('dns_name')
+        .str.split(".")
+        .list.first()
+        .str.to_lowercase()
+        .alias("_dns_name")
+    )
 
 
+    wtps = []
 
+    # load up templates
+    temp_env = jinja2.Environment(loader=jinja2.FileSystemLoader(os.path.join(os.path.dirname(os.path.realpath(__file__)), "templates")))
+    desc_temp = temp_env.get_template("scan_poam_description.txt")
+
+    # init IID. 
+    item_identified_during = csam_api_client.AgencyDefinedDataItemUpdate(
+            attributeName="Item Identified During",
+            value=(
+                "Vulnerability Scanning" 
+                if "beta" not in api.configuration.host 
+                else "Vulnerability Assessment"
+            )
+        )        
+    
+    vulns_grouping = poam_required.sort(by=pl.col('number')).partition_by('sys_id', as_dict=True).items()   
+    for sys_id, findings_df in vulns_grouping:
+        sys_id = sys_id[0]
+        wtp = WeaknessTrackerPoam(sys_id)
+        wtp.iid = item_identified_during
+        assert len((wt:=findings_df['number'].unique().to_list())) == 1, "Got more than one WT number"
+        wtp.number = wt[0]
+
+        if findings_df.select(pl.col('scan_id').str.contains(',').any()).item():
+            logger.debug("%s contains findings with old findings from Tenable SC", wtp.number)
+            # Filter out old Tenable SC findings since those aren't applicable anymore.
+            findings_df = findings_df.filter(~pl.col('scan_id').str.contains(','))
+            
+        if findings_df.select(pl.col('state'+ft_suffix).eq('mitigated').all()).item():
+            logger.debug("All Findings in %s are mitigated...skipping", wtp.number)
+            continue
+
+        wtp.findings = (
+            findings_df
+            [
+                [x 
+                 for x in findings_df.columns 
+                 if not x.startswith("sys")
+                 and (ft_suffix in x 
+                 or (
+                        x.replace(ft_suffix, "") not in set(latest_weakness_trackers.columns) 
+                        and x.replace(ft_suffix, "") in set(latest_findings.columns)
+                    )
+                    )
+                ]
+            ]
+            .rename(lambda col: col.replace(ft_suffix, ""))
+        )
+
+        assert len(findings_df['description'].unique()) == 1, "Got more than one WT description"
+        wt_desc = findings_df['description'].unique()[0]
+
+        csam_id = findings_df[csam_system_id].unique().to_list()
+
+        # per system there should only be one csam_id...if not, something went wrong
+        assert len(csam_id) == 1, "something happened here, csam_id should only have 1 value"
+
+        csam_id = csam_id[0]
+        system = systems[csam_id]
+
+        # set the `type` based on the WT type
+        _types = findings_df['weakness_type'].unique().to_list()
+        assert len(_types) == 1, f"Got more than 1 weakness_types: {_types}, {findings_df}"
+        _type = _types[0]
+
+        finding_type = findings_df['finding_type'].unique().to_list()
+        assert len(finding_type) == 1, f"Got more than 1 finding_types: {finding_type}, {findings_df}"
+        assert finding_type[0] == _type
+
+        # build POAM Title
+        # exampes:
+        # $TPA OS_NOV24_Plgn_184161: Ubuntu 16.04 ESM / 18.04 ESM : Kerberos vulnerability (USN-6467-1)
+        # $TPA OS_NOV24_Plgn_175103+: Multiple Findings
+        """
+        POAM Automation:
+ 
+        For grouping logic options, the POAM names will be as follows:
+        
+        MSKB
+        OS_JUL10_2025_MSKB: Microsoft Related Patches and Updates
+        Date is MMMDD_YYYY format
+        Day is included to avoid identical POAM titles
+        
+        CPE
+        OS_JUL10_2025_Plgn_192941: Dnspython < 2.6.0rc1 DoS
+        OS_JUL10_2025_Plgn_Multiple: Red Hat Enterprise Linux 8
+        OS_JUL10_2025_Plgn_Multiple: Red Hat Enterprise Linux,Rhel_Eus 8,8.8
+        OS_JUL10_2025_Plgn_Multiple: Oracle Jdk,Jre
+        OS_JUL10_2025_Plgn_Multiple:
+        
+        SSL
+        OS_JUL10_2025_SSL: Certificate Weakness Port 3389
+        
+        Solution
+        OS_JUL10_2025_Plgn_192941: Dnspython < 2.6.0rc1 DoS
+        OS_JUL10_2025_Plgn_Multiple: Fix HSTS Missing From HTTPS Server (RFC 6797) - "See WEAKXX"
+        """
+        title_template = TEST_POAM_DELIM + "{_type}_{id_date}{plugin_type}: {plugin_names}"
+
+        id_date = findings_df['identified_date'].str.to_date(SNOW_TIME_FORMAT)[0]
+        poam_target_date = findings_df['poa_m_target_date'].str.to_date(SNOW_TIME_FORMAT)[0]
+
+        plugins = list(findings_df['plugin'+ft_suffix].unique().sort())
+
+        if "compliance" in _type:
+            plugin_type = f""
+
+            stig_cis = "|".join(findings_df.filter(pl.col('state'+ft_suffix).ne('mitigated'))['stig_id'].str.split('-').list.get(0).drop_nulls().unique())
+            if not stig_cis:
+                stig_cis = "|".join(findings_df.filter(pl.col('state'+ft_suffix).ne('mitigated'))['stig_cis_benchmark'].drop_nulls().unique())
+            cat = "|".join(findings_df.filter(pl.col('state'+ft_suffix).ne('mitigated'))['cat'+ft_suffix].drop_nulls().unique())
+            plugin_names = f"{f'CAT {cat} ' if cat else ''}{stig_cis} {_type.split("_")[0].upper()} Compliance Findings"
+            pass
+        else:
+            if len(plugins) == 1:
+                plugin_type = f"_Plgn_{plugins[0]}"
+                plugin_names = findings_df['plugin_name'].unique().sort()[0]
+            else:
+                plugin_type = f"_Plgn_Multiple"
+                plugin_names = f"See {wtp.number}"
+
+            if "Microsoft Related Patches and Updates" in wt_desc:
+                plugin_type = "_MSKB"
+                plugin_names = "Microsoft Related Patches and Updates"
+                pass
+
+            elif "Common Platform Enumeration" in wt_desc:
+                if len(plugins) == 1:
+                    # plugin_names = findings_df['plugin_name'].unique().sort()[0]
+                    pass
+                else:
+                    type_vendor = ",".join(set(x.split(":")[1].capitalize() for x in findings_df['cpe_type_vendor'][0].split(",")))
+                    product = findings_df['cpe_product'][0].strip()
+                    product = f"{product} " if product else ""
+                    version = findings_df['cpe_version'][0].strip()
+                    version = f"{version} " if version else ""
+                    plugin_names = f"{type_vendor} {product}{version}"
+                    pass
+            elif "SSL Certificate" in wt_desc:
+                # OS_JUL10_2025_SSL: Certificate Weakness Port 3389
+                plugin_type = "_SSL"
+                plugin_names = f"Certificate Weakness on Port {findings_df['port'][0]}"
+                pass
+            else:
+                pass
+
+        poam_title = title_template.format(
+                _type=_type.split("_")[0].upper(), 
+                id_date=id_date.strftime("%b%d_%Y").upper(), 
+                plugin_type=plugin_type, 
+                plugin_names=plugin_names
+            ).strip()[:100]
+        
+        # Talking to Jessica Scates, adding an underscore suffix to duplicates
+        num_dupes = len([title for title in poams_titles_by_system[system.id] if poam_title in title])
+        if num_dupes:
+            suffix = f"_{str(num_dupes+1)}"
+            poam_title = poam_title[:(100-len(suffix))] + suffix
+
+        # if poam_title in {p.title for p in open_poams_by_system[system.id]}:
+        #     # check if this poam has been created already, if so then skip
+        #     p = ",".join([str(x.poam_id) for x in open_poams_by_system[system.id] if x.title == poam_title])
+        #     unstable_logger.warning("POAM with title `%s` already in csam for %s (%s)", poam_title, system.acronym, p)
+        #     # pass
+        #     continue
+
+        # add back to list for ensure other drafts get captured
+        poams_titles_by_system[system.id].append(poam_title)
+
+        def map_ip(ip_str):
+            if not ip_str:
+                return 0
+            try:
+                return int(ipaddress.ip_address(ip_str))
+            except ValueError:
+                return 0
+
+        # assets dataframe to build Spreadsheet attachment. sort by ip_address
+        assets = (
+                findings_df[['ip_address', 'netbios_name', 'dns_name']]
+                .unique('ip_address') # need to ensure no dupes
+                # finding each IPs corresponding int value so we can sort the IPs
+                .with_columns(
+                    pl.col('ip_address').map_elements(lambda ip: map_ip(ip), return_dtype=pl.Int64)
+                    .alias('ip_int')
+                ).sort('ip_int').drop('ip_int')
+
+                .rename({'ip_address':'IP Address','netbios_name':'NetBios Name', 'dns_name':'DNS Name'})
+            )
+        wtp.assets = assets
+
+        # ISSOs requested to not add Tenable 80053 controls, most of the time they
+        # don't line up with what the ISSO would actually put, and would affect
+        # UCMM scoring
+        # get controls from WT
+        # controls_list = findings_df['u_800_53_controls'].unique().to_list()
+        # wtp.controls = {x.strip() for controls in controls_list for x in controls.split(",") if x}
+
+        # talking with Jess and Vic, SI-2 is a good default control for vulns. still need to determine
+        # what do to for compliance
+        if "vuln" in _type:
+            wtp.controls = {"SI-2"}
+        else:
+            # logger.warning("%s: Need to figure out what we're doing with compliance control associations...", system.name)
+            wtp.controls = {"CM-6"}
+
+        logger.info("Drafting POAM for %s, %s", system.acronym, wtp.number)
+        # NOTE THE VALUES...the SOP says only to use HIGH, MEDIUM, or LOW for user Identified Criticality
+
+        # todo: Leave it as is for now. But when an "adjusted severity" field is added to WTT we will defer to that
+        max_sev = findings_df['severity'].max()
+        criticality = POAM_CRITICALITY_MAPPING[max_sev]
+
+        solutions_grouping = findings_df.group_by("solution"+ft_suffix)
+
+        # Heather says she doesn't want hyperlinks 
+        source = f"""Tenable Finding: ServiceNOW Weakness Tracking - {wtp.number}""" # - {description_hyperlink(SNOW_URL_BASE+UI_SUFFIX+f'/{WEAKNESS_TRACKING_TABLE_NAME}.do%3Fsys_id%3D{sys_id}', weak_id)}"""
+
+        system = systems[csam_id]
+        isso = get_csam_poc_position(poc_report, system.id, "Information System Security Officer")
+        if isso is not None:
+            isso = get_assignee(api, name_wildcard="", email=isso["Email"])
+        else:
+            logger.warning("%s: can't find assignee, defaulting to RISE", system.name)
+            isso = get_assignee(api, name_wildcard="", email="ICECRMARISE")
+
+        wtp.isso = isso
+
+        poc = get_csam_poc_position(poc_report, system.id, "Information System Owner")
+        if poc is not None:
+            wtp.assignee = get_assignee(api, name_wildcard="", email=poc["Email"])
+        else:
+            # default to ISSO
+            logger.warning("%s: can't find assignee, defaulting to ISSO", system.name)
+            wtp.assignee = wtp.isso
+
+        plugin_names = findings_df['plugin_name'].unique().sort()
+        plugin_names = "<br>".join(plugin_names) if len(plugin_names)<=10 else f"Refer to SNow or attached Findings_List: Total Unique Plugin Names: {len(plugin_names)}"
+        # build weak description
+        rca = get_rca(findings_df)
+        # if not rca:
+        #     logger.warning("RCA missing for %s, skipping", findings_df['number'].unique()[0])
+        # talking with Clunn we should not be skipping POAMs arbitrarily. So, created with a default RCA
+        # and develop weakness_tracking_poams_update.py to address updates
+
+        if 'compliance' in _type:
+            # compliance findings can get rather large, instead of posting ALL plugin_names/assets/solutoins
+            # we'll use more inclusive language
+            stig_cis = "|".join(findings_df['stig_cis_benchmark'].drop_nulls().unique())
+            cat = "|".join(findings_df['cat'+ft_suffix].drop_nulls().unique())
+            plugin_names = f"{f'CAT {cat} ' if cat else ''}{stig_cis} {_type.split("_")[0].upper()} Compliance Findings"
+            solutions = ["Each unique plugin has a separate solution that apply to various assets. Refer to SNow or attached Findings_List for each solution(s)"]
+        elif "Microsoft Related Patches and Updates" in wt_desc:
+            plugin_names = wt_desc
+            # change this language to reflect path tuesday or mecm
+            solutions = ["Each unique plugin has a separate solution that apply to various assets. Refer to SNow or attached Findings_List for each solution(s)"]
+
+        else:
+            solutions = [f"{sol[0] if sol[0] else 'N/A'}" for sol, _df in solutions_grouping]
+
+        plugin_names = f"Tenable Findings Identified between {id_date.strftime("%d %b %Y")} - {poam_target_date.strftime("%d %b %Y")}<br><br>" + plugin_names 
+        # add in dates, identified-target poam date
+        # 10 or less, put the values. otherwise some canned language
+
+        desc_params = {
+            "system_acronym": system.acronym,
+            "what": plugin_names,
+            "plugins": plugins if len(plugins)<=10 else [f"Refer to SNow or attached Findings_List: Total Unique Plugins: {len(plugins)}"],
+            "ports": [x for x in findings_df['port'].unique() if x and int(x)],
+            "asset_count": len(wtp.assets),
+            "date_discovered": id_date.strftime("%x"),
+            # "solutions": [f"{sol[0] if sol[0] else 'N/A'} [{', '.join(_df['ip_address'].to_list()) if len(solutions_grouping.n_unique()) > 1 else 'ALL ASSETS'}]" for sol, _df in solutions_grouping],
+            "solutions": solutions if len(solutions)<=10 else [f"Refer to SNow or attached Findings_List: Total Unique Solutions: {len(plugins)}"],
+            "root_cause_analysis": rca, # need to check out the decision tree in Teams POAM Standardization channel
+            "source": source,
+
+        }
+        desc = desc_temp.render(**desc_params).replace("\n", "")
+
+        wtp.draft_poam = csam_api_client.PoamUpdate(
+                systemId=int(csam_id), # need to wrap in int since pandas uses numpy.int32 which will fail validation
+                # scheduledCompletionDate=(scd:=today+SCD_DELTA[max_sev]),
+                scheduledCompletionDate=(scd:=id_date+SCD_DELTA[max_sev]), #
+                plannedStartDate=id_date,
+                actualStartDate=today,
+                plannedFinishDate=scd,
+                description=desc, 
+                title=poam_title, 
+                severity=PoamSeverity.CONTROL_DEFICIENCY,
+                userIdentifiedCriticality=criticality,
+                assignedToPocId=wtp.assignee.poc_id,
+                hasWeakness=True,
+                excludeFromOmb=False,
+                cost=100 # need min per ICE POAM SOP
+            )
+        
+        wtps.append(wtp)
+
+    # set of tuples, (sys_id, poam_id)
+    failed = set()
+
+    def not_failed(wtp):
+        return (wtp.poam.system_id, wtp.poam.poam_id) not in failed
+
+    # this helps determine what was created and associate that with the wtp  
+    draft_poams_key = "{system_id}{title}{desc}"
+    draft_poams = {draft_poams_key.format(system_id=x.draft_poam.system_id, title=x.draft_poam.title, desc=x.draft_poam.description):x.draft_poam for x in wtps}
+
+    created_poams, failed_poams = submit_to_csam(post_draft_poam, api, draft_poams.values())
+    log_failed(wtps, failed_poams)
+
+    # find the poam that was created, and add it to the wtp
+    to_match = {draft_poams_key.format(system_id=p.system_id, title=p.title, desc=p.description): p for _, p, _ in created_poams}
+    for wtp in wtps:
+        key = draft_poams_key.format(system_id=wtp.draft_poam.system_id, title=wtp.draft_poam.title, desc=wtp.draft_poam.description)
+        try:
+            wtp.poam = to_match[key]
+        except KeyError:
+            continue
+
+    # filter out wtps that didn't have a poam generated.
+    wtps = [wtp for wtp in wtps if wtp.poam]
+
+    # using the control implementation endpoint with the CSAM API i can determine
+    # the control set used, which is needed to make the appropriate control association
+    with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+        control_threads = {}
+        for wtp in filter(not_failed, wtps):
+            for control in wtp.controls:
+                # logger.debug("Getting control %s implementation for %s", control, wtp.poam.system_id)
+                control_threads[(wtp.poam.system_id, control)] = executor.submit(
+                    get_control_imp,
+                    api, wtp.poam.system_id, control
+                )
+
+    with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+        threads = {}
+        for wtp in filter(not_failed, wtps):
+            draft_associations = []
+            sys_id = wtp.poam.system_id
+            for control in wtp.controls:
+                try:    
+                    implemented_control = control_threads[(sys_id, control)].result()[0]
+                except IndexError:
+                    logger.warning("%s is not implemented for %s", control, get_system_acronym(sys_id))
+                    continue
+
+                draft_associations.append((sys_id, wtp.poam.poam_id, implemented_control.control_id, implemented_control.control_set))
+            threads[wtp.number] = executor.submit(submit_to_csam, post_poam_association, api, draft_associations)
+            
+    for _num, future in threads.items():
+        created_associations, failed_assoc = future.result()
+        for f in failed_assoc:
+            _, draft, exc = f
+            unstable_logger.error("POAM Issue with %s: Got '%s'\n\nwhen submitting '%s'", _num, str(exc), draft)
+            d = f[1]
+            failed.add((d[0], d[1]))  
+
+    # set up milestones for each wtp. Use what is in the SNow Milestones table. if None, set default milestone
+    wtp: WeaknessTrackerPoam
+    for wtp in filter(not_failed, wtps):
+        if not wtp.poam:
+            continue
+
+        all_assignees = []
+        
+        all_assignees.append(wtp.isso.__dict__)
+
+        first_milestone = STANDARD_POAM_INITIATION_MILESTONE.model_copy()
+        first_milestone.planned_start_date = wtp.poam.planned_start_date
+        first_milestone.actual_start_date = first_milestone.planned_start_date
+        first_milestone.planned_finish_date = wtp.poam.planned_start_date + US_BUSINESS_DAY
+        first_milestone.due_date = wtp.poam.planned_start_date + US_BUSINESS_DAY
+        first_milestone.assigned_to_poc_id = wtp.isso.poc_id
+
+        last_milestone = STANDARD_POAM_CLOSURE_MILESTONE.model_copy()
+        last_milestone.planned_start_date = wtp.poam.planned_finish_date - (3*US_BUSINESS_DAY)
+        last_milestone.planned_finish_date = wtp.poam.planned_finish_date
+        last_milestone.due_date = wtp.poam.planned_finish_date
+        last_milestone.assigned_to_poc_id = wtp.isso.poc_id
+
+
+        snow_milestones = (
+            snow_draft_milestones
+            .filter(pl.col('weakness_tracking_id').struct.field('value').eq(wtp.sys_id))
+            .sort(['action_number'], descending=False)
+        )
+
+
+        if snow_milestones.is_empty():
+            logger.warning("%s, %s has 0 Pre-POAM Milestones", system.name, wtp.number)
+        else:
+            snow_milestones, snow_deleted = dedupe_snow_milestones(snow_milestones)
+            if not snow_deleted.is_empty():
+                delete_dupes = snow_deleted.select(
+                    pl.col("sys_id"),
+                    pl.lit("DELETE").alias("HTTP Action"),
+                )
+                send_to_snow(delete_dupes, SNOW_MILESTONE_TABLE_NAME)
+                logger.debug(
+                    "Deleted %d duplicate SNOW milestones",
+                    delete_dupes.height,
+                )
+            # ensure the canned milestones are in the proper order
+            snow_milestones = (
+                snow_milestones
+                .with_columns(
+                    pl.when(pl.col('description').eq(unescape(first_milestone.description)))
+                    .then(0)
+                    .when(pl.col('description').eq(unescape(last_milestone.description)))
+                    .then(2)
+                    .otherwise(1)
+                    .alias('sort_key')
+                )
+            )
+
+            snow_milestones = canonicalize_snow_action_numbers(snow_milestones)
+            snow_milestones = snow_milestones.drop(["action_number_old"], strict=False)
+
+        if unescape(first_milestone.description) not in snow_milestones['description']:    
+            wtp.draft_milestones.append(first_milestone)
+
+        snow_milestones = snow_milestones.with_columns(pl.col('^.*_date.*$').str.to_datetime("%Y-%m-%d", strict=False))
+        # set milestones from snow
+        for _m in snow_milestones.to_dicts():
+            
+            try:
+                snow_ms_assignee_sys_id = _m['milestone_assignee']['value']
+
+                if not snow_ms_assignee_sys_id:
+                    logger.warning("No Milestone Assignee defined for %s, %s, defaulting to ISSO", wtp.number, _m['number'])
+                    ms_assignee=wtp.isso
+
+                else:
+                    # get email from sys_users tables in SNow to get PoC from CSAM
+                    snow_user = snow_users.filter(pl.col("sys_id").eq(snow_ms_assignee_sys_id))
+                    try:
+                        email = snow_user['email'][0]
+                    except IndexError:
+                        email = ''
+                    if email:
+                        ms_assignee = get_assignee(api, name_wildcard="", email=email)
+                        if not ms_assignee:
+                            logger.warning("No CSAM account found for %s, defaulting to ISSO", email)
+                            ms_assignee=wtp.isso
+                    else:
+                        logger.warning("No Email in SNow associated to %s Milestone Assignee, assigning milestone to ISSO", _m['number'])
+                        ms_assignee=wtp.isso
+            except TypeError:
+                ms_assignee=wtp.isso
+            all_assignees.append(ms_assignee.__dict__)
+            
+            m = csam_api_client.PoamMilestoneUpdate(
+                    description=_m['description'] or "UPDATE: No Description added in SNow Pre-POAM Milestones", #needed to post milestone
+                    dueDate=_m['due_date'] if _m['due_date'] else wtp.poam.scheduled_completion_date,  #all poam milestones need a due date before changing the workflow status
+                    plannedStartDate=_m['planned_start_date'] if _m['planned_start_date'] else wtp.poam.planned_start_date, #needed to post milestone
+                    plannedFinishDate=_m['planned_finish_date'] if _m['planned_finish_date'] else wtp.poam.planned_finish_date, #needed to post milestone
+                    actualStartDate=_m['actual_start_date'] if _m['actual_start_date'] else None,
+                    actualFinishDate=_m['actual_finish_date'] if _m['actual_finish_date'] else None,
+                    assignedToPocId=ms_assignee.poc_id
+                )
+            
+            wtp.draft_milestones.append(m)
+
+        if unescape(last_milestone.description) not in snow_milestones['description']:    
+            wtp.draft_milestones.append(last_milestone)
+
+        all_assignees = (
+            pl.DataFrame(all_assignees)
+            .unique()
+            .join(snow_users, on=pl.col('email').str.strip_chars().str.to_lowercase())
+        )
+
+        created = []
+        for draft in wtp.get_draft_milestones():
+            try:
+                created.append(post_draft_poam_milestone(api, draft))
+            except Exception as exc:
+                unstable_logger.error("Milestone Issue with %s: Got '%s'\n\nwhen submitting '%s'", wtp.number, str(exc), draft)
+                to_del = (
+                    snow_milestones.filter(pl.col('description').eq(draft[-1].description))
+                    .select('sys_id', pl.lit('DELETE').alias("HTTP Action"))
+                )
+                send_to_snow(to_del, SNOW_MILESTONE_TABLE_NAME)
+
+                
+        created_ms_df = pl.DataFrame([m.__dict__ for m in created])
+        created_ms_df = created_ms_df.join(snow_milestones, on=pl.col('description').map_elements(unescape, return_dtype=pl.String), how='left')
+        created_ms_df = created_ms_df.join(all_assignees['sys_id', 'poc_id'], how='left', left_on=pl.col('assigned_to_poc_id'), right_on='poc_id', suffix="_assignee").with_columns(pl.col('sys_id_assignee').alias('milestone_assignee'))
+
+        time_format = '%m/%d/%Y'
+        created_ms_df = created_ms_df.with_columns(pl.col(pl.Datetime).dt.to_string(time_format))
+
+        wt_sys_id = wtp.findings['weakness_tracking'].struct.field('value').unique()[0]
+        to_create = (
+            created_ms_df.filter(pl.col('sys_id').is_null())
+            .select([c for c in snow_draft_milestones.columns])
+            .select(pl.exclude('^sys_.*$', 'number'))
+            .with_columns(
+                pl.lit("POST").alias("HTTP Action"),
+                pl.lit(wt_sys_id).alias('weakness_tracking_id')
+            )
+        )
+        # todo: may not need this?
+        if not to_create.filter(pl.col('description').fill_null('').str.len_chars().eq(0)).is_empty():
+            unstable_logger.warning("%s is creating blank milestones: %s", wtp.number, str(created_ms_df.to_dicts()))
+
+        send_to_snow(to_create, SNOW_MILESTONE_TABLE_NAME)
+        to_update = created_ms_df[[c for c in snow_draft_milestones.columns]].select(pl.exclude('^sys_.*$', 'number'), pl.col('sys_id')).filter(pl.col('sys_id').is_not_null()).with_columns(pl.lit("PUT").alias("HTTP Action"))
+        send_to_snow(to_update, SNOW_MILESTONE_TABLE_NAME)
+
+        updated_snow_ms = get_latest_snow_table(SNOW_MILESTONE_TABLE_NAME, SNOW_API, offset_limit=10, sysparm_fields=['action_number', 'number', 'sys_id'], sysparm_query=f"weakness_tracking_id={wtp.sys_id}")
+
+        snow_ms_numbers = created_ms_df[['action_number']].join(updated_snow_ms['action_number', 'number'], on=pl.col('action_number').cast(pl.Int16))['action_number', 'number']
+        drafts = []
+        for ac_num, snow_ms_num in snow_ms_numbers.rows():
+            note = csam_api_client.NoteCreate(comments=snow_ms_num)
+            drafts.append((wtp.poam.system_id, wtp.poam.poam_id, ac_num, note))
+
+        created_notes, failed_notes = submit_to_csam(post_poam_milestone_note, api, drafts)
+        log_failed(list(filter(not_failed, wtps)), failed_notes)
+        for f in failed_notes:
+            d = f[1]
+            failed.add((d[0], d[1]))  
+
+        pass
+    
+    draft_adis = [wtp.get_draft_iid() for wtp in filter(not_failed, wtps)]
+    created_agency_defined, failed_adis = submit_to_csam(put_poam_agencydefined, api, draft_adis)
+    log_failed(list(filter(not_failed, wtps)), failed_adis)
+    for f in failed_adis:
+        d = f[1]
+        failed.add((d[0], d[1]))  
+
+
+    draft_assets_list_artifacts = [(wtp.poam.system_id, get_system_acronym(wtp.poam.system_id), wtp.poam.poam_id, wtp.assets) for wtp in filter(not_failed, wtps)]
+    created_artifacts, failed_al_artifacts = submit_to_csam(post_poam_asset_list, api, draft_assets_list_artifacts)
+    log_failed(list(filter(not_failed, wtps)), failed_al_artifacts)
+    for f in failed_al_artifacts:
+        d = f[1]
+        failed.add((d[0], d[2]))  
+    
+    findings_cols = ['plugin', 'plugin_name', 'ip_address', 'netbios_name', 'dns_name', 'first_discovered', 'last_observed', 'solution', 'state']
+    draft_findings_list_artifacts = [(wtp.poam.system_id, get_system_acronym(wtp.poam.system_id), wtp.poam.poam_id, wtp.findings[findings_cols]) for wtp in filter(not_failed, wtps)]
+    created_artifacts, failed_findings_artifacts = submit_to_csam(post_poam_findings_list, api, draft_findings_list_artifacts)
+    log_failed(list(filter(not_failed, wtps)), failed_findings_artifacts)
+    for f in failed_findings_artifacts:
+        d = f[1]
+        failed.add((d[0], d[2])) 
+
+    # move created poams thru approval workflow
+    draft_workflow = [[wtp.poam.system_id, wtp.poam.poam_id] for wtp in filter(not_failed, wtps)]
+    for workflow_request in APPROVAL_WORKFLOW:
+        drafts = [dw+[workflow_request] for dw in draft_workflow]
+        posted_workflow, failed_workflow = submit_to_csam(post_poam_workflow, api, drafts)
+        log_failed(list(filter(not_failed, wtps)), failed_workflow)
+
+        for f in failed_workflow:
+            d = f[1]
+            failed.add((d[0], d[1])) 
+
+
+    if failed:
+        # this deletes all poams that failed for one reason or another
+        logger.warning("Encountered Errors with %s poams that will be deleted...", len(failed))
+        with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+            threads = [executor.submit(csam_retry(system_poam_api.v1_systems_system_id_poams_poam_id_delete_with_http_info), system_id, poam_id, _request_timeout=300) for system_id, poam_id in failed]
+
+        failed_wtps = [wtp for wtp in wtps for system_id, poam_id in failed if wtp.poam.system_id==system_id and wtp.poam.poam_id==poam_id]
+        failed_auto_ms = []
+        for wtp in failed_wtps:
+            _query = f"weakness_tracking_id={wtp.sys_id}"
+            snow_ms = get_n_transform_snow(SNOW_MILESTONE_TABLE_NAME, offset_limit=10, limit=10, fields=[], sysparm_query=_query)
+            failed_auto_ms.append(snow_ms)
+        to_delete = (
+            pl.concat(failed_auto_ms)
+            .filter(pl.col('sys_created_by').str.contains("VAFT") & pl.col('description').str.contains('<p>'))
+            .select(pl.col('sys_id'), pl.lit("DELETE").alias("HTTP Action"))
+        )
+        send_to_snow(to_delete, SNOW_MILESTONE_TABLE_NAME)
+        # snow_poams = get_latest_snow_table(SNOW_POAM_TABLE_NAME, SNOW_API)
+        # to_delete = snow_poams.filter(pl.col('poam_id').str.to_integer(strict=False).is_in([wtp.poam.poam_id for wtp in wtps]))[['sys_id']].with_columns(pl.lit("DELETE").alias('HTTP Action'))
+        # send_to_snow(to_delete, SNOW_POAM_TABLE_NAME)
+
+    completed_wtps = list(filter(not_failed, wtps))
+
+
+    # this mapping is to map the Poam object to the fields needed for the CSAM POAM Table
+    poam_table_report_mapping ={
+        'poamId':"poam_id",
+        'systemId':"csam_id",
+        'severity':"severity",
+        'scheduledCompletionDate':"scheduled_completion_date",
+        'description':"detailed_weakness_description",
+        'cost':"cost",
+        'assignedDate':"assigned_date",
+        'userIdentifiedCriticality':"user_identified_criticality",
+        'actualStartDate':"actual_start_date",
+        'delayReason':"delay_reason",
+        'actualFinishDate':"actual_finish_date",
+        'title':"poam_title",
+        'plannedStartDate':"planned_start_date",
+        'plannedFinishDate':"planned_finish_date",
+        'excludeFromOmb':"exclude_from_omb",
+        'hasAcceptedRisk':"accepted_risk",
+    }
+
+    # updated the CSAM POAM table with basic info so the POAM Table reference can
+    # be added to the WT
+    if completed_wtps:
+        poam_table_update = (
+            pl.from_dicts([wtp.poam.to_dict() for wtp in completed_wtps])
+            .rename(poam_table_report_mapping)
+            .with_columns(pl.lit('POST').alias('HTTP Action'))
+        )
+        send_to_snow(poam_table_update, table_name=SNOW_POAM_TABLE_NAME)
+
+        # add poam id to the WT for the CSAM POAM Table reference
+        wtp_df = pl.from_dicts({"number":wtp.number, "poa_m_id":wtp.poam.poam_id} for wtp in completed_wtps)
+        to_update_wtp = (
+            wtp_df
+            .join(latest_weakness_trackers, on="number")
+            .drop('poa_m_id_right')
+            .with_columns(pl.lit("PATCH").alias('HTTP Action'))
+        )
+        send_to_snow(to_update_wtp, table_name=SNOW_WEAKNESS_TRACKING_TABLE_NAME)  
+
+
+    poams_generated = len(completed_wtps)
+    milestones_generated = sum([len(wtp.draft_milestones) for wtp in completed_wtps if (wtp.poam.system_id, wtp.poam.poam_id) not in failed])
+    logger.info("Automated POAMs complete. Generated %s POAMs and %s Milestones", poams_generated, milestones_generated)
+
+    if failed:
+        unstable_logger.warning(f"Encountered errors that affected {len(failed)} WTs. Refer to logged failures.")
+
+    set_unstable(unstable_logger, unstable_fn_path)
+        
+
+    
 if __name__ == "__main__":
+    snow_csam_poam_table_perms_check()
+    # todo uncomment when testing
+    # if not IS_MAIN_BRANCH:
+    #     purge_test_poams()
     main()

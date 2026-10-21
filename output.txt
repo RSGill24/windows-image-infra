@@ -1,274 +1,222 @@
-import pandas as pd
-import numpy as np
 import urllib3
 from datetime import datetime
-import boto3
 import logging
-from io import StringIO
 import time
+from typing import Optional
+
+from sqlalchemy.engine import Engine
+from pyspark.sql import SparkSession
+
+
 from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_data_quality_utilities import DataQualityUtilities
 from crma_hive_connections import Connection
-from sqlalchemy.engine.base import Engine
-import pyarrow
-import re
-import json
-import ast
-from typing import Tuple, Optional
+from crma_hive_tvm_utilities_spark import SparkTvmUtility
 
 
 # Turning off warnings
 urllib3.disable_warnings()
 
-from sqlalchemy.engine import Engine
-
 # Setting up logger
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Instantiate classes
+connection = Connection()
 utility = Utility()
 rw_util = Read_Write_Utility()
-connection = Connection()
-dataQualityUtils = DataQualityUtilities()
+sparkTvmUtil = SparkTvmUtility()
+
+# Define global vars
+MAIN_SCHEMA = rw_util.MAIN_SCHEMA
+BACKFILL_SCHEMA = rw_util.BACKFILL_SCHEMA
+TABLE_CRMA_HIVE_TVM_VULNS= "TVM_VULNS"
+
+VALID_TABLES = {
+    TABLE_CRMA_HIVE_TVM_VULNS,
+}  
 
 
-def load_ucmm_score(
-            bucket_name: str, 
-            engine: Engine 
-        ) -> None:
+def run_normal_mode(
+        engine: Engine,
+        spark: SparkSession,
+        jdbc_url: str,
+        user: str,
+        password: str, 
+        bucket_name: str, 
+        schema: str,      
+)->None:
     """
-    Load UCMM scores to db.
-    Args:
-        bucket_name: Name of the S3 bucket containing input.
-        engine: SQLAlchemy Engine connected to the primary Postgres database.
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    prefix = "raw_data/UCMM/"
-    dataset = "UCMM_Scores"
-    base_name = prefix + dataset
+    Prepares input parametrs and calls utility function to load TVM data to target talbes in Normal mode.
 
-    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "XLSX")   
-    logger.info(f"Total records fetched: {len(df)}")
-
-    target_columns = [
-             "System ID", 	"Org", "Acronym",	"Actual Maturity", 	"Notional Maturity", 	"Maturity Level Delta", "Absolute Maturity Delta", 	"Data Quality Threshold Met"
+    Parameters:
+        engine (str): SQLalchemy engine
+        schema (str): The database schema in which data is loaded.
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files   
+    Returns:
+        None
+    """    
+    logger.info("TVM data to target loading running in NORMAL mode.")
+    load_configs= [
+            {"dataset": TABLE_CRMA_HIVE_TVM_VULNS, "load_strategy": "upsert", "pk_columns": ["finding_id"]},
         ]
-    logger.info("Selecting target columns...")    
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    map = {
-            "System ID": "system_id", "Org": "org", "Acronym": "acronym",	"Actual Maturity": "actual_maturity", 	"Notional Maturity": "notional_maturity", 	
-            "Maturity Level Delta": "maturity_level_delta", "Absolute Maturity Delta": "absolute_maturity_delta", 	"Data Quality Threshold Met": "data_quality_threshold_met",
-        }
-    df = dataQualityUtils.rename_fields(df, map)
-
-    #clean columns with null values in the following fields 
-    cols = ["system_id", "org",]
-    df = df.dropna(subset=cols)
-
-    #Convert numeric columns to Integer 
-    cols = ["system_id"]
-    df = dataQualityUtils.clean_int_fields(df, cols)
-
-    logger.info("Loading data to database...")
-    df["etl_date"] = datetime.now().date() 
-    schema="crma_hive"
-    table_name = f"crma_hive_{dataset.lower()}"
-    rw_util.truncate_and_load_table(
-           engine=engine, 
-           df=df, 
-           schema_name=schema, 
-           table_name=table_name, 
-           exist_type="append"            
-    )
+       
+    for load_config in load_configs:
+        sparkTvmUtil.load_tvm_data_to_db(
+            engine=engine,
+            spark=spark,
+            jdbc_url=jdbc_url,
+            user=user,
+            password=password,
+            bucket_name=bucket_name,
+            load_config=load_config,
+            schema=schema
+        )
+        utility.log_memory_usage() 
 
     ##Parallel loading##
     logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
     engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    rw_util.truncate_and_load_table(
-           engine=engine2, 
-           df=df, 
-           schema_name=schema, 
-           table_name=table_name, 
-           exist_type="append"            
-    )
+    jdbc_url2, user2, password2 = connection.parse_pg_uri_to_jdbc("edae-crma-hive", "crmahivedb_fqt")
 
-def load_ucmm_ice_impact_rankings(
-            bucket_name: str, 
-            engine: Engine 
-        ) -> None:
+    for load_config in load_configs:
+        sparkTvmUtil.load_tvm_data_to_db(
+            engine=engine2,
+            spark=spark,
+            jdbc_url=jdbc_url2,
+            user=user2,
+            password=password2,
+            bucket_name=bucket_name,
+            load_config=load_config,
+            schema=schema
+        )
+
+def run_backfill_mode(
+        engine: Engine, 
+        spark: SparkSession,
+        jdbc_url: str,
+        user: str,
+        password: str, 
+        bucket_name: str, 
+        schema:str, 
+        hist_table_name: str, 
+        backfill_date: str, 
+        datasets: list, 
+)->None:
     """
-    Load UCMM ICE Impact Rankings to db.
-    Args:
-        bucket_name: Name of the S3 bucket containing input 
-        engine: SQLAlchemy Engine connected to the primary Postgres database.
-    """
-    logger.info(f"Fetching data from landing zone...")
+    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
+
+    Parameters:
+        engine (str): SQLalchemy engine
+        schema (str): The database schema in which data is loaded.
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+        datasets (list): List of datsets upstream to a historical table
     
-    # Creating variables and the dataframe
-    prefix = "raw_data/UCMM/"
-    dataset = "UCMM_POAM_ICE_Impact_Rankings"
-    base_name = prefix + dataset
-
-    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "XLSX")   
-    logger.info(f"Total records fetched: {len(df)}")
-
-    target_columns = [
-             "Org", "LOB", "Acronym", "System ID", "HVA", "POAM ID", "POAM Status", "POAM Creation Date", "POAM Overdue", "Risk Acceptance Memo", "Waiver Status", 
-             "Waiver Expiration Date", "Component POAM Impact", "POAM Impacts UCMM Scorecard"
-        ]
-    logger.info("Selecting target columns...")    
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    map = {
-            "Org": "org", "LOB": "lob", "Acronym": "acronym", "System ID": "system_id", "HVA": "hava", "POAM ID": "poam_id", "POAM Status": "poam_status", "POAM Creation Date": "poam_creation_date",
-            "POAM Overdue": "poam_overdue", "Risk Acceptance Memo": "risk_accetptance_memo", "Waiver Status": "waver_status", "Waiver Expiration Date": "waver_expiration_date", 
-            "Component POAM Impact": "component_poam_impact", "POAM Impacts UCMM Scorecard": "poam_impacts_ucmm_scorecard",
-        }
-    df = dataQualityUtils.rename_fields(df, map)
-
-    #clean columns with null values in the following fields 
-    cols = ["poam_id", "system_id",]
-    df = df.dropna(subset=cols)
-
-    #Convert numeric columns to Integer 
-    cols = ["system_id", "poam_id"]
-    df = dataQualityUtils.clean_int_fields(df, cols)
-
-        #Apply DQ2:Standardize date columns to ISO 8601 format
-    cols = ["poam_creation_date", "waver_expiration_date"]    
-    df = dataQualityUtils.clean_date_fields(df, cols)
-
-    logger.info("Loading data to database...")
-    df["etl_date"] = datetime.now().date() 
-    schema="crma_hive"
-    table_name = f"crma_hive_{dataset.lower()}"
-    rw_util.truncate_and_load_table(
-           engine=engine, 
-           df=df, 
-           schema_name=schema, 
-           table_name=table_name, 
-           exist_type="append"            
-    )
-
-    ##Parallel loading##
-    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    rw_util.truncate_and_load_table(
-           engine=engine2, 
-           df=df, 
-           schema_name=schema, 
-           table_name=table_name, 
-           exist_type="append"            
-    )
-
-def load_ucmm_poam_fisma_system_impact_rankings(
-            bucket_name: str, 
-            engine: Engine 
-        ) -> None:
+    Returns:
+        None
     """
-    Load UCMM ICE Impact Rankings to db.
-    Args:
-        bucket_name: Name of the S3 bucket containing input 
-        engine: SQLAlchemy Engine connected to the primary Postgres database.
-    """
-    logger.info(f"Fetching data from landing zone...")
+
+    logger.info(f"Running in BACKFILL mode.")
+    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
+
+    if not utility.is_valid_backfill_date(backfill_date):
+        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
+        raise
     
-    # Creating variables and the dataframe
-    prefix = "raw_data/UCMM/"
-    dataset = "UCMM_POAM_FISMA_System_Impact_Rankings"
-    base_name = prefix + dataset
+    if not datasets:
+        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
+        raise
 
-    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "XLSX")   
-    logger.info(f"Total records fetched: {len(df)}")
+    valid_datasets = [t for t in datasets if t in VALID_TABLES]
 
-    target_columns = [
-             "Org", "Acronym", "System ID", "HVA", "POAM ID", "POAM Status", "POAM Creation Date", "POAM Overdue", "Risk Acceptance Memo", "Waiver Status", "Waiver Expiration Date",
-             "System POAM Impact", "POAM Impacts UCMM Scorecard"
-        ]
-    logger.info("Selecting target columns...")    
-    df = dataQualityUtils.select_fields(df, target_columns)
+    if len(valid_datasets) != len(datasets):
+        invalid_tables = set(datasets) - set(valid_datasets)
+        logger.warning(f"Invalid tables ignored: {invalid_tables}. Valid tables used: {valid_datasets}")
+        datasets = valid_datasets
+    else:
+        logger.info(f"All {len(datasets)} tables in dataset are valid")
 
-    map = {
-            "Org": "org", "Acronym": "acronym", "System ID": "system_id", "HVA": "hava", "POAM ID": "poam_id", "POAM Status": "poam_status", "POAM Creation Date": "poam_creation_date",
-            "POAM Overdue": "poam_overdue", "Risk Acceptance Memo": "risk_accetptance_memo", "Waiver Status": "waver_status", "Waiver Expiration Date": "waver_expiration_date", 
-            "System POAM Impact": "system_poam_impact", "POAM Impacts UCMM Scorecard": "poam_impacts_ucmm_scorecard",
-        }
-    df = dataQualityUtils.rename_fields(df, map)
+    if not datasets:
+        logger.warning(F"No TVM tables found!")
 
-    #clean columns with null values in the following fields 
-    cols = ["poam_id", "system_id",]
-    df = df.dropna(subset=cols)
+    load_configs = []
+    for dataset in datasets:
+        dataset_upper = dataset.upper().strip() 
 
-    #Convert numeric columns to Integer 
-    cols = ["system_id", "poam_id"]
-    df = dataQualityUtils.clean_int_fields(df, cols)
+        if dataset_upper == "TVM_VULNS":
+            load_configs= [
+            {"dataset": TABLE_CRMA_HIVE_TVM_VULNS, "load_strategy": "upsert", "pk_columns": ["finding_id"]},
+            ]
 
-        #Apply DQ2:Standardize date columns to ISO 8601 format
-    cols = ["poam_creation_date", "waver_expiration_date"]    
-    df = dataQualityUtils.clean_date_fields(df, cols)
-
-    logger.info("Loading data to database...")
-    df["etl_date"] = datetime.now().date() 
-    schema="crma_hive"
-    table_name = f"crma_hive_{dataset.lower()}"
-    rw_util.load_table_to_db(
-           engine=engine, 
-           df=df, 
-           schema_name=schema, 
-           table_name=table_name, 
-           exist_type="replace"            
-    )
-
-    ##Parallel loading##
-    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    rw_util.load_table_to_db(
-           engine=engine2, 
-           df=df, 
-           schema_name=schema, 
-           table_name=table_name, 
-           exist_type="replace"            
-    )
+    for load_config in load_configs:
+        sparkTvmUtil.load_tvm_data_to_db(
+            engine=engine,
+            spark=spark,
+            jdbc_url=jdbc_url,
+            user=user,
+            password=password,
+            bucket_name=bucket_name,
+            load_config=load_config,
+            schema=schema,
+            backfill_date=backfill_date,
+        )
+        utility.log_memory_usage() 
+    
 
 def main():
     start_time = time.time()
     utility.log_memory_usage() 
 
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    engine = connection.postgres_engine("edae-crma-hive") 
 
-    if not bucket_name:
-       raise ValueError("S3 bucket not found!")
+    engine = connection.postgres_engine("edae-crma-hive")
+    jdbc_url, user, password = connection.parse_pg_uri_to_jdbc("edae-crma-hive")
+
+    try: 
+        bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]  
+    except Exception as e:
+       logger.error(f"Error retrieving bucket name:{e}")   
+       raise     
+    try: 
+        spark= SparkSession.builder.getOrCreate()
+    except Exception as e:
+       logger.error(f"Error creating spark session:{e}")   
+       raise  
+
+    logger.info("Extracting workflow run protperies.")
+    workflow_params = utility.get_workflow_props()
+    backfill_date = workflow_params.get("--backfill_date")
+    hist_table_name = workflow_params.get("--hist_table_name")
+    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
     
-    logger.info("Load UCMM datasets to database.")
+    backfill_mode = bool(backfill_date and hist_table_name)
+    if backfill_mode:
+        run_backfill_mode(
+            engine=engine, 
+            spark=spark,
+            jdbc_url=jdbc_url,
+            user=user,
+            password=password, 
+            bucket_name=bucket_name, 
+            schema=BACKFILL_SCHEMA, 
+            hist_table_name=hist_table_name, 
+            backfill_date=backfill_date, 
+            datasets=datasets,        
+        ) 
+    else:
+        run_normal_mode(
+            engine=engine,
+            spark=spark,
+            jdbc_url=jdbc_url,
+            user=user,
+            password=password, 
+            bucket_name = bucket_name, 
+            schema=MAIN_SCHEMA,
+        )    
 
-    load_ucmm_score(
-            bucket_name=bucket_name,
-            engine=engine
-        )
-
-    logger.info("Loading UCMM ICE Impact Rankings...")
-    load_ucmm_ice_impact_rankings(
-            bucket_name=bucket_name,
-            engine=engine
-        )
-
-    logger.info("Loading UCMM POAM FISMA System Impact Rankings...")
-    load_ucmm_poam_fisma_system_impact_rankings(
-            bucket_name=bucket_name,
-            engine=engine
-        )
-   
-    # log runtime 
     elapsed_minutes = (time.time() - start_time)/60
     logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+
 
 if __name__ == "__main__":
     main()

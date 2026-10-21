@@ -1,156 +1,230 @@
-backup  bin  LICENSE.txt  README-cloudshell.txt  terraform_1.15.8_linux_amd64.zip  tf-repo-pamdata  win2022-dev1
-rajinder_gill@cloudshell:~ (nmfs-trusted-images-dev)$ #!/bin/bash
-# === Fix image naming (63 char limit) + Redeploy Cloud Function ===
-cd ~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request
+import os
+import json
+import time
+import tempfile
+import shutil
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import Union
+from logging.handlers import RotatingFileHandler
 
-# Backup
-cp main.py main.py.bak
+import polars as pl
+from tenable.io import TenableIO
+from tenable.io.exports.iterator import ExportsIterator
+from tenable.errors import ServerError, RestflyException, TioExportsError
 
-# Replace the image naming block
-python3 << 'PYEOF'
-with open('main.py', 'r') as f:
-    content = f.read()
+from .tenable_vm_standard_filters import *
 
-old_block = '''    # Build enabled software list for naming
-    enabled = sorted(k for k, v in full_software.items() if v)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    sw_names = [k.replace("_", "") for k in enabled[:5]]
-    sw_part = "-".join(sw_names) if sw_names else "custom"
-    image_name = f"nmfs-windows-2025-{sw_part}-{ts}"
-    image_family = f"nmfs-windows-2025-{sw_part}"'''
+FORMATTER = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-new_block = '''    # Build enabled software list for naming
-    enabled = sorted(k for k, v in full_software.items() if v)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-echo "=== DONE ==="=vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
-SUCCESS: main.py updated with short naming fix
+def set_file_handler(logger, logfile_name, level):
+    # Updated to use pathlib for directory and file construction
+    log_dir = Path(tempfile.gettempdir()) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file = log_dir / logfile_name
+    file_handler = RotatingFileHandler(log_file, maxBytes=(10*(2**20)), backupCount=10)
+    file_handler.setFormatter(FORMATTER)
+    file_handler.setLevel(level)
+    logger.addHandler(file_handler)
+    return logger
 
-=== Verifying changes ===
-140:    short_names = {
-150:    sw_names = [short_names.get(k, k.replace("_", "")) for k in enabled[:3]]
-154:    prefix = "nmfs-win2025-"
-155:    max_sw = 63 - len(prefix) - len(ts) - 1
-156:    sw_part = sw_part[:max_sw]
+def set_stream_handler(logger, level):
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(FORMATTER)
+    stream_handler.setLevel(level)
+    logger.addHandler(stream_handler)
+    return logger
 
-=== Redeploying Cloud Function ===
+for obj in [TenableIO, ExportsIterator]:
+    tio_logger = logging.getLogger(f'{obj.__module__}.{obj.__name__}')
+    tio_logger.setLevel(logging.DEBUG)
+    set_stream_handler(tio_logger, logging.DEBUG)
+    set_file_handler(tio_logger, "tenable_io.log", logging.DEBUG)
 
-ERROR: (gcloud.functions.deploy) You do not currently have an active account selected.
-Please run:
+logger = logging.getLogger("tenable_vm_pull")
+logger.propagate=False
+logger.setLevel(logging.DEBUG)
 
-  $ gcloud auth login
+logger = set_file_handler(logger, "tenable_vm_pull.log", logging.DEBUG)
+logger = set_stream_handler(logger, logging.DEBUG)
 
-to obtain new credentials.
+TENABLE_VM_URL = "https://fedcloud.tenable.com"
 
-If you have already logged in with a different account, run:
+def get_io_api_client(access_key, secret_key, url=TENABLE_VM_URL, retries=5, backoff=2.0):
+    ServerError.set_retryable(True)
 
-  $ gcloud config set account ACCOUNT
+    return TenableIO(
+        url=url, 
+        access_key=access_key, 
+        secret_key=secret_key,
+        retries=retries,
+        backoff=backoff
+    )
 
-to select an already authenticated account to use.
+def join_assets_tags(df: pl.LazyFrame, assets_df: pl.LazyFrame, left_on: str) -> pl.LazyFrame:
+    """asset_uuid for vulns"""
+    return df.join(assets_df['id', 'tags'], left_on=left_on, right_on='id') #do this to get asset tags for vulns
 
-=== DONE ===
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ 
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ gcloud auth login
+def flatten_exports(export_data: pl.LazyFrame):
+    structs = [name for name, schema in export_data.collect_schema().items() if isinstance(schema, pl.Struct)]
+    export_data = export_data.with_columns(*[pl.col(name).name.prefix_fields(f"{name}_") for name in structs]).unnest(structs)
+    return export_data
 
-rajinder_gill@cloudshell:~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request (nmfs-trusted-images-dev)$ #!/bin/bash
-# === Fix image naming (63 char limit) + Redeploy Cloud Function ===
-cd ~/win2022-dev1/win2022-jira/nmfs-gcp-winde/terraform/functions/process-request
+def null_empty_child_struct(df: Union[pl.DataFrame, pl.LazyFrame]):
+    def rebuild_path(path: list, dtype: pl.DataType) -> list[pl.Expr] | None:
+        field_name = path[-1]
+        if not isinstance(dtype, pl.Struct):
+            return []
+        
+        if not len(dtype.fields):
+            head, *rest = path
+            *children, tail = rest
+            _expr = pl.col(head)
+            for child in children:
+                _expr = _expr.struct.field(child)
+            _expr = _expr.struct.with_fields(pl.lit(None).alias(tail))
+            return [_expr]
+        
+        child_exprs = []
+        for f in dtype.fields:
+            child_path = path + [f.name]
+            built = rebuild_path(child_path, f.dtype)
+            if not built:
+                continue
+            child_exprs.extend(built)
 
-# Backup
-cp main.py main.py.bak
+        return child_exprs
+    
+    out_exprs = []
+    for col, dt in df.collect_schema().items():
+        built = rebuild_path([col], dt)
+        if not built:
+            continue
+        expr = built[0].alias(col)
+        out_exprs.append(expr)
 
-# Replace the image naming block
-python3 << 'PYEOF'
-with open('main.py', 'r') as f:
-    content = f.read()
+    return df.with_columns(out_exprs)
 
-old_block = '''    # Build enabled software list for naming
-    enabled = sorted(k for k, v in full_software.items() if v)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    sw_names = [k.replace("_", "") for k in enabled[:5]]
-    sw_part = "-".join(sw_names) if sw_names else "custom"
-    image_name = f"nmfs-windows-2025-{sw_part}-{ts}"
-    image_family = f"nmfs-windows-2025-{sw_part}"'''
+# --- Updated Export Logic ---
 
-new_block = '''    # Build enabled software list for naming
-    enabled = sorted(k for k, v in full_software.items() if v)
-echo "=== DONE ==="=vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
-WARNING: Old block not found - check main.py manually
+def _write_chunk_ndjson(data: list[dict], export_uuid: str, export_type: str, export_chunk_id: int, version: int, base_dir: Path):
+    """
+    Callback function for run_threaded(). Writes an individual chunk to its own NDJSON file.
+    """
+    fn = base_dir / f"{export_type}-{export_uuid}-{export_chunk_id}-{version}.ndjson"
+    with fn.open('w') as f:
+        for item in data:
+            f.write(json.dumps(item) + "\n")
 
-=== Verifying changes ===
-140:    short_names = {
-150:    sw_names = [short_names.get(k, k.replace("_", "")) for k in enabled[:3]]
-154:    prefix = "nmfs-win2025-"
-155:    max_sw = 63 - len(prefix) - len(ts) - 1
-156:    sw_part = sw_part[:max_sw]
+_original_get_status = ExportsIterator._get_status
 
-=== Redeploying Cloud Function ===
+def _patched_get_status(self):
+    # Call the original method to do its normal checks and assignments
+    status = _original_get_status(self)
+    
+    # Intercept a CANCELLED status and force an exception to break infinite loops
+    if status.status == 'CANCELLED':
+        self._log.error(f"Export {self.type} {self.uuid} was CANCELLED. Forcing exit.")
+        raise TioExportsError(
+                export=self.type, 
+                uuid=self.uuid, 
+                msg=f"Export job {self.uuid} was CANCELLED by the server."
+            )
+        
+    return status
 
-The default build service account [194243189684-compute@developer.gserviceaccount.com] is missing the [roles/cloudbuild.builds.builder] 
-role. This may cause issues when deploying a function. You could fix it by running the command: 
-gcloud projects add-iam-policy-binding ggn-nmfs-winde-dev-1 \
- --member=serviceAccount:194243189684-compute@developer.gserviceaccount.com \
- --role=roles/cloudbuild.builds.builder 
-For more information, please refer to: https://cloud.google.com/functions/docs/troubleshooting#build-service-account.
- Would you like to continue? (y/N)?  y
+# Apply the patch to the class
+ExportsIterator._get_status = _patched_get_status
 
-Preparing function...done.                                                                                                               
-Updating function (may take a while)...                                                                                                  
-  [Build] Build in progress... Logs are available at [https://console.cloud.google.com/cloud-build/builds;region=us-east4/5b9879a6-aa85-4
-  6b8-9028-73a5b304c7ce?project=194243189684]...-                                                                                        
-  [Build] Logs are available at [https://console.cloud.google.com/cloud-build/builds;region=us-east4/5b9879a6-aa85-46b8-9028-73a5b304c7ce
-  ?project=194243189684]...done                                                                                                          
-  [Service]warning                                                                                                                       
-Completed with warnings:                                                                                                                 
-  [INFO] A new revision will be deployed serving with 100% traffic.
-You can view your function in the Cloud Console here: https://console.cloud.google.com/functions/details/us-east4/image-builder-process-request?project=ggn-nmfs-winde-dev-1
+def _run_threaded_export_with_retries(tio_method, *filters: dict, retries: int = 5, num_threads: int = 4) -> pl.LazyFrame:
+    """
+    Generic method to execute PyTenable exports using threads and pathlib.
+    Implements retry logic for transient API and Restfly exceptions.
+    """
+    attempts_left = retries + 1
+    if not filters:
+        filters = [{}]
+        
+    temp_dir = Path(tempfile.gettempdir())
+    base_export_dir = temp_dir / f"_export_{tio_method.__name__}_{int(time.time())}"
+    
+    while attempts_left > 0:
+        try:
+            start = datetime.now()
+            
+            if base_export_dir.exists():
+                shutil.rmtree(base_export_dir)
+            
+            base_export_dir.mkdir(parents=True, exist_ok=True)
+            
+            for filts in filters:
+                iterator = tio_method(**filts)
+                
+                iterator.run_threaded(
+                    func=_write_chunk_ndjson,
+                    kwargs={'base_dir': base_export_dir},
+                    num_threads=num_threads
+                )
+            
+            logger.debug("Took %s to complete threaded export for %s", datetime.now() - start, tio_method.__name__)
+            
+            glob_path = base_export_dir / "*.ndjson"
+            return null_empty_child_struct(pl.scan_ndjson(glob_path, infer_schema_length=None))
+            
+        except (RestflyException, ServerError) as e:
+            attempts_left -= 1
+            logger.exception("Exception hit during %s export. Retries left: %s", tio_method.__name__, attempts_left)
+            
+            if base_export_dir.exists():
+                shutil.rmtree(base_export_dir, ignore_errors=True)
+            
+            if attempts_left == 0:
+                raise e
+            
+            time.sleep(5) 
 
-buildConfig:
-  automaticUpdatePolicy: {}
-  build: projects/194243189684/locations/us-east4/builds/5b9879a6-aa85-46b8-9028-73a5b304c7ce
-  dockerRegistry: ARTIFACT_REGISTRY
-  dockerRepository: projects/ggn-nmfs-winde-dev-1/locations/us-east4/repositories/gcf-artifacts
-  entryPoint: process_request
-  runtime: python312
-  serviceAccount: projects/ggn-nmfs-winde-dev-1/serviceAccounts/vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
-  source:
-    storageSource:
-      bucket: gcf-v2-sources-194243189684-us-east4
-      generation: '1789663672627255'
-      object: image-builder-process-request/function-source.zip
-  sourceProvenance:
-    resolvedStorageSource:
-      bucket: gcf-v2-sources-194243189684-us-east4
-      generation: '1789663672627255'
-      object: image-builder-process-request/function-source.zip
-createTime: '2026-08-13T17:22:29.240680207Z'
-environment: GEN_2
-labels:
-  env: dev
-  goog-terraform-provisioned: 'true'
-  managed: terraform
-name: projects/ggn-nmfs-winde-dev-1/locations/us-east4/functions/image-builder-process-request
-satisfiesPzi: true
-satisfiesPzs: true
-serviceConfig:
-  allTrafficOnLatestRevision: true
-  availableCpu: '0.3333'
-  availableMemory: 512Mi
-  environmentVariables:
-    BUCKET_NAME: jira-automation-bucket
-    BUILDER_JOB_NAME: windows-image-builder-jira
-    LOG_EXECUTION_ID: 'true'
-    PROJECT_ID: ggn-nmfs-winde-dev-1
-    REGION: us-east4
-  ingressSettings: ALLOW_ALL
-  maxInstanceCount: 3
-  maxInstanceRequestConcurrency: 1
-  revision: image-builder-process-request-00005-qev
-  service: projects/ggn-nmfs-winde-dev-1/locations/us-east4/services/image-builder-process-request
-  serviceAccountEmail: vm-prov-webhook-runner@ggn-nmfs-winde-dev-1.iam.gserviceaccount.com
-  timeoutSeconds: 120
-  uri: https://image-builder-process-request-tqls7v2pea-uk.a.run.app
-state: ACTIVE
-updateTime: '2026-09-17T16:48:47.828084377Z'
-url: https://us-east4-ggn-nmfs-winde-dev-1.cloudfunctions.net/image-builder-process-request
+# --- Export Wrapper Functions ---
 
-=== DONE ===
+def get_assets(tio: TenableIO, filter_null_tags=True) -> pl.LazyFrame:
+    assets_df = _run_threaded_export_with_retries(tio.exports.assets_v2)
+    if filter_null_tags:
+        assets_df = assets_df.filter(~pl.col('tags').is_null()) 
+    return assets_df
+
+def get_vulns_exports(tio: TenableIO, *filter:dict, no_nnm=True, flatten=True, retries=5):
+    if no_nnm:
+        if filter:
+            filter = [{**NNM_FILTER, **_filts} for _filts in filter]
+        else:
+            filter = [NNM_FILTER]
+            
+    results = _run_threaded_export_with_retries(tio.exports.vulns, *filter, retries=retries)
+    if flatten:
+        results = flatten_exports(results)
+    return results
+
+def get_compliance_exports(tio: TenableIO, *filter:dict, flatten=True, retries=5):
+    results = _run_threaded_export_with_retries(tio.exports.compliance, *filter, retries=retries)
+    if flatten:
+        results = flatten_exports(results)
+    return results
+
+def xref_to_sc_format(xref_key) -> pl.Expr:
+    return (
+        pl.col(xref_key).list.eval(
+            pl.element().struct.field("type") + " #" + pl.element().struct.field("id")
+        ).list.join(',').name.keep()
+    )
+    
+if __name__ == "__main__":
+    # Keeping os here since pathlib does not manage environment variables
+    ak = os.environ['TENABLE_VM_ACCESS_KEY']
+    sk = os.environ['TENABLE_VM_SECRET_KEY']
+    tio = get_io_api_client(ak, sk)
+    assets_df = get_assets(tio)
+    vulns = get_vulns_exports(tio, {'severity': [VulnSeverity.critical]}, no_nnm=True, flatten=True, retries=1)
+    # compliance = get_compliance_exports(tio, COMPLIANCE_RESULTS_FILTER, flatten=True, retries=1)
+
+    pass

@@ -1,22 +1,103 @@
+- name: Ensure /tmp/logs exists
+  ansible.builtin.file:
+    path: /tmp/logs
+    state: directory
+    mode: '0755'
 
-- name: Configure SARA Node
-  hosts: all
-  vars:
-    ansible_python_interpreter: /usr/bin/python3.12
-  gather_facts: true
-  collections:
-  - community.general
+- name: Run Free to track memory usage with timestamp
+  ansible.builtin.shell: |
+    nohup bash -c 'free -m -s 10 | while IFS= read -r line; do
+    printf "%s %s\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$line"
+    done >> /tmp/logs/free.log 2>&1 &'
+  args:
+    executable: /bin/bash
+  become: true
 
-  vars_files:
-  - vars/roles.yml
+- name: Script block
+  block:
+  - name: Run SNow Ingest Script
+    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/snow_findings_ingest.py
+    register: output_ingest
 
-  roles:
-  - register_agents
-  - install_syft
-  - AddNessusScanUser
-  - resize_n_ssh
-  - build_env
-  - install_packages
-  - generate_sbom
-  - aide_update
-  - snow_finding_ingest
+  - name: Check if /tmp/logs/unstable_notify directory exists
+    stat:
+      path: /tmp/logs/unstable_notify
+    register: dir_info
+
+  - name: Write soft fail to trigger unstable Jenkins build
+    ansible.builtin.file:
+      path: "{{ lookup('env', 'WORKSPACE') }}/.soft_fail"
+      state: touch
+      mode: '0644'
+    when: dir_info.stat.isdir is defined and dir_info.stat.isdir
+    delegate_to: localhost
+    run_once: true
+
+  always:
+  - debug:
+      var: output_ingest
+
+  - name: Dump kernel ring buffer (dmesg)
+    shell: dmesg > /tmp/logs/dmesg.log
+    become: true
+
+  - name: Dump full journalctl
+    shell: journalctl --no-pager > /tmp/logs/journalctl.log
+    become: true
+
+  - name: Copy /var/log/messages
+    copy:
+      src: /var/log/messages
+      dest: /tmp/logs/messages.log
+      remote_src: yes
+    become: true
+
+  - name: set timestamp
+    set_fact:
+      date: "{{ lookup('pipe', 'date +%Y%m%d-%H%M') }}"
+
+  - name: set log filename
+    set_fact:
+      logs_fn: logs_{{ date }}_{{ branch_name }}.zip
+
+  - name: Create a zip archive of /tmp/logs
+    community.general.archive:
+      path: /tmp/logs/
+      format: zip
+      dest: /tmp/{{ logs_fn }}
+    become: true
+
+  - name: change ownership
+    ansible.builtin.file:
+      path: /tmp/{{ logs_fn }}
+      owner: zzadmin
+      group: zzadmin
+    become: true
+
+  - name: Fetch the log zip file to Jenkins workspace
+    ansible.builtin.fetch:
+      src: /tmp/{{ logs_fn }}
+      dest: "{{ lookup('env', 'WORKSPACE') }}/{{ logs_fn }}"
+      flat: yes
+
+  - name: move logs.zip to s3
+    amazon.aws.s3_object:
+      bucket: sara-weakness-tracking
+      object: snow_findings_ingest/{{ logs_fn }}
+      src: /tmp/{{ logs_fn }}
+      mode: put
+      region: us-gov-west-1
+
+  - name: See if /tmp/logs/unstable_notify exists
+    ansible.builtin.stat:
+      path: /tmp/logs/unstable_notify
+    register: unstable
+
+  - name: write soft fail sentinel
+    ansible.builtin.file:
+      path: "{{ lookup('env', 'WORKSPACE') }}/.soft_fail"
+      state: touch
+      mode: '0644'
+    when: unstable.stat.exists
+    delegate_to: localhost
+    run_once: true

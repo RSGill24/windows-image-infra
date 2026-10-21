@@ -1,101 +1,1066 @@
-- name: Ensure /tmp/logs exists
-  ansible.builtin.file:
-    path: /tmp/logs
-    state: directory
-    mode: '0755'
+import csam_api_client
+from csam_api_client.models.poam_severity import PoamSeverity
+import os
+import logging
+import polars as pl
+import jinja2
+import datetime
+import polars
+from pandas.tseries.holiday import USFederalHolidayCalendar
+from pandas.tseries.offsets import CustomBusinessDay
+from dateutil.parser import parse
+from dateutil.parser._parser import ParserError
+import ipaddress
+from lib import set_file_handler, set_stream_handler, get_unstable_logger, set_unstable, IS_MAIN_BRANCH
+from pprint import pformat
+from functools import partial
+from html import unescape
+from functools import lru_cache
+import concurrent.futures as cf
 
-- name: Run Free to track memory usage with timestamp
-  ansible.builtin.shell: |
-    nohup bash -c 'free -m -s 10 | while IFS= read -r line; do
-    printf "%s %s\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$line"
-    done >> /tmp/logs/free.log 2>&1 &'
-  args:
-    executable: /bin/bash
-  become: true
+from csam_helpers import (
+    DEFAULT_RCA,
+    CSAM_CONFIG,
+    get_system_level_api_call,
+    csam_retry,
+    RLThreadPoolExecutor,
+    CSAM_RATE_LIMIT,
+    TEST_POAM_DELIM,
+    get_poc_report,
+    POAM_CRITICALITY_MAPPING,
+    get_csam_poc_position,
+    get_assignee,
+    SCD_DELTA,
+    submit_to_csam,
+    post_draft_poam,
+    get_control_imp,
+    post_poam_association,
+    STANDARD_POAM_CLOSURE_MILESTONE,
+    STANDARD_POAM_INITIATION_MILESTONE,
+    post_draft_poam_milestone,
+    post_poam_milestone_note,
+    put_poam_agencydefined,
+    post_poam_asset_list,
+    post_poam_findings_list,
+    APPROVAL_WORKFLOW,
+    post_poam_workflow
+)
 
-- name: Script block
-  block:
-  - name: Run Poam Creation Automation
-    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_create.py
-    register: output_create
+from snow_helpers import (
+    SNOW_API,
+    get_latest_snow_table,
+    get_n_transform_snow,
+    SNOW_QUERIES,
+    SNOW_POAM_TABLE_NAME,
+    SNOW_WEAKNESS_TRACKING_TABLE_NAME,
+    SNOW_MILESTONE_TABLE_NAME,
+    SNOW_USERS_TABLE_NAME,
+    SNOW_FINDINGS_TABLE_NAME,
+    SNOW_FISMA_INVENTORY_NAME,
+    SNOW_TIME_FORMAT,
+    send_to_snow,
+    snow_csam_poam_table_perms_check,
+    dedupe_snow_milestones,
+    canonicalize_snow_action_numbers
+)
 
-  - name: Run Poam Closure Automation
-    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_closure.py
-    register: output_close
 
-  - name: Run SNOW/CSAM RCA Poam Milestone Sync
-    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_update.py
-    register: output_sync
+US_BUSINESS_DAY = CustomBusinessDay(calendar=USFederalHolidayCalendar())
 
-  always:
-  - debug:
-      var: output_create
-  - debug:
-      var: output_close
-  - debug:
-      var: output_sync
+import warnings
+warnings.simplefilter(action="ignore", category=FutureWarning)
+warnings.simplefilter(action="ignore", category=UserWarning)
 
-  - name: Dump kernel ring buffer (dmesg)
-    shell: dmesg > /tmp/logs/dmesg.log
-    become: true
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-  - name: Dump full journalctl
-    shell: journalctl --no-pager > /tmp/logs/journalctl.log
-    become: true
+FORMATTER = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-  - name: Copy /var/log/messages
-    copy:
-      src: /var/log/messages
-      dest: /tmp/logs/messages.log
-      remote_src: yes
-    become: true
+_name = "sara_wt_poam_automation"
+logger = logging.getLogger(_name)
+logger.propagate=False
+logger.setLevel(logging.DEBUG)
 
-  - name: set timestamp
-    set_fact:
-      date: "{{ lookup('pipe', 'date +%Y%m%d-%H%M') }}"
+logger = set_file_handler(logger, f"{_name}.log")
+logger = set_stream_handler(logger)
 
-  - name: set log filename
-    set_fact:
-      logs_fn: logs_{{ date }}_{{ branch_name }}.zip
+unstable_logger, unstable_fn_path = get_unstable_logger(_name)
 
-  - name: Create a zip archive of /tmp/logs
-    community.general.archive:
-      path: /tmp/logs/
-      format: zip
-      dest: /tmp/{{ logs_fn }}
-    become: true
+def get_rca(findings_df):
 
-  - name: change ownership
-    ansible.builtin.file:
-      path: /tmp/{{ logs_fn }}
-      owner: zzadmin
-      group: zzadmin
-    become: true
+    rca = f"{findings_df['rca_description'].unique()[0]}"
+    # asked by Core to skip poam generation for missing rca
+    if not rca:
+        logger.warning("RCA missing for %s, using default", findings_df['number'].unique()[0])
+        rca = DEFAULT_RCA
+    return  rca.upper()
 
-  - name: Fetch the log zip file to Jenkins workspace
-    ansible.builtin.fetch:
-      src: /tmp/{{ logs_fn }}
-      dest: "{{ lookup('env', 'WORKSPACE') }}/{{ logs_fn }}"
-      flat: yes
+# Heather says she doesn't want hyperlinks
+# def description_hyperlink(link, link_text):
+#     env = jinja2.Environment(loader=jinja2.FileSystemLoader("templates/"))
+#     temp = env.get_template("desc_hyperlink.txt")
+#     return temp.render(link=link, link_text=link_text)
 
-  - name: move logs.zip to s3
-    amazon.aws.s3_object:
-      bucket: sara-weakness-tracking
-      object: weakness_tracking_poams/{{ logs_fn }}
-      src: /tmp/{{ logs_fn }}
-      mode: put
-      region: us-gov-west-1
+class WeaknessTrackerPoam:
+    """class to help organize things need for a poam based on the WT"""
+    def __init__(self, sys_id):
+        self.sys_id = sys_id
+        self.draft_poam: csam_api_client.PoamUpdate = None
+        self.poam: csam_api_client.PoamUpdate = None
+        self.draft_milestones = []
+        self.milestones = []
+        self.assets = None
+        self.findings = None
+        self.controls = []
+        self.iid = None
+        self.assignee: csam_api_client.Person = None
+        self.isso: csam_api_client.Person = None
+        self.number = None
+        self.failed = False
 
-  - name: See if /tmp/logs/unstable_notify exists
-    ansible.builtin.stat:
-      path: /tmp/logs/unstable_notify
-    register: unstable
+    def get_draft_milestones(self):
+        if self.poam:
+            return [(self.poam.system_id, self.poam.poam_id, m) for m in self.draft_milestones]
+        
+    def get_draft_iid(self):
+        if self.poam and self.iid:
+            return self.poam.system_id, self.poam.poam_id, self.iid
+        
+    def __repr__(self):
+        return f"""{self.number}, {self.sys_id}
+POA&M: {self.poam}
+Assignee: {self.assignee}"""
 
-  - name: write soft fail sentinel
-    ansible.builtin.file:
-      path: "{{ lookup('env', 'WORKSPACE') }}/.soft_fail"
-      state: touch
-      mode: '0644'
-    when: unstable.stat.exists
-    delegate_to: localhost
-    run_once: true
+def wtp_failed_log(logger, wtps, fs: list) -> None:
+    if not fs:
+        return
+    for f in fs:
+        idx, draft, exc = f
+        wtp = wtps[idx]
+        logger.error("POAM Issue with %s: Got '%s'\n\nwhen submitting '%s'", wtp.number, str(exc), draft)
+
+log_failed = partial(wtp_failed_log, unstable_logger)
+
+def del_files(files):
+    for _name in files:
+        try:
+            os.remove(_name)
+        except FileNotFoundError:
+            logger.exception("")
+
+def get_a_tag(name, link, target="_blank"):
+    return f'<a href="{link}" target="{target}">{name}</a>'
+
+def purge_test_poams():
+    ### removes all POAMs generated by this script (i.e. any POAM with the value assigned to TEST_POAM_DELIM in POAM Title)
+    ### purge todo: remove
+    if IS_MAIN_BRANCH:
+        return
+    api = csam_api_client.ApiClient(CSAM_CONFIG)
+    system_poam_api = csam_api_client.PoamDetailsApi(api)
+    systems_api = csam_api_client.SystemsApi(api)
+    systems = systems_api.v1_systems_get(_request_timeout=300)
+    systems_ids = [x.id for x in systems] #list of csam system ids
+    poams_by_system_id = get_system_level_api_call(system_poam_api.v1_systems_system_id_poams_get, systems_ids, _request_timeout=300)
+    poam_status = csam_api_client.PoamStatus
+    all_poams = [poam for poams in poams_by_system_id.values() for poam in poams]
+    already_created = [p for p in all_poams if TEST_POAM_DELIM in p.title]
+    if already_created:
+        logger.info("Purging CSAM")
+        with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+            threads = [executor.submit(csam_retry(system_poam_api.v1_systems_system_id_poams_poam_id_delete_with_http_info), p.system_id, p.poam_id) for p in already_created]
+        poams_by_system_id = get_system_level_api_call(system_poam_api.v1_systems_system_id_poams_get, systems_ids, _request_timeout=300)#, exclude=[6559])
+        all_poams = [poam for poams in poams_by_system_id.values() for poam in poams]
+
+    if "iceserviceportal." not in SNOW_API:
+        logger.info('Purging SNow CSAM table')
+        snow_poams = get_latest_snow_table(SNOW_POAM_TABLE_NAME, SNOW_API, offset_limit=5000)
+        to_delete = snow_poams.filter(pl.col("poam_title").str.contains(TEST_POAM_DELIM.replace("$", "\\$")))[['sys_id']].with_columns(pl.lit("DELETE").alias('HTTP Action'))
+        send_to_snow(to_delete, SNOW_POAM_TABLE_NAME)
+
+                    # purging canned milestone generated
+        _name = SNOW_MILESTONE_TABLE_NAME
+        tmp_file, offset_limit, fields, sysparm_query = SNOW_QUERIES[_name]
+        snow_ms = get_n_transform_snow(_name, offset_limit=offset_limit, fields=fields, sysparm_query=sysparm_query)
+        to_delete = (
+            snow_ms
+            .filter(pl.col('sys_created_by').str.contains("VAFT") & pl.col('description').str.contains('<p>'))
+            .select(pl.col('sys_id'), pl.lit("DELETE").alias("HTTP Action"))
+        )
+        send_to_snow(to_delete, SNOW_MILESTONE_TABLE_NAME)
+
+
+def main():
+
+    @lru_cache
+    def get_system_acronym(sys_id):
+        return systems[sys_id].acronym
+    
+    today = datetime.date.today()
+
+    # init specific apis
+    api = csam_api_client.ApiClient(CSAM_CONFIG)
+    system_poam_api = csam_api_client.PoamDetailsApi(api)
+    systems_api = csam_api_client.SystemsApi(api)
+    
+    # to get the assignee for each ISSO, use the POC Report from
+    # CSAM to find the ISSO for each System
+    poc_report = get_poc_report(api)
+
+    # loops thru tmp_files and pulls the requisite SNOW tables for analysis
+    results = {}
+    for _name in [SNOW_WEAKNESS_TRACKING_TABLE_NAME, SNOW_MILESTONE_TABLE_NAME, SNOW_USERS_TABLE_NAME, SNOW_FISMA_INVENTORY_NAME]:
+        tmp_file, offset_limit, fields, sysparm_query = SNOW_QUERIES[_name]
+        if os.path.exists(tmp_file):
+            logger.debug("Loading %s", tmp_file)
+            results[_name] = pl.read_parquet(tmp_file)
+            continue
+        results[_name] = get_n_transform_snow(_name, offset_limit=offset_limit, fields=fields, sysparm_query=sysparm_query)
+
+    # assigned each result to a variable
+    # latest_findings = results[SNOW_FINDINGS_TABLE_NAME]
+    latest_weakness_trackers = results[SNOW_WEAKNESS_TRACKING_TABLE_NAME]
+
+    snow_draft_milestones = results[SNOW_MILESTONE_TABLE_NAME]
+    snow_users = results[SNOW_USERS_TABLE_NAME]
+    fisma_inventory = results[SNOW_FISMA_INVENTORY_NAME]
+
+    # strip u_fisma_id whitespace, otherwise joins later may miss stuff
+    fisma_inventory = fisma_inventory.with_columns(pl.col('u_fisma_id').str.strip_chars())
+
+    latest_weakness_trackers = latest_weakness_trackers.with_columns(
+        [pl.col(k).replace_strict({"false":False, "true":True}).cast(pl.Boolean) for k in ['kev', 'skip_poam', 'baselined', 'poa_m_date_reached', 'required_poam', 'risk_accepted']]
+    )
+    # find WT's requiring a POAM
+    poam_required = latest_weakness_trackers.filter(
+            (pl.col('state').eq("poa&m") | pl.col("required_poam")) & 
+            # filter if ISSO selects to skip, or finding is baselined
+            ~(pl.col("skip_poam") | pl.col("baselined") | pl.col('risk_accepted')) &
+            # need to filter if there's already a POAM ID
+            pl.col('poa_m_id').struct.field('value').is_null()
+        )
+     
+    
+        # grab list of POC from the System_Points_of_Contact_Query Systems report in CSAM
+    poam_required = (
+            poam_required
+
+            # this joins the FISMA Inventory table so we can get CSAM defined FISMA System Name
+            .join(
+            fisma_inventory.select('u_acronym', 'u_fisma_id', 'u_csam_id', 'sys_id', pl.col('u_active').replace_strict({"false":False, "true":True}).cast(pl.Boolean)), 
+            left_on=pl.col('fisma_system').struct.field('value'), 
+            right_on=pl.col('sys_id'), 
+            how='left',
+            suffix="_inv")
+
+    )
+
+    # add filter to remove non-active findings so those aren't having poams generated
+    active_mask = pl.col('u_active')
+    non_active_wts = poam_required.filter(~active_mask)
+    unstable_logger.warning(
+        "Identified the following WEAKs where the FISMA System is not active. Count: %s\n%s",
+        len(non_active_wts),
+        "\n".join([str(r) for r in non_active_wts['number', 'u_fisma_id', 'u_acronym'].sort('u_acronym', "number").rows()])
+        )
+    poam_required = poam_required.filter(active_mask)
+
+    # list systems to exclude
+    # According to Michael Clunn on 6 April 2026
+    # systems to exempt from WTT:
+    to_exclude = (
+        fisma_inventory
+        .filter(
+            # OWFPS ('ICE-06559-GSS-06559')
+            pl.col('u_fisma_id').eq('ICE-06559-GSS-06559')
+            # ICON (and subs) ('ICE-06560-GSS-06560')
+            | pl.col('u_fisma_id').str.split('-').list.get(3, null_on_oob=True).str.strip_chars().eq('06560')
+            # EOC (and subs) ('ICE-03434-GSS-03434')
+            | pl.col('u_fisma_id').str.split('-').list.get(3, null_on_oob=True).str.strip_chars().eq('03434')
+            # ADEX (and subs) ("ICE-00221-MAJ-00221")
+            | pl.col('u_fisma_id').str.split('-').list.get(3, null_on_oob=True).str.strip_chars().eq('00221')
+            # TIII_Ops (and subs) ("ICE-08329-MAJ-08329")
+            | pl.col('u_fisma_id').str.split('-').list.get(3, null_on_oob=True).str.strip_chars().eq('08329')
+        )
+    )['u_fisma_id']
+
+
+
+    try:
+        poam_required = poam_required.filter(~pl.col('u_fisma_id').is_in(to_exclude))
+    except NameError:
+        pass
+
+    # get systems from CSAM
+    _systems = pl.DataFrame([s.__dict__ for s in systems_api.v1_systems_get(_request_timeout=300)], infer_schema_length=None)
+    systems_ids = _systems.filter(pl.col('id').is_in(poam_required['u_csam_id'].unique().cast(pl.Int32)))['id']
+    systems = get_system_level_api_call(systems_api.v1_systems_id_get, systems_ids, _request_timeout=300)
+
+    csam_system_id = 'csam_system_id'
+    fisma_id_by_csam_id = (
+        polars.DataFrame([(sys.id, sys.external_id) for sys in systems.values()], schema=[csam_system_id, 'u_fisma_id'], orient='row')
+        # need to strip, api returs fisma id's with whitespace
+        .with_columns(pl.col('u_fisma_id').str.strip_chars())
+    )
+
+    poam_required = (
+        poam_required
+            # does a similar join using direct data from CSAM
+            .join(
+            fisma_id_by_csam_id, 
+            on=polars.col('u_fisma_id'),
+            how='left', 
+            coalesce=True,
+            suffix="_csam"
+        )
+    )
+    
+    poam_status = csam_api_client.PoamStatus
+
+    # get all poams per system
+    poams_by_system_id = get_system_level_api_call(system_poam_api.v1_systems_system_id_poams_get, systems_ids, _request_timeout=300)
+    closed_statuses = {poam_status.COMPLETED, poam_status.CANCELLED}
+
+    # this helps identify duplicates
+    # open_poams_by_system = {sys_id: [p for p in poams if p.status not in closed_statuses] for sys_id, poams in poams_by_system_id.items()}
+
+    # use this to get a count of how many instances of a particular title there are to calculate dedupe suffix
+    poams_titles_by_system = {sys_id: [p.title for p in poams if p.status not in closed_statuses] for sys_id, poams in poams_by_system_id.items()}
+    
+    # there's a mismatch between what is in the SNow FISMA Inventory and the systems
+    # defined in CSAM Beta. Therefore there are times where there isn't a proper system ID
+    is_null = poam_required.filter(polars.col(csam_system_id).is_null())
+    logger.warning("%s with %s as null discarded", len(is_null), csam_system_id) # if not is_null.is_empty() most likely because using TEST fisma inventory which lags behind prod
+    poam_required = poam_required.filter(polars.col(csam_system_id).is_not_null())
+
+    without_proper_fisma_id = is_null.unique(subset=['fisma_system', 'u_fisma_id'])['fisma_system', 'u_fisma_id'].to_dicts()
+    if without_proper_fisma_id:
+        unstable_logger.warning("THESE DONT HAVE PROPER FISMA ID IN CSAM: %s", pformat(without_proper_fisma_id))
+
+    if poam_required.is_empty():
+        logger.info("No WTs to create...quitting")
+        return
+    
+    latest_findings_fn = 'tests'+'\\latest_findings_wtp.parquet'
+    if not os.path.exists(latest_findings_fn):
+        def get_latest_finds(sys_id, num_finds):
+            # it's possible if it's a new WT, but goes straight to POAM that the total_findings hasn't been
+            # updated yet, therefore num_finds=''. in this case, reduce limit to 0 to pull everything
+            try:
+                _limit = int(num_finds)+100
+            except ValueError:
+                _limit = 0
+
+            _df = get_n_transform_snow(SNOW_FINDINGS_TABLE_NAME, offset_limit=500, limit=_limit, fields=[], sysparm_query=f"weakness_tracking={sys_id}").unique()
+            return _df
+
+        with cf.ThreadPoolExecutor(max_workers=4) as ex:
+            latest_findings_dfs = [ex.submit(get_latest_finds, sys_id, num_finds) for sys_id, num_finds in poam_required['sys_id', 'total_findings'].rows()]
+        latest_findings = pl.concat([f.result() for f in latest_findings_dfs])
+
+        # latest_findings_dfs = []
+        # for sys_id, num_finds in poam_required['sys_id', 'total_findings'].rows():
+        #     _df = get_n_transform_snow(SNOW_FINDINGS_TABLE_NAME, offset_limit=500, limit=int(num_finds)+100, fields=[], sysparm_query=f"weakness_tracking={sys_id}")
+        #     latest_findings_dfs.append(_df)
+        # latest_findings = pl.concat([latest_findings_dfs])
+
+        # convert CATs
+        latest_findings = latest_findings.with_columns(pl.col('cat').replace_strict({"3": "III", "2": "II", "1":"I"}, default=None))
+
+        # SNow returns booleans as strings, convert to proper bool, do this for both FINDs and WEAKs
+        latest_findings = latest_findings.with_columns(
+            [pl.col(k).replace_strict({"false":False, "true":True}).cast(pl.Boolean) for k in ['kev', 'poa_m_required']]
+        )
+        latest_findings.write_parquet(latest_findings_fn, use_pyarrow=True)
+    else:
+        latest_findings = pl.read_parquet(latest_findings_fn)
+
+    # remove duplicates, perhaps multithreading isn't stable
+    latest_findings = latest_findings.unique("sys_id")
+
+    # Enum dtype to ensure we're getting the proper max severity
+    severity_enum = pl.Enum(reversed(POAM_CRITICALITY_MAPPING.keys()))
+    latest_findings = latest_findings.with_columns(
+        pl.col('severity').cast(severity_enum)
+    )
+
+    poam_required = poam_required.with_columns(
+        pl.col('severity').cast(severity_enum)
+    )
+        
+    # WTs dont have direct references to the FINDs it is associated
+    # This join creates that association since the FIND does have a WEAK reference
+    ft_suffix = "_finding_table"
+    poam_required = poam_required.join(
+            latest_findings, 
+            left_on=pl.col('sys_id'), 
+            right_on=pl.col('weakness_tracking').struct.field('value'), 
+            suffix=ft_suffix
+        )
+
+    # pull out the hostname from the netbios, and lower for easier processing
+    poam_required = poam_required.with_columns(
+        polars.col('netbios_name')
+        .str.split("\\")
+        .list.last()
+        .str.to_lowercase()
+        .alias("_netbios_name")
+    )
+
+    # do something similar with dns name. looks like most of the time
+    # the left most subdomain is the unique ID
+    poam_required = poam_required.with_columns(
+        polars.col('dns_name')
+        .str.split(".")
+        .list.first()
+        .str.to_lowercase()
+        .alias("_dns_name")
+    )
+
+
+    wtps = []
+
+    # load up templates
+    temp_env = jinja2.Environment(loader=jinja2.FileSystemLoader(os.path.join(os.path.dirname(os.path.realpath(__file__)), "templates")))
+    desc_temp = temp_env.get_template("scan_poam_description.txt")
+
+    # init IID. 
+    item_identified_during = csam_api_client.AgencyDefinedDataItemUpdate(
+            attributeName="Item Identified During",
+            value=(
+                "Vulnerability Scanning" 
+                if "beta" not in api.configuration.host 
+                else "Vulnerability Assessment"
+            )
+        )        
+    
+    vulns_grouping = poam_required.sort(by=pl.col('number')).partition_by('sys_id', as_dict=True).items()   
+    for sys_id, findings_df in vulns_grouping:
+        sys_id = sys_id[0]
+        wtp = WeaknessTrackerPoam(sys_id)
+        wtp.iid = item_identified_during
+        assert len((wt:=findings_df['number'].unique().to_list())) == 1, "Got more than one WT number"
+        wtp.number = wt[0]
+
+        if findings_df.select(pl.col('scan_id').str.contains(',').any()).item():
+            logger.debug("%s contains findings with old findings from Tenable SC", wtp.number)
+            # Filter out old Tenable SC findings since those aren't applicable anymore.
+            findings_df = findings_df.filter(~pl.col('scan_id').str.contains(','))
+            
+        if findings_df.select(pl.col('state'+ft_suffix).eq('mitigated').all()).item():
+            logger.debug("All Findings in %s are mitigated...skipping", wtp.number)
+            continue
+
+        wtp.findings = (
+            findings_df
+            [
+                [x 
+                 for x in findings_df.columns 
+                 if not x.startswith("sys")
+                 and (ft_suffix in x 
+                 or (
+                        x.replace(ft_suffix, "") not in set(latest_weakness_trackers.columns) 
+                        and x.replace(ft_suffix, "") in set(latest_findings.columns)
+                    )
+                    )
+                ]
+            ]
+            .rename(lambda col: col.replace(ft_suffix, ""))
+        )
+
+        assert len(findings_df['description'].unique()) == 1, "Got more than one WT description"
+        wt_desc = findings_df['description'].unique()[0]
+
+        csam_id = findings_df[csam_system_id].unique().to_list()
+
+        # per system there should only be one csam_id...if not, something went wrong
+        assert len(csam_id) == 1, "something happened here, csam_id should only have 1 value"
+
+        csam_id = csam_id[0]
+        system = systems[csam_id]
+
+        # set the `type` based on the WT type
+        _types = findings_df['weakness_type'].unique().to_list()
+        assert len(_types) == 1, f"Got more than 1 weakness_types: {_types}, {findings_df}"
+        _type = _types[0]
+
+        finding_type = findings_df['finding_type'].unique().to_list()
+        assert len(finding_type) == 1, f"Got more than 1 finding_types: {finding_type}, {findings_df}"
+        assert finding_type[0] == _type
+
+        # build POAM Title
+        # exampes:
+        # $TPA OS_NOV24_Plgn_184161: Ubuntu 16.04 ESM / 18.04 ESM : Kerberos vulnerability (USN-6467-1)
+        # $TPA OS_NOV24_Plgn_175103+: Multiple Findings
+        """
+        POAM Automation:
+ 
+        For grouping logic options, the POAM names will be as follows:
+        
+        MSKB
+        OS_JUL10_2025_MSKB: Microsoft Related Patches and Updates
+        Date is MMMDD_YYYY format
+        Day is included to avoid identical POAM titles
+        
+        CPE
+        OS_JUL10_2025_Plgn_192941: Dnspython < 2.6.0rc1 DoS
+        OS_JUL10_2025_Plgn_Multiple: Red Hat Enterprise Linux 8
+        OS_JUL10_2025_Plgn_Multiple: Red Hat Enterprise Linux,Rhel_Eus 8,8.8
+        OS_JUL10_2025_Plgn_Multiple: Oracle Jdk,Jre
+        OS_JUL10_2025_Plgn_Multiple:
+        
+        SSL
+        OS_JUL10_2025_SSL: Certificate Weakness Port 3389
+        
+        Solution
+        OS_JUL10_2025_Plgn_192941: Dnspython < 2.6.0rc1 DoS
+        OS_JUL10_2025_Plgn_Multiple: Fix HSTS Missing From HTTPS Server (RFC 6797) - "See WEAKXX"
+        """
+        title_template = TEST_POAM_DELIM + "{_type}_{id_date}{plugin_type}: {plugin_names}"
+
+        id_date = findings_df['identified_date'].str.to_date(SNOW_TIME_FORMAT)[0]
+        poam_target_date = findings_df['poa_m_target_date'].str.to_date(SNOW_TIME_FORMAT)[0]
+
+        plugins = list(findings_df['plugin'+ft_suffix].unique().sort())
+
+        if "compliance" in _type:
+            plugin_type = f""
+
+            stig_cis = "|".join(findings_df.filter(pl.col('state'+ft_suffix).ne('mitigated'))['stig_id'].str.split('-').list.get(0).drop_nulls().unique())
+            if not stig_cis:
+                stig_cis = "|".join(findings_df.filter(pl.col('state'+ft_suffix).ne('mitigated'))['stig_cis_benchmark'].drop_nulls().unique())
+            cat = "|".join(findings_df.filter(pl.col('state'+ft_suffix).ne('mitigated'))['cat'+ft_suffix].drop_nulls().unique())
+            plugin_names = f"{f'CAT {cat} ' if cat else ''}{stig_cis} {_type.split("_")[0].upper()} Compliance Findings"
+            pass
+        else:
+            if len(plugins) == 1:
+                plugin_type = f"_Plgn_{plugins[0]}"
+                plugin_names = findings_df['plugin_name'].unique().sort()[0]
+            else:
+                plugin_type = f"_Plgn_Multiple"
+                plugin_names = f"See {wtp.number}"
+
+            if "Microsoft Related Patches and Updates" in wt_desc:
+                plugin_type = "_MSKB"
+                plugin_names = "Microsoft Related Patches and Updates"
+                pass
+
+            elif "Common Platform Enumeration" in wt_desc:
+                if len(plugins) == 1:
+                    # plugin_names = findings_df['plugin_name'].unique().sort()[0]
+                    pass
+                else:
+                    type_vendor = ",".join(set(x.split(":")[1].capitalize() for x in findings_df['cpe_type_vendor'][0].split(",")))
+                    product = findings_df['cpe_product'][0].strip()
+                    product = f"{product} " if product else ""
+                    version = findings_df['cpe_version'][0].strip()
+                    version = f"{version} " if version else ""
+                    plugin_names = f"{type_vendor} {product}{version}"
+                    pass
+            elif "SSL Certificate" in wt_desc:
+                # OS_JUL10_2025_SSL: Certificate Weakness Port 3389
+                plugin_type = "_SSL"
+                plugin_names = f"Certificate Weakness on Port {findings_df['port'][0]}"
+                pass
+            else:
+                pass
+
+        poam_title = title_template.format(
+                _type=_type.split("_")[0].upper(), 
+                id_date=id_date.strftime("%b%d_%Y").upper(), 
+                plugin_type=plugin_type, 
+                plugin_names=plugin_names
+            ).strip()[:100]
+        
+        # Talking to Jessica Scates, adding an underscore suffix to duplicates
+        num_dupes = len([title for title in poams_titles_by_system[system.id] if poam_title in title])
+        if num_dupes:
+            suffix = f"_{str(num_dupes+1)}"
+            poam_title = poam_title[:(100-len(suffix))] + suffix
+
+        # if poam_title in {p.title for p in open_poams_by_system[system.id]}:
+        #     # check if this poam has been created already, if so then skip
+        #     p = ",".join([str(x.poam_id) for x in open_poams_by_system[system.id] if x.title == poam_title])
+        #     unstable_logger.warning("POAM with title `%s` already in csam for %s (%s)", poam_title, system.acronym, p)
+        #     # pass
+        #     continue
+
+        # add back to list for ensure other drafts get captured
+        poams_titles_by_system[system.id].append(poam_title)
+
+        def map_ip(ip_str):
+            if not ip_str:
+                return 0
+            try:
+                return int(ipaddress.ip_address(ip_str))
+            except ValueError:
+                return 0
+
+        # assets dataframe to build Spreadsheet attachment. sort by ip_address
+        assets = (
+                findings_df[['ip_address', 'netbios_name', 'dns_name']]
+                .unique('ip_address') # need to ensure no dupes
+                # finding each IPs corresponding int value so we can sort the IPs
+                .with_columns(
+                    pl.col('ip_address').map_elements(lambda ip: map_ip(ip), return_dtype=pl.Int64)
+                    .alias('ip_int')
+                ).sort('ip_int').drop('ip_int')
+
+                .rename({'ip_address':'IP Address','netbios_name':'NetBios Name', 'dns_name':'DNS Name'})
+            )
+        wtp.assets = assets
+
+        # ISSOs requested to not add Tenable 80053 controls, most of the time they
+        # don't line up with what the ISSO would actually put, and would affect
+        # UCMM scoring
+        # get controls from WT
+        # controls_list = findings_df['u_800_53_controls'].unique().to_list()
+        # wtp.controls = {x.strip() for controls in controls_list for x in controls.split(",") if x}
+
+        # talking with Jess and Vic, SI-2 is a good default control for vulns. still need to determine
+        # what do to for compliance
+        if "vuln" in _type:
+            wtp.controls = {"SI-2"}
+        else:
+            # logger.warning("%s: Need to figure out what we're doing with compliance control associations...", system.name)
+            wtp.controls = {"CM-6"}
+
+        logger.info("Drafting POAM for %s, %s", system.acronym, wtp.number)
+        # NOTE THE VALUES...the SOP says only to use HIGH, MEDIUM, or LOW for user Identified Criticality
+
+        # todo: Leave it as is for now. But when an "adjusted severity" field is added to WTT we will defer to that
+        max_sev = findings_df['severity'].max()
+        criticality = POAM_CRITICALITY_MAPPING[max_sev]
+
+        solutions_grouping = findings_df.group_by("solution"+ft_suffix)
+
+        # Heather says she doesn't want hyperlinks 
+        source = f"""Tenable Finding: ServiceNOW Weakness Tracking - {wtp.number}""" # - {description_hyperlink(SNOW_URL_BASE+UI_SUFFIX+f'/{WEAKNESS_TRACKING_TABLE_NAME}.do%3Fsys_id%3D{sys_id}', weak_id)}"""
+
+        system = systems[csam_id]
+        isso = get_csam_poc_position(poc_report, system.id, "Information System Security Officer")
+        if isso is not None:
+            isso = get_assignee(api, name_wildcard="", email=isso["Email"])
+        else:
+            logger.warning("%s: can't find assignee, defaulting to RISE", system.name)
+            isso = get_assignee(api, name_wildcard="", email="ICECRMARISE")
+
+        wtp.isso = isso
+
+        poc = get_csam_poc_position(poc_report, system.id, "Information System Owner")
+        if poc is not None:
+            wtp.assignee = get_assignee(api, name_wildcard="", email=poc["Email"])
+        else:
+            # default to ISSO
+            logger.warning("%s: can't find assignee, defaulting to ISSO", system.name)
+            wtp.assignee = wtp.isso
+
+        plugin_names = findings_df['plugin_name'].unique().sort()
+        plugin_names = "<br>".join(plugin_names) if len(plugin_names)<=10 else f"Refer to SNow or attached Findings_List: Total Unique Plugin Names: {len(plugin_names)}"
+        # build weak description
+        rca = get_rca(findings_df)
+        # if not rca:
+        #     logger.warning("RCA missing for %s, skipping", findings_df['number'].unique()[0])
+        # talking with Clunn we should not be skipping POAMs arbitrarily. So, created with a default RCA
+        # and develop weakness_tracking_poams_update.py to address updates
+
+        if 'compliance' in _type:
+            # compliance findings can get rather large, instead of posting ALL plugin_names/assets/solutoins
+            # we'll use more inclusive language
+            stig_cis = "|".join(findings_df['stig_cis_benchmark'].drop_nulls().unique())
+            cat = "|".join(findings_df['cat'+ft_suffix].drop_nulls().unique())
+            plugin_names = f"{f'CAT {cat} ' if cat else ''}{stig_cis} {_type.split("_")[0].upper()} Compliance Findings"
+            solutions = ["Each unique plugin has a separate solution that apply to various assets. Refer to SNow or attached Findings_List for each solution(s)"]
+        elif "Microsoft Related Patches and Updates" in wt_desc:
+            plugin_names = wt_desc
+            # change this language to reflect path tuesday or mecm
+            solutions = ["Each unique plugin has a separate solution that apply to various assets. Refer to SNow or attached Findings_List for each solution(s)"]
+
+        else:
+            solutions = [f"{sol[0] if sol[0] else 'N/A'}" for sol, _df in solutions_grouping]
+
+        plugin_names = f"Tenable Findings Identified between {id_date.strftime("%d %b %Y")} - {poam_target_date.strftime("%d %b %Y")}<br><br>" + plugin_names 
+        # add in dates, identified-target poam date
+        # 10 or less, put the values. otherwise some canned language
+
+        desc_params = {
+            "system_acronym": system.acronym,
+            "what": plugin_names,
+            "plugins": plugins if len(plugins)<=10 else [f"Refer to SNow or attached Findings_List: Total Unique Plugins: {len(plugins)}"],
+            "ports": [x for x in findings_df['port'].unique() if x and int(x)],
+            "asset_count": len(wtp.assets),
+            "date_discovered": id_date.strftime("%x"),
+            # "solutions": [f"{sol[0] if sol[0] else 'N/A'} [{', '.join(_df['ip_address'].to_list()) if len(solutions_grouping.n_unique()) > 1 else 'ALL ASSETS'}]" for sol, _df in solutions_grouping],
+            "solutions": solutions if len(solutions)<=10 else [f"Refer to SNow or attached Findings_List: Total Unique Solutions: {len(plugins)}"],
+            "root_cause_analysis": rca, # need to check out the decision tree in Teams POAM Standardization channel
+            "source": source,
+
+        }
+        desc = desc_temp.render(**desc_params).replace("\n", "")
+
+        wtp.draft_poam = csam_api_client.PoamUpdate(
+                systemId=int(csam_id), # need to wrap in int since pandas uses numpy.int32 which will fail validation
+                # scheduledCompletionDate=(scd:=today+SCD_DELTA[max_sev]),
+                scheduledCompletionDate=(scd:=id_date+SCD_DELTA[max_sev]), #
+                plannedStartDate=id_date,
+                actualStartDate=today,
+                plannedFinishDate=scd,
+                description=desc, 
+                title=poam_title, 
+                severity=PoamSeverity.CONTROL_DEFICIENCY,
+                userIdentifiedCriticality=criticality,
+                assignedToPocId=wtp.assignee.poc_id,
+                hasWeakness=True,
+                excludeFromOmb=False,
+                cost=100 # need min per ICE POAM SOP
+            )
+        
+        wtps.append(wtp)
+
+    # set of tuples, (sys_id, poam_id)
+    failed = set()
+
+    def not_failed(wtp):
+        return (wtp.poam.system_id, wtp.poam.poam_id) not in failed
+
+    # this helps determine what was created and associate that with the wtp  
+    draft_poams_key = "{system_id}{title}{desc}"
+    draft_poams = {draft_poams_key.format(system_id=x.draft_poam.system_id, title=x.draft_poam.title, desc=x.draft_poam.description):x.draft_poam for x in wtps}
+
+    created_poams, failed_poams = submit_to_csam(post_draft_poam, api, draft_poams.values())
+    log_failed(wtps, failed_poams)
+
+    # find the poam that was created, and add it to the wtp
+    to_match = {draft_poams_key.format(system_id=p.system_id, title=p.title, desc=p.description): p for _, p, _ in created_poams}
+    for wtp in wtps:
+        key = draft_poams_key.format(system_id=wtp.draft_poam.system_id, title=wtp.draft_poam.title, desc=wtp.draft_poam.description)
+        try:
+            wtp.poam = to_match[key]
+        except KeyError:
+            continue
+
+    # filter out wtps that didn't have a poam generated.
+    wtps = [wtp for wtp in wtps if wtp.poam]
+
+    # using the control implementation endpoint with the CSAM API i can determine
+    # the control set used, which is needed to make the appropriate control association
+    with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+        control_threads = {}
+        for wtp in filter(not_failed, wtps):
+            for control in wtp.controls:
+                # logger.debug("Getting control %s implementation for %s", control, wtp.poam.system_id)
+                control_threads[(wtp.poam.system_id, control)] = executor.submit(
+                    get_control_imp,
+                    api, wtp.poam.system_id, control
+                )
+
+    with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+        threads = {}
+        for wtp in filter(not_failed, wtps):
+            draft_associations = []
+            sys_id = wtp.poam.system_id
+            for control in wtp.controls:
+                try:    
+                    implemented_control = control_threads[(sys_id, control)].result()[0]
+                except IndexError:
+                    logger.warning("%s is not implemented for %s", control, get_system_acronym(sys_id))
+                    continue
+
+                draft_associations.append((sys_id, wtp.poam.poam_id, implemented_control.control_id, implemented_control.control_set))
+            threads[wtp.number] = executor.submit(submit_to_csam, post_poam_association, api, draft_associations)
+            
+    for _num, future in threads.items():
+        created_associations, failed_assoc = future.result()
+        for f in failed_assoc:
+            _, draft, exc = f
+            unstable_logger.error("POAM Issue with %s: Got '%s'\n\nwhen submitting '%s'", _num, str(exc), draft)
+            d = f[1]
+            failed.add((d[0], d[1]))  
+
+    # set up milestones for each wtp. Use what is in the SNow Milestones table. if None, set default milestone
+    wtp: WeaknessTrackerPoam
+    for wtp in filter(not_failed, wtps):
+        if not wtp.poam:
+            continue
+
+        all_assignees = []
+        
+        all_assignees.append(wtp.isso.__dict__)
+
+        first_milestone = STANDARD_POAM_INITIATION_MILESTONE.model_copy()
+        first_milestone.planned_start_date = wtp.poam.planned_start_date
+        first_milestone.actual_start_date = first_milestone.planned_start_date
+        first_milestone.planned_finish_date = wtp.poam.planned_start_date + US_BUSINESS_DAY
+        first_milestone.due_date = wtp.poam.planned_start_date + US_BUSINESS_DAY
+        first_milestone.assigned_to_poc_id = wtp.isso.poc_id
+
+        last_milestone = STANDARD_POAM_CLOSURE_MILESTONE.model_copy()
+        last_milestone.planned_start_date = wtp.poam.planned_finish_date - (3*US_BUSINESS_DAY)
+        last_milestone.planned_finish_date = wtp.poam.planned_finish_date
+        last_milestone.due_date = wtp.poam.planned_finish_date
+        last_milestone.assigned_to_poc_id = wtp.isso.poc_id
+
+
+        snow_milestones = (
+            snow_draft_milestones
+            .filter(pl.col('weakness_tracking_id').struct.field('value').eq(wtp.sys_id))
+            .sort(['action_number'], descending=False)
+        )
+
+
+        if snow_milestones.is_empty():
+            logger.warning("%s, %s has 0 Pre-POAM Milestones", system.name, wtp.number)
+        else:
+            snow_milestones, snow_deleted = dedupe_snow_milestones(snow_milestones)
+            if not snow_deleted.is_empty():
+                delete_dupes = snow_deleted.select(
+                    pl.col("sys_id"),
+                    pl.lit("DELETE").alias("HTTP Action"),
+                )
+                send_to_snow(delete_dupes, SNOW_MILESTONE_TABLE_NAME)
+                logger.debug(
+                    "Deleted %d duplicate SNOW milestones",
+                    delete_dupes.height,
+                )
+            # ensure the canned milestones are in the proper order
+            snow_milestones = (
+                snow_milestones
+                .with_columns(
+                    pl.when(pl.col('description').eq(unescape(first_milestone.description)))
+                    .then(0)
+                    .when(pl.col('description').eq(unescape(last_milestone.description)))
+                    .then(2)
+                    .otherwise(1)
+                    .alias('sort_key')
+                )
+            )
+
+            snow_milestones = canonicalize_snow_action_numbers(snow_milestones)
+            snow_milestones = snow_milestones.drop(["action_number_old"], strict=False)
+
+        if unescape(first_milestone.description) not in snow_milestones['description']:    
+            wtp.draft_milestones.append(first_milestone)
+
+        snow_milestones = snow_milestones.with_columns(pl.col('^.*_date.*$').str.to_datetime("%Y-%m-%d", strict=False))
+        # set milestones from snow
+        for _m in snow_milestones.to_dicts():
+            
+            try:
+                snow_ms_assignee_sys_id = _m['milestone_assignee']['value']
+
+                if not snow_ms_assignee_sys_id:
+                    logger.warning("No Milestone Assignee defined for %s, %s, defaulting to ISSO", wtp.number, _m['number'])
+                    ms_assignee=wtp.isso
+
+                else:
+                    # get email from sys_users tables in SNow to get PoC from CSAM
+                    snow_user = snow_users.filter(pl.col("sys_id").eq(snow_ms_assignee_sys_id))
+                    try:
+                        email = snow_user['email'][0]
+                    except IndexError:
+                        email = ''
+                    if email:
+                        ms_assignee = get_assignee(api, name_wildcard="", email=email)
+                        if not ms_assignee:
+                            logger.warning("No CSAM account found for %s, defaulting to ISSO", email)
+                            ms_assignee=wtp.isso
+                    else:
+                        logger.warning("No Email in SNow associated to %s Milestone Assignee, assigning milestone to ISSO", _m['number'])
+                        ms_assignee=wtp.isso
+            except TypeError:
+                ms_assignee=wtp.isso
+            all_assignees.append(ms_assignee.__dict__)
+            
+            m = csam_api_client.PoamMilestoneUpdate(
+                    description=_m['description'] or "UPDATE: No Description added in SNow Pre-POAM Milestones", #needed to post milestone
+                    dueDate=_m['due_date'] if _m['due_date'] else wtp.poam.scheduled_completion_date,  #all poam milestones need a due date before changing the workflow status
+                    plannedStartDate=_m['planned_start_date'] if _m['planned_start_date'] else wtp.poam.planned_start_date, #needed to post milestone
+                    plannedFinishDate=_m['planned_finish_date'] if _m['planned_finish_date'] else wtp.poam.planned_finish_date, #needed to post milestone
+                    actualStartDate=_m['actual_start_date'] if _m['actual_start_date'] else None,
+                    actualFinishDate=_m['actual_finish_date'] if _m['actual_finish_date'] else None,
+                    assignedToPocId=ms_assignee.poc_id
+                )
+            
+            wtp.draft_milestones.append(m)
+
+        if unescape(last_milestone.description) not in snow_milestones['description']:    
+            wtp.draft_milestones.append(last_milestone)
+
+        all_assignees = (
+            pl.DataFrame(all_assignees)
+            .unique()
+            .join(snow_users, on=pl.col('email').str.strip_chars().str.to_lowercase())
+        )
+
+        created = []
+        for draft in wtp.get_draft_milestones():
+            try:
+                created.append(post_draft_poam_milestone(api, draft))
+            except Exception as exc:
+                unstable_logger.error("Milestone Issue with %s: Got '%s'\n\nwhen submitting '%s'", wtp.number, str(exc), draft)
+                to_del = (
+                    snow_milestones.filter(pl.col('description').eq(draft[-1].description))
+                    .select('sys_id', pl.lit('DELETE').alias("HTTP Action"))
+                )
+                send_to_snow(to_del, SNOW_MILESTONE_TABLE_NAME)
+
+                
+        created_ms_df = pl.DataFrame([m.__dict__ for m in created])
+        created_ms_df = created_ms_df.join(snow_milestones, on=pl.col('description').map_elements(unescape, return_dtype=pl.String), how='left')
+        created_ms_df = created_ms_df.join(all_assignees['sys_id', 'poc_id'], how='left', left_on=pl.col('assigned_to_poc_id'), right_on='poc_id', suffix="_assignee").with_columns(pl.col('sys_id_assignee').alias('milestone_assignee'))
+
+        time_format = '%m/%d/%Y'
+        created_ms_df = created_ms_df.with_columns(pl.col(pl.Datetime).dt.to_string(time_format))
+
+        wt_sys_id = wtp.findings['weakness_tracking'].struct.field('value').unique()[0]
+        to_create = (
+            created_ms_df.filter(pl.col('sys_id').is_null())
+            .select([c for c in snow_draft_milestones.columns])
+            .select(pl.exclude('^sys_.*$', 'number'))
+            .with_columns(
+                pl.lit("POST").alias("HTTP Action"),
+                pl.lit(wt_sys_id).alias('weakness_tracking_id')
+            )
+        )
+        # todo: may not need this?
+        if not to_create.filter(pl.col('description').fill_null('').str.len_chars().eq(0)).is_empty():
+            unstable_logger.warning("%s is creating blank milestones: %s", wtp.number, str(created_ms_df.to_dicts()))
+
+        send_to_snow(to_create, SNOW_MILESTONE_TABLE_NAME)
+        to_update = created_ms_df[[c for c in snow_draft_milestones.columns]].select(pl.exclude('^sys_.*$', 'number'), pl.col('sys_id')).filter(pl.col('sys_id').is_not_null()).with_columns(pl.lit("PUT").alias("HTTP Action"))
+        send_to_snow(to_update, SNOW_MILESTONE_TABLE_NAME)
+
+        updated_snow_ms = get_latest_snow_table(SNOW_MILESTONE_TABLE_NAME, SNOW_API, offset_limit=10, sysparm_fields=['action_number', 'number', 'sys_id'], sysparm_query=f"weakness_tracking_id={wtp.sys_id}")
+
+        snow_ms_numbers = created_ms_df[['action_number']].join(updated_snow_ms['action_number', 'number'], on=pl.col('action_number').cast(pl.Int16))['action_number', 'number']
+        drafts = []
+        for ac_num, snow_ms_num in snow_ms_numbers.rows():
+            note = csam_api_client.NoteCreate(comments=snow_ms_num)
+            drafts.append((wtp.poam.system_id, wtp.poam.poam_id, ac_num, note))
+
+        created_notes, failed_notes = submit_to_csam(post_poam_milestone_note, api, drafts)
+        log_failed(list(filter(not_failed, wtps)), failed_notes)
+        for f in failed_notes:
+            d = f[1]
+            failed.add((d[0], d[1]))  
+
+        pass
+    
+    draft_adis = [wtp.get_draft_iid() for wtp in filter(not_failed, wtps)]
+    created_agency_defined, failed_adis = submit_to_csam(put_poam_agencydefined, api, draft_adis)
+    log_failed(list(filter(not_failed, wtps)), failed_adis)
+    for f in failed_adis:
+        d = f[1]
+        failed.add((d[0], d[1]))  
+
+
+    draft_assets_list_artifacts = [(wtp.poam.system_id, get_system_acronym(wtp.poam.system_id), wtp.poam.poam_id, wtp.assets) for wtp in filter(not_failed, wtps)]
+    created_artifacts, failed_al_artifacts = submit_to_csam(post_poam_asset_list, api, draft_assets_list_artifacts)
+    log_failed(list(filter(not_failed, wtps)), failed_al_artifacts)
+    for f in failed_al_artifacts:
+        d = f[1]
+        failed.add((d[0], d[2]))  
+    
+    findings_cols = ['plugin', 'plugin_name', 'ip_address', 'netbios_name', 'dns_name', 'first_discovered', 'last_observed', 'solution', 'state']
+    draft_findings_list_artifacts = [(wtp.poam.system_id, get_system_acronym(wtp.poam.system_id), wtp.poam.poam_id, wtp.findings[findings_cols]) for wtp in filter(not_failed, wtps)]
+    created_artifacts, failed_findings_artifacts = submit_to_csam(post_poam_findings_list, api, draft_findings_list_artifacts)
+    log_failed(list(filter(not_failed, wtps)), failed_findings_artifacts)
+    for f in failed_findings_artifacts:
+        d = f[1]
+        failed.add((d[0], d[2])) 
+
+    # move created poams thru approval workflow
+    draft_workflow = [[wtp.poam.system_id, wtp.poam.poam_id] for wtp in filter(not_failed, wtps)]
+    for workflow_request in APPROVAL_WORKFLOW:
+        drafts = [dw+[workflow_request] for dw in draft_workflow]
+        posted_workflow, failed_workflow = submit_to_csam(post_poam_workflow, api, drafts)
+        log_failed(list(filter(not_failed, wtps)), failed_workflow)
+
+        for f in failed_workflow:
+            d = f[1]
+            failed.add((d[0], d[1])) 
+
+
+    if failed:
+        # this deletes all poams that failed for one reason or another
+        logger.warning("Encountered Errors with %s poams that will be deleted...", len(failed))
+        with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+            threads = [executor.submit(csam_retry(system_poam_api.v1_systems_system_id_poams_poam_id_delete_with_http_info), system_id, poam_id, _request_timeout=300) for system_id, poam_id in failed]
+
+        failed_wtps = [wtp for wtp in wtps for system_id, poam_id in failed if wtp.poam.system_id==system_id and wtp.poam.poam_id==poam_id]
+        failed_auto_ms = []
+        for wtp in failed_wtps:
+            _query = f"weakness_tracking_id={wtp.sys_id}"
+            snow_ms = get_n_transform_snow(SNOW_MILESTONE_TABLE_NAME, offset_limit=10, limit=10, fields=[], sysparm_query=_query)
+            failed_auto_ms.append(snow_ms)
+        to_delete = (
+            pl.concat(failed_auto_ms)
+            .filter(pl.col('sys_created_by').str.contains("VAFT") & pl.col('description').str.contains('<p>'))
+            .select(pl.col('sys_id'), pl.lit("DELETE").alias("HTTP Action"))
+        )
+        send_to_snow(to_delete, SNOW_MILESTONE_TABLE_NAME)
+        # snow_poams = get_latest_snow_table(SNOW_POAM_TABLE_NAME, SNOW_API)
+        # to_delete = snow_poams.filter(pl.col('poam_id').str.to_integer(strict=False).is_in([wtp.poam.poam_id for wtp in wtps]))[['sys_id']].with_columns(pl.lit("DELETE").alias('HTTP Action'))
+        # send_to_snow(to_delete, SNOW_POAM_TABLE_NAME)
+
+    completed_wtps = list(filter(not_failed, wtps))
+
+
+    # this mapping is to map the Poam object to the fields needed for the CSAM POAM Table
+    poam_table_report_mapping ={
+        'poamId':"poam_id",
+        'systemId':"csam_id",
+        'severity':"severity",
+        'scheduledCompletionDate':"scheduled_completion_date",
+        'description':"detailed_weakness_description",
+        'cost':"cost",
+        'assignedDate':"assigned_date",
+        'userIdentifiedCriticality':"user_identified_criticality",
+        'actualStartDate':"actual_start_date",
+        'delayReason':"delay_reason",
+        'actualFinishDate':"actual_finish_date",
+        'title':"poam_title",
+        'plannedStartDate':"planned_start_date",
+        'plannedFinishDate':"planned_finish_date",
+        'excludeFromOmb':"exclude_from_omb",
+        'hasAcceptedRisk':"accepted_risk",
+    }
+
+    # updated the CSAM POAM table with basic info so the POAM Table reference can
+    # be added to the WT
+    if completed_wtps:
+        poam_table_update = (
+            pl.from_dicts([wtp.poam.to_dict() for wtp in completed_wtps])
+            .rename(poam_table_report_mapping)
+            .with_columns(pl.lit('POST').alias('HTTP Action'))
+        )
+        send_to_snow(poam_table_update, table_name=SNOW_POAM_TABLE_NAME)
+
+        # add poam id to the WT for the CSAM POAM Table reference
+        wtp_df = pl.from_dicts({"number":wtp.number, "poa_m_id":wtp.poam.poam_id} for wtp in completed_wtps)
+        to_update_wtp = (
+            wtp_df
+            .join(latest_weakness_trackers, on="number")
+            .drop('poa_m_id_right')
+            .with_columns(pl.lit("PATCH").alias('HTTP Action'))
+        )
+        send_to_snow(to_update_wtp, table_name=SNOW_WEAKNESS_TRACKING_TABLE_NAME)  
+
+
+    poams_generated = len(completed_wtps)
+    milestones_generated = sum([len(wtp.draft_milestones) for wtp in completed_wtps if (wtp.poam.system_id, wtp.poam.poam_id) not in failed])
+    logger.info("Automated POAMs complete. Generated %s POAMs and %s Milestones", poams_generated, milestones_generated)
+
+    if failed:
+        unstable_logger.warning(f"Encountered errors that affected {len(failed)} WTs. Refer to logged failures.")
+
+    set_unstable(unstable_logger, unstable_fn_path)
+        
+
+    
+if __name__ == "__main__":
+    snow_csam_poam_table_perms_check()
+    # todo uncomment when testing
+    # if not IS_MAIN_BRANCH:
+    #     purge_test_poams()
+    main()

@@ -1,78 +1,1530 @@
-
-import pandas as pd
+import io
 import logging
-import time
-import gc
-import urllib3
-from crma_hive_connections import Connection
-from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_tvm_utilities import TvmUtility
-from typing import Optional
+import json
+import os
+import math
+import boto3
+import pandas as pd
+import psycopg2
+import pyarrow as pa
+import pyarrow.parquet as pq
+import psutil
+import sys
+from datetime import datetime, date
+from botocore.exceptions import ClientError
+from datetime import datetime, timezone
+import re
+from io import BytesIO, StringIO
+from sqlalchemy import text, inspect, create_engine, func, select, MetaData, Table
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 
-# Turning off warnings
-urllib3.disable_warnings()
+from typing import List, Optional, Tuple
 
-# Setting up logger
+from psycopg2.extras import execute_values
+
+
+# Logging setup
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Instantiate classes
-connection = Connection()
-utility = Utility()
-rw_util = Read_Write_Utility()
-tvmUtil = TvmUtility()
+# Instantiate processes and system utilization
+process = psutil.Process()
 
 
-def main():
-    start_time = time.time()
 
-    logger.info("Retrieving account credentials...")
-    ACCESS_KEY = connection.get_secret("edae-crma-hive")["tvm_access_key"]
-    SECRETE_SECRET = connection.get_secret("edae-crma-hive")["tvm_secrete_key"]
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    base_url ="https://fedcloud.tenable.com"
+class Utility:
+    def log_memory_usage(self) -> None:
+        """Function logs the current memory usage of the process"""
+        memory_usage_mb = process.memory_info().rss / (1024**2)
+        logger.info(f"Memory usage: {memory_usage_mb:.2f} MB")
 
-    # log memory usage
-    utility.log_memory_usage()
-    #setup
-    headers = {
-        'accept': 'application/json',
-        'content-type': 'application/json',
-        'X-ApiKeys': f'accessKey={ACCESS_KEY}; secretKey={SECRETE_SECRET}'
-    }
- 
-    targets = [
-    {
-            "dataset": "vulns",
-            "output_filename": "CRMA_HIVE_TVM_VULNS",
-            "payload": {
-                "filters": {
-                    "severity": ["low", "medium", "high", "critical"],
-                    "state": ["OPEN", "REOPENED", "FIXED" ],
-                },            
-            "num_assets": 1500
-            }        
-    },  
-    ]
+        return None
+    
+    def get_workflow_props(self) -> dict:
+        """
+        Resolves glue workflow run proporetes into a dictionary
 
-    for target in targets:    
+        Paramters:
+            None
 
-        dataset =   target["dataset"] 
+        Returns:
+            dict: contains workflow property key/value pairs like "backfill_date" and "hist_table_name".
+        """
+        argv = sys.argv[1:]
+        arg_map = {}
+        i = 0
+        while i < len(argv):
+            if argv[i].startswith("--"):
+                key = argv[i][2:]
+                i += 1
+                if i < len(argv) and not argv[i].startswith("--"):
+                    arg_map[key] = argv[i]
+            i += 1
+        
+        workflow_name = arg_map.get("WORKFLOW_NAME")
+        workflow_run_id = arg_map.get("WORKFLOW_RUN_ID")
 
-        logger.info(f"Fetching TenableVM {dataset} dataset using Tenable export API") 
+        if not workflow_name or not workflow_run_id:
+            return {}
+        
+        glue_client = boto3.client("glue")
+        resp = glue_client.get_workflow_run_properties(
+            Name = workflow_name,
+            RunId = workflow_run_id
+        )
+        workflow_params = resp.get("RunProperties", {}) or {}
+        return workflow_params
 
-        if dataset=="vulns":
-            tvmUtil.setup_and_start_tvm_vulns_export(
-                base_url=base_url,
-                headers = headers,
-                target = target,
-                bucket_name=bucket_name,
+    def parse_datasets_list(self, datasets_str: str) -> List[str]:
+        """
+        Parse JSON string of datasets into a list. Accepts a Json array, single string, or empty string and converts to list.
+
+        Parameters:
+            datasets_str: (str): JSON string from workflow properties (e.g., '["POAM_DATA"]' or '"POAM_DATA"')
+
+        Returns:
+            List[str]: Parsed list of datasets, empty list if parsing fails
+        """
+        datasets = []
+        if not datasets_str:
+            return datasets
+        
+        try:
+            parsed = json.loads(datasets_str)
+            if isinstance(parsed, str):
+                datasets = [parsed]
+            elif isinstance(parsed, list):
+                datasets = parsed
+            else:
+                logger.warning(f"Unexpected dataset format: {type(parsed)}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse datasets JSON '{datasets_str}': {e}")
+            raise 
+
+        logger.info(f"Parsed datasets list: {datasets}")
+        return datasets
+    
+    def add_months(self, d: date, months: int) -> date:
+        """
+        Add a specified number of months to a date, adjusting year and month as needed. Caps day at 28 to avoid invalid dates.
+
+        Parameters:
+            d (date): Original date.
+            months (int): Number of months to add.
+
+        Returns:
+            date: New date after adding months, with day capped at 28.
+        """
+        month = d.month - 1 + months
+        year = d.year + month // 12
+        month = month % 12 + 1
+        day = min(d.day, 28)
+        return date(year, month, day)
+
+    def is_valid_backfill_date(self, raw_date:str) -> str:
+        """
+        Validate MMDDYY date format (e.g., "121525" for Dec 15, 2025)
+
+        Parameters:
+            raw_date (str): backfill date in MMDDYY format (e.g., "20251215")
+        
+        Returns:
+            bool: True if valid date in MMDDYY format (e.g., "121525")
+        """
+        # check length and numeric format first
+        if len(raw_date) != 6 and not raw_date.isdigit():
+            logger.warning(f"Invalid backfill date! Must be 6 digits long.")
+            return False
+
+        month = int(raw_date[0:2])
+        day = int(raw_date[2:4])
+        year = int(raw_date[4:6])
+        full_year = 2000 + year
+
+        try:
+            datetime(full_year, month, day)
+            return True
+        except ValueError as e:
+            logger.warning(f"Invalid backfill date! Please check day, month, year is correct.")
+            return False
+            
+class Read_Write_Utility:
+    MAIN_SCHEMA = "crma_hive"
+    BACKFILL_SCHEMA = "crma_hive_backfill"
+
+    def __init__(self, min_part_size=5 * 1024 * 1024):
+        self.min_part_size = min_part_size  #5MB minimum batch size for multipart streaming to s3
+
+    def load_table_to_db(
+        self,
+        engine: Engine,
+        df: pd.DataFrame,
+        schema_name: str,
+        table_name: str,
+        exist_type: str,
+    ) -> None:
+        """
+        Function saves the Pandas dataframe into the Postgres RDS server with a desired name
+
+        Parameters:
+            engine: SQLAlchemy engine to connect to Postgres server
+            df: Pandas dataframe
+            schema_name: Schema of where to save the table in Postgres RDS server
+            table_name: Table name in Postgres RDS server
+            exist_type: "replace" or "append" to update the Postgres table
+        Returns:
+            None
+        """
+        logger.info("Load data to postgresql db table")
+        try:
+            # Saving the Pandas dataframe into Postgres RDS Server
+            df.to_sql(
+                table_name,
+                con=engine,
+                schema=schema_name,
+                if_exists=exist_type,
+                index=False,
+                method="multi"
             )
-        utility.log_memory_usage() 
+            logger.info(f"{table_name} has been saved into Postgres schema.")
+            
+        except SQLAlchemyError as e:
+            logger.error(f"DB error: {e}")
+            raise
 
-    elapsed_minutes = (time.time() - start_time) / 60 
-    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+        return None
+
+    def load_table_to_db_daily_idempotent(
+        self,
+        etl_date,
+        engine: Engine,
+        df: pd.DataFrame,
+        schema_name: str,
+        table_name: str,
+        load_control_table: str,
+        exist_type: str,
+    ) -> bool:
+        """
+        Function saves the Pandas dataframe into the Postgres RDS server with a desired name 
+        ensuring no more than single copy of dataset is added to the table in a given day.
+        Parameters:
+            etl_date: The date the data is being loaded
+            engine: SQLAlchemy engine to connect to Postgres server
+            df: Pandas dataframe
+            schema_name: Schema of where to save the table in Postgres RDS server
+            table_name: Table name in Postgres RDS server
+            exist_type: "replace" or "append" to update the Postgres table
+        Returns:
+            None
+        """
+        logger.info(f"Loading data into table '{table_name}' within '{schema_name}' schema")
+        db_load_flag = True
+        with engine.begin() as connection:
+        
+            try:
+
+                #Register todays data load to load_control table
+                if schema_name == self.MAIN_SCHEMA:
+                    connection.execute(
+                        text(f"""
+                            INSERT INTO {schema_name}.{load_control_table} (table_name, etl_date)
+                            VALUES (:table_name, :etl_date)
+                            """),
+                            {
+                                "table_name": table_name,
+                                "etl_date": etl_date
+                            }
+                        )   
+                                   
+                # Append data to table
+                df.to_sql(
+                    table_name,
+                    con=connection,
+                    schema=schema_name,
+                    if_exists=exist_type,
+                    index=False,
+                    method="multi"
+                )
+                logger.info(f"Successfuly loaded data")
+
+            except IntegrityError as e:
+                db_load_flag = False
+                logger.info(f"Table, {table_name}, already loaded for {etl_date}. Skipping loading.")
+                
+            except SQLAlchemyError as e:
+                logger.error(f"DB error: {e}")
+                raise
+
+        return db_load_flag
+
+    def replicate_schema(
+            self, 
+            engine: Engine, 
+            source_schema:str, 
+            target_schema:str
+    ) -> list[str]:
+        """
+        Copy all tables and views from source schema to target schema atomically
+        
+        Parameters:
+            engnie: SQLAlchemy engine to connect to Postgres server
+            source_schema: source schema containing tables/views to copy
+            target_schema: target schema to create objects in 
+
+        Return:
+            created_objects: list of succesfully created objects in target schema
+        """
+        logger.info(f"Schema replication initiated: {source_schema} -> {target_schema}")
+        CRMA_HIVE_PREFIX = "crma_hive"
+        # create sqlalchemy conection to inspect tables/views and create objects if objects do not exists in new schema
+        with engine.connect() as connection:
+            created_objects = []
+            inspector = inspect(connection)
+            dialect = connection.dialect.name
+            postgres_db = "postgresql"
+            test_db = "sqlite"
+
+            # get source tables and views
+            source_tables=[]
+            source_views=[]
+            if dialect == test_db:
+                tb_list_result = connection.execute(text(f"SELECT name FROM {source_schema}.sqlite_master WHERE type='table' AND name NOT LIKE 'sqllite_%'"))
+                source_tables = [row[0] for row in tb_list_result.fetchall()]
+                view_list_result = connection.execute(text(f"SELECT name FROM {source_schema}.sqlite_master WHERE type='view' AND name NOT LIKE 'sqllite_%'"))                
+                source_views= [row[0] for row in view_list_result.fetchall()]
+            else:
+                source_tables = inspector.get_table_names(source_schema)
+                source_views = inspector.get_view_names(source_schema)
+                
+            # create target schema
+            if dialect!=test_db and not inspector.has_schema(target_schema):
+                connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {target_schema}"))
 
 
-if __name__ == "__main__":
-    main()
+            try:
+                # create table in target schema
+                for table_name in source_tables:
+                    logger.debug(table_name)
+                    #TODO: request full permissinons for account vetdb_etl on all tables
+                    #TODO: add logic to replicate partitioned tables                    
+                    if (table_name.lower().startswith(CRMA_HIVE_PREFIX)) and \
+                        "_hist" not in table_name.lower() and \
+                        not table_name.lower().startswith("crma_hive_axonius_cloud_assets_missing_") and \
+                        not table_name.lower().startswith("crma_hive_axonius_missing_"):                    
+                        if dialect == postgres_db:
+                            target_exists = inspector.has_table(table_name, target_schema) 
+                            if target_exists:
+                                logger.info(f"Table {target_schema}.{table_name} already exists, skipping")
+                                continue
+                            create_table_sql = text(f"CREATE TABLE {target_schema}.{table_name} (LIKE {source_schema}.{table_name} INCLUDING ALL)")
+                            connection.execute(create_table_sql)
+                            created_objects.append(f"table.{table_name}")
+                            logger.info(f"Creating table {target_schema}.{table_name}")
+                        elif dialect == test_db:
+                            result = connection.execute(text(f"SELECT name FROM {target_schema}.sqlite_master WHERE type='table' AND name='{table_name}'"))
+                            if result.fetchone():
+                                logger.info(f"Table {target_schema}.{table_name} already exists, skipping")
+                                continue
+                            create_table_sql = text(f"CREATE TABLE {target_schema}.{table_name} AS SELECT * FROM {source_schema}.{table_name} WHERE 1=0")
+                            connection.execute(create_table_sql)
+                            created_objects.append(f"table.{table_name}")
+                            logger.info(f"Creating table {target_schema}.{table_name}")  
+                        else:
+                            logger.error(f"Unkown database dialect '{dialect}'")
+                            raise
+
+                #TODO: request full permissinons for account vetdb_etl on all views
+                # create views in target schema
+                # for view_name in source_views:
+                #     logger.debug(view_name)
+                #     if view_name.lower().startswith(CRMA_HIVE_PREFIX):                     
+                #         if dialect == postgres_db:
+                #             # check if view exists
+                #             target_exists = inspector.has_table(view_name, target_schema) 
+                #             if target_exists:
+                #                 logger.info(f"View {target_schema}.{view_name} already exists, skipping")
+                #                 continue
+                #             # replicate view in target schema
+                #             view_def_sql =text(f"SELECT definition from pg_catalog.pg_views WHERE schemaname='{source_schema}' AND viewname='{view_name}'")
+                #             view_def_obj = connection.execute(view_def_sql)
+                #             view_def_result = view_def_obj.fetchone()
+                #             if not view_def_result:
+                #                 logger.warning(f"View {source_schema}.{view_name} not found")
+                #                 continue
+                #             view_def_str = view_def_result[0]
+                #             create_view_sql = text(f"CREATE OR REPLACE VIEW {target_schema}.{view_name} AS {view_def_str}")
+                #             logger.debug(create_view_sql)
+                #             connection.execute(create_view_sql)
+                #             created_objects.append(f"view.{view_name}")
+                #             logger.info(f"Creating view {target_schema}.{view_name}")
+                #         elif dialect == test_db:
+                #             # check if view exists
+                #             target_exists_sql = text(f"SELECT sql FROM {target_schema}.sqlite_master WHERE type='view' AND name='{view_name}'")
+                #             target_exists_obj = connection.execute(target_exists_sql)
+                #             target_exists = target_exists_obj.fetchone()
+                #             if target_exists:
+                #                 logger.info(f"View {target_schema}.{view_name} already exists, skipping")
+                #                 continue
+                #             # replicate view in target schema
+                #             view_sql = text(f"SELECT sql FROM {source_schema}.sqlite_master WHERE type='view' AND name='{view_name}'")
+                #             view_obj = connection.execute(view_sql)
+                #             view_result = view_obj.fetchone()
+                #             if not view_result:
+                #                 logger.warning(f"View {source_schema}.{view_name} not found")
+                #                 continue                            
+                #             view_def_str = view_result[0]
+                #             create_view_sql = text(f"CREATE VIEW IF NOT EXISTS {target_schema}.{view_name} AS {view_def_str.split('AS')[1].replace(source_schema, target_schema)}")
+                #             logger.debug(create_view_sql)
+                #             connection.execute(create_view_sql)
+                #             created_objects.append(f"view.{view_name}")
+                #             logger.info(f"Creating view {target_schema}.{view_name}")  
+                #         else:
+                #             logger.error(f"Unkown database dialect '{dialect}'")
+                #             raise
+
+                # atomic commit
+                connection.commit()
+                logger.info(f"Transaction complete: {len(created_objects)} objects created")
+                return created_objects
+            
+            except Exception as e:
+                connection.rollback()
+                logger.error(f"SQL execution failed while validating/creating backfill tables: {e}")
+                return []
+
+    def truncate_and_load_table(
+        self,
+        engine: Engine,
+        df: pd.DataFrame,
+        schema_name: str,
+        table_name: str,
+        exist_type: str = "append",
+    ) -> None:
+        """
+        Function to truncate a table and load new data
+
+        Parameters:
+            engine: SQLAlchemy engine to connect to Postgres server
+            df: Pandas dataframe
+            schema_name: Schema of where to save the table in Postgres RDS server
+            table_name: Table name in Postgres RDS server
+            exist_type: "append" to update the Postgres table
+        Returns:
+            None
+        """
+        
+        logger.info(f"Running truncate and load on table '{table_name}' in '{schema_name}' schema")
+
+        primary_schema = "crma_hive"
+        backfill_schema = "crma_hive_backfill"
+
+        if schema_name == backfill_schema:
+             # Create tables/views in backfill schema
+            created_objects = self.replicate_schema(engine, primary_schema, backfill_schema)
+            if created_objects:
+                logger.info(f"Succesfully created the following objects in backfill schema:'{backfill_schema}'")
+                for obj in created_objects:
+                    obj_type, obj_name = obj.split(".",1)
+                    logger.info(f"{obj_type.upper():6} {obj_name}")
+            else:
+                logger.info(f"'{backfill_schema}' schema is up to date. No tables/views created.")
+
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(f"DELETE FROM {schema_name}.{table_name}"))     
+
+                df.to_sql(
+                    table_name, 
+                    con=connection, 
+                    schema=schema_name, 
+                    if_exists=exist_type, 
+                    index=False, 
+                    method="multi"
+                )
+            
+                logger.info(f"Succesfully loaded table '{table_name}' in '{schema_name}' schema.")
+
+        except SQLAlchemyError as e:
+            logger.error(f"DB error: {e}")
+            raise                
+
+
+    def bulk_upsert_with_copy(
+        self,
+        engine: Engine,
+        df: pd.DataFrame,
+        schema: str,
+        target_table: str,
+        pk_columns: list
+    ):
+        """
+        Efficiently bulk upsert a DataFrame into a PostgreSQL table using COPY and a staging table.
+
+        Args:
+            engine: SQLAlchemy Engine object.
+            df: DataFrame to upsert.
+            target_table: Name of the target table.
+            pk_columns: Primary key column names(could be list of one or more columns).
+            schema: Schema name (default: 'public').
+        """
+        if df.empty:
+            logger.info("DataFrame is empty. Nothing to upsert.")
+            return
+
+        staging_table = f"staging_{target_table}_temp"
+        columns = list(df.columns)
+        columns_csv = ', '.join(columns)
+
+        conflict_cols = ", ".join(f'"{col}"' for col in pk_columns)
+
+        update_set = ', '.join(
+            f"{col}=EXCLUDED.{col}" for col in columns if col not in pk_columns
+        )
+
+        # Write DataFrame to CSV buffer
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False, header=False)
+        csv_buffer.seek(0)
+
+        conn = engine.raw_connection()
+        try:
+            cur = conn.cursor()
+            # 1. Create staging table
+            logger.info("Create stageing table.")
+            cur.execute(f'CREATE TEMP TABLE "{staging_table}" (LIKE "{schema}"."{target_table}" INCLUDING ALL);')
+
+            # 2. Bulk load data into staging table
+            logger.info("Insert data to staging.")
+            cur.copy_expert(
+                f'COPY "{staging_table}" ({columns_csv}) FROM STDIN WITH CSV',
+                csv_buffer
+            )
+
+            # 3. Upsert from staging to target table
+            logger.info("Upsert")
+            upsert_sql = f'''
+                INSERT INTO "{schema}"."{target_table}" ({columns_csv})
+                SELECT {columns_csv} FROM "{staging_table}"
+                ON CONFLICT ({conflict_cols}) DO UPDATE SET {update_set};
+            '''
+            cur.execute(upsert_sql)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Upsert failed: {e}")
+            raise
+        finally:
+            try:
+                logger.info("Drop staging table ")
+                cur.execute(f'DROP TABLE IF EXISTS "{staging_table}";')
+                conn.commit()
+            except Exception:
+                pass
+            cur.close()
+            conn.close()
+
+    def bulk_truncate_and_load_with_copy(
+        self,
+        engine: Engine,
+        df: pd.DataFrame,
+        schema: str,
+        target_table: str,
+        chunksize: int = 100_000,
+    ) -> None:
+        """
+        Truncate an existing PostgreSQL table and bulk-load a DataFrame into it using COPY.
+
+        Args:
+            engine: SQLAlchemy Engine object.
+            df: DataFrame to load (may be very large).
+            schema: Schema name (e.g., "public").
+            target_table: Name of the target table.
+            chunksize: Number of rows per COPY batch.
+        """
+        full_table_name = f'"{schema}"."{target_table}"'
+        columns = list(df.columns)
+        columns_csv = ', '.join(columns) 
+
+        conn = engine.raw_connection()
+        cur = None
+
+        try:
+            cur = conn.cursor()
+
+            # 1. Check that the table exists
+            logger.info(f"Checking existence of table {full_table_name}")
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+                """,
+                (schema, target_table),
+            )
+            if cur.fetchone() is None:
+                raise RuntimeError(f"Destination table {full_table_name} does not exist.")
+
+            # 2. Truncate the target table
+            logger.info(f"Truncating table {full_table_name}")
+            cur.execute(f"TRUNCATE TABLE {full_table_name};")
+
+            # If df is empty, we’re done: table is now empty
+            if df.empty:
+                logger.info(f"DataFrame is empty. Truncated {full_table_name}; nothing to load.")
+                conn.commit()
+                return
+
+            total_rows = len(df)
+            logger.info(
+                f"Starting COPY of {total_rows} rows into {full_table_name} "
+                f"in chunks of {chunksize}"
+            )
+
+            # 3. Bulk load in chunks using COPY FROM STDIN
+            for start in range(0, total_rows, chunksize):
+                end = min(start + chunksize, total_rows)
+                chunk = df.iloc[start:end]
+
+                # Convert chunk to CSV in memory (no header)
+                csv_buffer = io.StringIO()
+                chunk.to_csv(csv_buffer, index=False, header=False)
+                csv_buffer.seek(0)
+
+                copy_sql = f"""
+                    COPY {full_table_name} ({columns_csv})
+                    FROM STDIN WITH (FORMAT CSV)
+                """
+                logger.info(f"COPY rows {start}–{end} into {full_table_name}")
+                cur.copy_expert(copy_sql, csv_buffer)
+
+            # 4. Commit the whole operation (truncate + all chunks)
+            conn.commit()
+            logger.info(f"Completed COPY of {total_rows} rows into {full_table_name}")
+
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Bulk truncate-and-load into {full_table_name} failed: {e}")
+            raise
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            conn.close()
+
+
+    def bulk_load_with_copy_daily_idempotent(
+        self,
+        etl_date: date,
+        engine: Engine,
+        df: pd.DataFrame,
+        schema: str,
+        target_table: str,
+        load_control_table: str,
+        chunksize: int = 100_000,
+    ) -> bool:
+        """
+        Bulk-load to  an existing PostgreSQL table historical table and a DataFrame into it using COPY.
+        Max loads once daily. 
+
+        Args:
+            engine: SQLAlchemy Engine object.
+            df: DataFrame to load (may be very large).
+            schema: Schema name (e.g., "public").
+            target_table: Name of the target table.
+            chunksize: Number of rows per COPY batch.
+        """
+        logger.info("Bulk load hist tables using COPY")
+        db_load_flag = True
+
+        full_table_name = f'"{schema}"."{target_table}"'
+        columns = list(df.columns)
+        columns_csv = ', '.join(columns) 
+
+        conn = engine.raw_connection()
+        cur = None
+
+        try:
+            cur = conn.cursor()
+
+            # 1. Check that the table exists
+            logger.info(f"Checking if table exists: {full_table_name}")
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+                """,
+                (schema, target_table),
+            )
+            if cur.fetchone() is None:
+                raise RuntimeError(f"Destination table {full_table_name} does not exist.")
+
+            # 2. Register todays data load to load_control table
+            if schema == self.MAIN_SCHEMA:
+                cur.execute(
+                    f"""
+                        INSERT INTO {schema}.{load_control_table} (table_name, etl_date)
+                        VALUES (%s, %s)
+                        """,
+                       (target_table, etl_date)                        
+                    ) 
+
+            # If df is empty, we’re done: nothing to load
+            if df.empty:
+                logger.info(f"DataFrame is empty. Truncated {full_table_name}; nothing to load.")
+                conn.commit()
+                return False
+
+            total_rows = len(df)
+            logger.info(
+                f"Starting COPY of {total_rows} rows into {full_table_name} "
+                f"in chunks of {chunksize}"
+            )
+
+            # 3. Bulk load in chunks using COPY FROM STDIN
+            for start in range(0, total_rows, chunksize):
+                end = min(start + chunksize, total_rows)
+                chunk = df.iloc[start:end]
+
+                # Convert chunk to CSV in memory (no header)
+                csv_buffer = io.StringIO()
+                chunk.to_csv(csv_buffer, index=False, header=False)
+                csv_buffer.seek(0)
+
+                copy_sql = f"""
+                    COPY {full_table_name} ({columns_csv})
+                    FROM STDIN WITH (FORMAT CSV)
+                """
+                logger.info(f"COPY rows {start}–{end} into {full_table_name}")
+                cur.copy_expert(copy_sql, csv_buffer)
+
+            # 4. Commit the whole operation 
+            conn.commit()
+            logger.info(f"Completed COPY of {total_rows} rows into {full_table_name}")
+
+        except psycopg2.errors.UniqueViolation as e:
+            logger.info(f"Table, {target_table}, already loaded for {etl_date}. Skipping loading.")
+            db_load_flag = False
+
+
+        except SQLAlchemyError as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Bulk load into {full_table_name} failed: {e}")
+            raise
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            conn.close()
+
+        return  db_load_flag 
+
+    def fetch_postgres_table(self, engine: Engine, sql_query: str) -> pd.DataFrame:
+        """
+        Function retrieves the table loaded in Postgres
+
+        Parameters:
+            engine: SQLAlchemy engine to connect to Postgres server
+            sql_query: SQL query of the columns desired
+        Returns:
+            Pandas dataframe
+        """
+        # Calling the SQL query to retrieve the Pandas dataframe
+        df = pd.read_sql_query(sql=sql_query, con=engine)
+
+        return df
+
+    def query_postgres_to_dataframe(self, engine: Engine, sql_query: str, params: Optional[dict] = None) -> pd.DataFrame:
+        """
+        Executes a parameterized SQL query on a Postgres database and returns the result as a Pandas DataFrame.
+        Parameters:
+            engine: SQLAlchemy engine to connect to Postgres server
+            sql_query: SQL query string with placeholders for parameters
+            params: Optional dictionary of parameters to inject into the SQL query
+
+        Returns:
+            Pandas DataFrame containing the query results
+        """
+        try:
+            logger.info("Execute query and load data to Dataframe.")
+            df = pd.read_sql_query(sql=sql_query, con=engine, params=params)
+            return df
+        except Exception as e:
+            logger.error(f"Error executing query: {e}", exc_info=True)
+            raise  
+        
+    # def get_max_timestamp(
+    #     self,
+    #     engine: Engine,
+    #     schema_name: str,
+    #     table_name: str,
+    #     timestamp_col: str
+    # ) -> datetime:
+    #     """
+    #     Retrieve the maximum timestamp from a specified table and column in a PostgreSQL database.
+
+    #     Args:
+    #         engine (sqlalchemy.engine.Engine): SQLAlchemy engine connected to the database.
+    #         schema_name (str): The schema containing the table.
+    #         table_name (str): The name of the table.
+    #         timestamp_col (str): The name of the timestamp column.
+
+    #     Returns:
+    #         datetime or None: The maximum timestamp value, or None if the table is empty.
+    #     """
+    #     metadata = MetaData(schema=schema_name)
+    #     try:
+    #         table = Table(table_name, metadata, autoload_with=engine)
+    #         if timestamp_col not in table.c:
+    #             raise ValueError(f"Column '{timestamp_col}' does not exist in table '{schema_name}.{table_name}'.")
+
+    #         stmt = select(func.max(table.c[timestamp_col]))
+    #         with engine.connect() as conn:
+    #             result = conn.execute(stmt).scalar_one_or_none()
+    #         return result
+    #     except SQLAlchemyError as e:
+    #         logger.error(f"Error retrieving max timestamp: {e}")
+    #         raise SQLAlchemyError(f"Database error: {e}") from e
+        
+        
+    def post_load_validation(
+            self,
+            engine: Engine,
+            df: pd.DataFrame,
+            schema_name: str,
+            table_name: str,
+        ) -> bool:
+
+        """
+        Perform post-load validation to verify the number of records in the DataFrame
+        matches the number of records in the PostgreSQL table.
+
+        Parameters:
+            engine: SQLAlchemy engine to connect to Postgres server
+            df (pd.DataFrame): The DataFrame that was loaded into the database.
+            schema_name: Schema of where to save the table in Postgres RDS server
+            table_name: Table name in Postgres RDS server
+        Returns:
+            bool: True if the record counts match, False otherwise.
+        """
+      
+        df_record_count = len(df)
+        
+        with engine.connect() as connection:
+            query = f"SELECT COUNT(*) FROM {schema_name}.{table_name};"
+            result = connection.execute(text(query))
+            table_record_count = result.scalar() 
+        
+        if df_record_count == table_record_count:
+            return True
+        else:
+            logger.error(f"Post load validation check failed for {table_name}! File contains {df_record_count} records but {table_record_count} records loaded into base tables!")
+            return False
+  
+    def post_load_validation_hist_tables(
+            self,
+            engine: Engine,
+            df: pd.DataFrame,
+            schema_name: str,
+            table_name: str,
+            backfill_date: Optional[str] = None,
+        ) -> bool:
+
+        """
+        Perform post-load validation to verify the number of records in the DataFrame
+        matches the number of records added to that table.
+
+        Parameters:
+            engine: SQLAlchemy engine to connect to Postgres server
+            df (pd.DataFrame): The DataFrame that was loaded into the database.
+            schema_name: Schema of where to save the table in Postgres RDS server
+            table_name: Table name in Postgres RDS server
+        Returns:
+            bool: True if the record counts match, False otherwise.
+        """
+      
+        df_record_count = len(df)
+        if backfill_date:
+            today = datetime.strptime(backfill_date, "%m%d%y").strftime("%Y-%m-%d")
+        else:
+            today = datetime.now().date()
+
+        with engine.connect() as connection:
+            query = f"SELECT COUNT(*) FROM {schema_name}.{table_name} WHERE etl_date = '{today}' ;"
+            result = connection.execute(text(query))
+            table_record_count = result.scalar() 
+        
+        if df_record_count == table_record_count:
+            return True
+        else:
+            logger.error(f"Dataframe contains {df_record_count} records but {table_record_count} new records added into databse table!")
+            return False
+
+    def load_to_s3(
+        self, bucket_name: str, df: pd.DataFrame, output_filename: str, file_type: str, backill_mode: bool = False
+    ) -> None:
+        """
+        Function turns the Pandas dataframe into a CSV or PARQUET file and then uploads
+        the data to the desired S3 Bucket
+
+        Parameters:
+            bucket_name (str): Name of the S3 bucket
+            df (pd.DataFrame): DataFrame containing the data to be uploaded
+            output_filename (str): Name of the file to be stored in S3 Bucket
+            file_type (str): Name of the file you want saved: CSV or PARQUET
+
+        Returns:
+            None
+        """
+        # Creating variables
+        s3_client = boto3.client("s3")
+        timestamp=""
+        if not backill_mode:
+            timestamp = f"_{datetime.now(timezone.utc).strftime('%m%d%y_%H%M%S')}"
+
+        if file_type.upper() == "CSV": 
+            # Creating object key for the S3 bucket
+            S3_KEY = f"{output_filename}{timestamp}.csv"
+            logger.info(f"Key: {S3_KEY}")
+
+            # Converting Pandas dataframe into a CSV file
+            csv_buffer = StringIO()
+            df.to_csv(csv_buffer, index=False)
+
+            # Loading the CSV file into
+            s3_client.put_object(Bucket=bucket_name, Key=S3_KEY, Body=csv_buffer.getvalue())
+            logger.info(f"Successfully loaded {S3_KEY} as a CSV file")
+        elif file_type.upper() == "PARQUET":
+            # Creating the path for the S3 bucket
+            S3_KEY = f"{output_filename}{timestamp}.parquet"
+            s3_path = f"s3://{bucket_name}/{S3_KEY}"
+            logger.info(f"Key: {S3_KEY}")
+
+            # Saving the Parquet file into S3 Bucket
+            df.to_parquet(s3_path, index=False, engine="pyarrow")
+            logger.info(f"Successfully loaded {S3_KEY} as a Parquet file")
+        elif file_type.upper() == "XLSX":
+            # Creating the path for the S3 bucket
+            S3_KEY = f"{output_filename}{timestamp}.xlsx"
+            s3_path = f"s3://{bucket_name}/{S3_KEY}"
+            logger.info(f"Key: {S3_KEY}")
+
+            # Saving the Excel file into S3 Bucket
+            df.to_excel(s3_path, index=False)
+            logger.info(f"Successfully loaded {S3_KEY} as a Excel file")            
+        else:
+            logger.error("File type provided does not match CSV or PARQUET")
+            pass
+
+        return None
+
+    def load_to_s3_multipart_datasets(
+        self, bucket_name: str, df: pd.DataFrame, output_filename: str, file_type: str
+    ) -> None:
+        """
+        Function turns the Pandas dataframe into a CSV or PARQUET file and then uploads
+        the data to the desired S3 Bucket
+
+        Parameters:
+            bucket_name (str): Name of the S3 bucket
+            df (pd.DataFrame): DataFrame containing the data to be uploaded
+            output_filename (str): Name of the file to be stored in S3 Bucket
+            file_type (str): Name of the file you want saved: CSV or PARQUET
+
+        Returns:
+            None
+        """
+        s3_client = boto3.client("s3")
+
+        if file_type.upper() == "CSV": 
+            S3_KEY = f"{output_filename}.csv"
+            logger.info(f"Key: {S3_KEY}")
+
+            csv_buffer = StringIO()
+            df.to_csv(csv_buffer, index=False)
+
+            s3_client.put_object(Bucket=bucket_name, Key=S3_KEY, Body=csv_buffer.getvalue())
+            logger.info(f"Successfully loaded {S3_KEY} as a CSV file")
+            
+        elif file_type.upper() == "PARQUET":
+            S3_KEY = f"{output_filename}.parquet"
+            s3_path = f"s3://{bucket_name}/{S3_KEY}"
+            logger.info(f"Key: {S3_KEY}, Path: {s3_path}")
+
+            df.to_parquet(s3_path, index=False, engine="pyarrow")
+            logger.info(f"Successfully loaded {S3_KEY} as a Parquet file")
+        else:
+            logger.error("File type provided does not match CSV or PARQUET")
+            pass
+
+        return None
+
+    def fetch_file_from_s3(
+        self,
+        bucket_name: str,
+        prefix: str, 
+        s3_filename: str,
+        file_type: str
+    ) -> pd.DataFrame:
+        """
+        Function fetches the latest data file from AWS S3 Bucket as a Pandas dataframe.
+
+        Parameters:
+            bucket (str): Name of the S3 bucket
+            prefix (str): String that navigates to the desired location
+            s3_filename (str): Name of the file stored in the S3 Bucket
+            file_type (str): Name of the file you want saved: CSV, PARQUET, or XLSX
+        Return
+            Pandas dataframe
+        """
+        def _extract_datetime_from_filename(filepath):
+            """Private helper function to extract datetime from crma_hive files in s3 storage."""
+            filename = os.path.basename(filepath) 
+            pattern = r'(\d{6})_(\d{6})\.[^.]+$'
+            match = re.search(pattern, filename)
+            if match:
+                date_str, time_str = match.groups()
+                dt = datetime.strptime(date_str + time_str, "%m%d%y%H%M%S")
+                return dt            
+            return None
+
+        # Creating variables
+        s3_client = boto3.client("s3")        
+
+        # Creating file_ending variable
+        if file_type.upper() == "CSV":
+            file_ending = ".csv"        
+        elif file_type.upper() == "PARQUET":
+            file_ending = ".parquet"
+
+        elif file_type.upper() == "XLSX":
+            file_ending = ".xlsx"
+        else:
+            logger.error(f"File type provided, {file_type}, is not supported")
+            file_ending = ""
+
+        # Finding the latest file
+        logger.info(f"Collecting latest {s3_filename} from {bucket_name}.")
+        files = []
+        paginator = s3_client.get_paginator("list_objects_v2")
+        
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                # Creating the object key
+                f = obj["Key"]
+
+                # Checking if the object key matches the criteria to append to list
+                if f.startswith(f"{s3_filename}_") and f.endswith(file_ending):
+                    files.append(f)
+
+        # Return None if files list is empty
+        if not files:
+            logger.error(f"No {s3_filename} files found in {bucket_name}.")
+            return None
+
+        # Find the latest file in the list   
+        latest = max(files, key=lambda f: _extract_datetime_from_filename(f))
+        logger.info(f"Using {latest} as latest file.")
+
+        # Loading the file into a Pandas dataframe
+        obj = s3_client.get_object(Bucket=bucket_name, Key=latest)
+
+        if file_type.upper() == "CSV":
+            df = pd.read_csv(obj["Body"], dtype=str)
+        elif file_type.upper() == "PARQUET":
+            # Use Pandas to read the Parquet file from the in-memory bytes
+            file_content = obj["Body"].read()
+            df = pd.read_parquet(io.BytesIO(file_content), engine="pyarrow")
+        elif file_type.upper() == "XLSX":
+            excel_bytes = obj["Body"].read()
+            tabs = pd.read_excel(BytesIO(excel_bytes), sheet_name=None)
+            container = []
+
+            for tab_name, tab_df in tabs.items():
+                tab_df['tab_name'] = tab_name
+                tab_df.columns = tab_df.columns.str.strip()
+                container.append(tab_df)
+            df = pd.concat(container, ignore_index=True)
+        else:
+            logger.error(f"File type provided, {file_type}, is not supported")
+            df = None
+        
+        if df is not None:
+            logger.info(f"Created Pandas dataframe for {latest}")
+
+        return df
+
+    def fetch_file_by_date(
+            self,
+            bucket_name: str,
+            prefix: str,
+            s3_filename: str,
+            backfill_date: str,
+            file_type: str
+    ) -> Optional[pd.DataFrame]:
+        """
+        Find file whose key starts with s3_filename and contains backfill_date before 
+        returning the file(as a dataframe).
+
+        Parameters:
+            bucket_name (str): Name of the S3 bucket
+            prefix (str): String that navigates to the desired location
+            s3_filename (str): Name of the file stored in the S3 Bucket
+            backfill_date: Date string to match in filename (e.g., "12152025")
+            file_type (str): Name of the file you want saved: CSV or PARQUET
+        """
+        s3_client = boto3.client("s3")
+        logger.info(f"Searching for {s3_filename} with date {backfill_date} in {bucket_name}")
+
+        # Creating file_ending variable
+        if file_type.upper() == "CSV":
+            file_ending = ".csv"        
+        elif file_type.upper() == "PARQUET":
+            file_ending = ".parquet"
+        else:
+            logger.error("File type provided does not match CSV or PARQUET")
+            file_ending = ""
+
+        # find candidate file that match filename and contain backfill date
+        candidates = []
+        paginator = s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket = bucket_name, Prefix=prefix):
+            for obj in page.get("Contents",[]):
+                key = obj["Key"]
+                if (key.startswith(f"{s3_filename}_") and key.endswith(file_ending) and backfill_date in key):
+                    candidates.append(key)
+        
+        if not candidates:
+            logger.error(f"No file for {s3_filename} with date {backfill_date} found in {bucket_name}")
+            return None
+        
+        # Find latest file in list(compares filenames)
+        selected = max(candidates)
+        logger.info(f"Found file: {selected}")
+
+        obj = s3_client.get_object(Bucket=bucket_name, Key=selected)
+        file_content = obj["Body"].read()
+        df = pd.read_parquet(io.BytesIO(file_content), engine="pyarrow")
+
+        if df is not None:
+            logger.info(f"Created pandas dataframe for {selected}")
+
+        return df
+
+    def find_or_generate_filename(
+            self,
+            bucket_name: str,
+            prefix: str,
+            s3_filename: str,
+            backfill_date: str,
+            file_type: str
+    ) -> Optional[str]:
+        """
+        Find matching filename or generate from filename and prefix
+
+        Paramters:
+            bucket_name (str): Name of the S3 bucket
+            prefix (str): String that navigates to the desired location
+            s3_filename (str): Name of the file stored in the S3 Bucket
+            backfill_date: Date string to match in filename (e.g., "12152025")
+            file_type (str): Name of the file you want saved: CSV or PARQUET
+        """
+        s3_client = boto3.client("s3")
+        logger.info(f"Searching for {s3_filename} with date {backfill_date} in {bucket_name}/{prefix}")
+
+        # Creating file_ending variable
+        if file_type.upper() == "CSV":
+            file_ending = ".csv"        
+        elif file_type.upper() == "PARQUET":
+            file_ending = ".parquet"
+        else:
+            logger.error("File type provided does not match CSV or PARQUET")
+            file_ending = ""
+
+        # find candidate file that match filename and contain backfill date
+        candidates = []
+        paginator = s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket = bucket_name, Prefix=prefix):
+            for obj in page.get("Contents",[]):
+                key = obj["Key"]
+                if (key.startswith(f"{prefix}{s3_filename}_") and key.endswith(file_ending) and backfill_date in key):
+                    candidates.append(key)
+        
+        if not candidates:
+            logger.warning(f"No target file found with filename '{s3_filename}_{backfill_date}' in {bucket_name}/{prefix}")
+            new_filename = f"{prefix}{s3_filename}_{backfill_date}_000000"
+            logger.info(f"Creating new backfill file: '{new_filename}'")
+            return new_filename
+        
+        # compare the file NAMES and select latest file
+        target_filename = max(candidates)
+        target_filename = target_filename.replace(file_ending,"")
+        logger.info(f"Found matching target file: '{target_filename}'")
+        return target_filename
+    def find_or_generate_foldername(
+            self,
+            bucket_name: str,
+            base_folder: str,
+            backfill_date: str,  
+        ) -> str:
+        """
+        Find the latest matching folder name for the given base_folder and backfill_date
+        in S3, or generate one if none exists.
+
+        Folder naming pattern (required):
+            {base_folder}_{MMDDYY}_{HHMMSS}/
+
+        Args:
+            bucket_name (str): Name of the S3 bucket.
+            base_folder (str): Base folder name (e.g., 'raw/tvm/abc').
+            backfill_date (str): Date string in 'MMDDYY' format.
+
+        Returns:
+            str: Folder name (without trailing slash), either found or generated:
+                {base_folder}_{backfill_date}_{HHMMSS}
+        """
+        s3_client = boto3.client("s3")
+        logger.info(
+            f"Searching for folders for base '{base_folder}' and date {backfill_date} "
+            f"in bucket '{bucket_name}'."
+        )
+
+        paginator = s3_client.get_paginator("list_objects_v2")
+
+        # Keys are expected like:
+        #   {base_folder}_{MMDDYY}_{HHMMSS}/...
+        folder_pattern = re.compile(
+            rf"^{re.escape(base_folder)}_(\d{{6}})_(\d{{6}})/"
+        )
+
+        target_foldername = None
+        latest_time = None  
+
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=base_folder):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                match = folder_pattern.match(key)
+                if not match:
+                    continue
+
+                date_part, time_part = match.groups()
+
+                # Only consider folders for the requested backfill_date (MMDDYY)
+                if date_part != backfill_date:
+                    continue
+
+                candidate_folder = f"{base_folder}_{date_part}_{time_part}"
+                if latest_time is None or time_part > latest_time:
+                    latest_time = time_part
+                    target_foldername = candidate_folder
+
+        if target_foldername is None:
+            # No existing folder: generate a new one with time suffix 000000
+            new_folder = f"{base_folder}_{backfill_date}_000000"
+            logger.warning(
+                f"No folder found for base '{base_folder}' and date {backfill_date} "
+                f"in bucket '{bucket_name}'. Generating folder name '{new_folder}'."
+            )
+            return new_folder
+
+        logger.info(
+            f"Found matching folder '{target_foldername}' for base '{base_folder}' and "
+            f"date {backfill_date} (latest time suffix: {latest_time})."
+        )
+        return target_foldername
+
+
+    def stream_records_to_s3_csv(self, record_chunks, s3_bucket, s3_filename):
+
+        logger.info("Starting multipart s3 upload....")
+        s3 = boto3.client('s3')
+        timestamp = datetime.now(timezone.utc).strftime("%m%d%y_%H%M%S")
+        s3_key = f"{s3_filename}_{timestamp}.csv"
+        mp_upload = s3.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
+        parts = []
+        part_number = 1
+        header_written = False
+        buffer = StringIO()
+        buffer_size = 0
+
+        for chunk in record_chunks:
+            df = pd.DataFrame(chunk)
+            temp_buffer = StringIO()
+            df.to_csv(temp_buffer, index=False, header=not header_written)
+            header_written = True
+            temp_buffer.seek(0)
+            data = temp_buffer.getvalue()
+            buffer.write(data)
+            buffer_size += len(data.encode('utf-8'))
+
+            # If buffer is >= 5 MB, upload as a part
+            if buffer_size >= self.min_part_size:
+                buffer.seek(0)
+                part = s3.upload_part(
+                    Bucket=s3_bucket,
+                    Key=s3_key,
+                    PartNumber=part_number,
+                    UploadId=mp_upload['UploadId'],
+                    Body=buffer.getvalue().encode('utf-8')
+                )
+                parts.append({'ETag': part['ETag'], 'PartNumber': part_number})
+                logger.info(f"Part-{part_number} s3 upload complete.")
+                part_number += 1
+                buffer = StringIO()
+                buffer_size = 0
+
+        # Upload any remaining data (last part, can be < 5 MB)
+        if buffer_size > 0:
+            buffer.seek(0)
+            part = s3.upload_part(
+                Bucket=s3_bucket,
+                Key=s3_key,
+                PartNumber=part_number,
+                UploadId=mp_upload['UploadId'],
+                Body=buffer.getvalue().encode('utf-8')
+            )
+            parts.append({'ETag': part['ETag'], 'PartNumber': part_number})
+
+        s3.complete_multipart_upload(
+            Bucket=s3_bucket,
+            Key=s3_key,
+            UploadId=mp_upload['UploadId'],
+            MultipartUpload={'Parts': parts}
+        )    
+
+        logger.info("Multipart s3 upload complete.") 
+
+    def stream_records_to_s3_parquet(self, record_chunks, s3_bucket, s3_filename):
+        logger.info("Starting multipart s3 upload....")
+        s3 = boto3.client('s3')
+        timestamp = datetime.now(timezone.utc).strftime("%m%d%y_%H%M%S")
+        s3_key = f"{s3_filename}_{timestamp}.parquet"
+        mp_upload = s3.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
+        
+        parts = []
+        part_number = 1
+        buffer = BytesIO()
+        buffer_size = 0 
+
+        total_records = 0
+        part_records = 0
+
+        for chunk in record_chunks:
+            df = pd.DataFrame(chunk)
+            num_records = len(df)
+            total_records += num_records
+            part_records += num_records
+            temp_buffer = BytesIO()
+            table = pa.Table.from_pandas(df)
+            pq.write_table(table, temp_buffer)
+            temp_buffer.seek(0)
+            data = temp_buffer.getvalue()
+            buffer.write(data)
+            buffer_size += len(data)
+
+            # If buffer is >= min_part_size, upload as a part
+            if buffer_size >= self.min_part_size:
+                buffer.seek(0)
+                part = s3.upload_part(
+                    Bucket=s3_bucket,
+                    Key=s3_key,
+                    PartNumber=part_number,
+                    UploadId=mp_upload['UploadId'],
+                    Body=buffer.getvalue()
+                )
+                parts.append({'ETag': part['ETag'], 'PartNumber': part_number})
+                logger.info(
+                    f"Part-{part_number} s3 upload complete.\n"
+                    f"Records uploaded in this part: {part_records}, total uploaded so far: {total_records}"
+                    )
+                part_number += 1
+                buffer = BytesIO()
+                buffer_size = 0
+                part_records = 0
+
+        # Upload any remaining data (last part, can be < min_part_size)
+        if buffer_size > 0:
+            buffer.seek(0)
+            part = s3.upload_part(
+                Bucket=s3_bucket,
+                Key=s3_key,
+                PartNumber=part_number,
+                UploadId=mp_upload['UploadId'],
+                Body=buffer.getvalue()
+            )
+            parts.append({'ETag': part['ETag'], 'PartNumber': part_number})
+
+        s3.complete_multipart_upload(
+            Bucket=s3_bucket,
+            Key=s3_key,
+            UploadId=mp_upload['UploadId'],
+            MultipartUpload={'Parts': parts}
+        )
+
+        logger.info(
+            f"Multipart upload complete for {s3_key}.\n "
+            f"Total records uploaded: {total_records}"        
+        )
+
+
+    def truncate_table(self, engine, schema_name: str, table_name: str):
+        """
+        Truncate the given table using a SQLAlchemy Engine .
+        """
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f'TRUNCATE TABLE "{schema_name}"."{table_name}";')
+                )
+
+        except Exception as e:
+            logger.error(f"Error truncating table {schema_name}.{table_name}: {e}")
+            raise
+
+    def apply_staging_to_main(
+        self,
+        engine,
+        schema_name: str,
+        main_table: str,
+        staging_table: str,
+        all_cols: list[str],
+        key_cols: list[str],
+    ):
+        """
+        In a single DB transaction (using a SQLAlchemy Engine):
+        - DROP TABLE IF EXISTS {main_table}_new
+        - CREATE TABLE {main_table}_new (LIKE {main_table} INCLUDING ALL)
+        - INSERT from staging + main into {main_table}_new
+        - LOCK main table
+        - RENAME main -> old, new -> main
+        - DROP old main
+        - (optionally) TRUNCATE staging
+
+        All statements inside engine.begin() are executed within one transaction.
+        """
+        logger.info("Build reusable sql frangments")
+        cols_csv = ", ".join(f'"{c}"' for c in all_cols)
+        staging_select = ", ".join(f's."{c}"' for c in all_cols)
+        main_select = ", ".join(f'm."{c}"' for c in all_cols)
+
+        join_condition = " AND ".join(
+            [f'm."{k}" = s."{k}"' for k in key_cols]
+        )
+
+        first_key = key_cols[0]     #for the NULL check in LEFT JOIN filter
+
+        logger.info("Build query")
+        sql = f'''
+            INSERT INTO "{schema_name}"."{main_table}_new" ({cols_csv})
+            SELECT {staging_select}
+            FROM "{schema_name}"."{staging_table}" s
+
+            UNION ALL
+
+            SELECT {main_select}
+            FROM "{schema_name}"."{main_table}" m
+            LEFT JOIN "{schema_name}"."{staging_table}" s
+            ON {join_condition}
+            WHERE s."{first_key}" IS NULL;
+        '''
+
+        with engine.begin() as conn:
+            # 1. Drop leftover shadow table if any
+            logger.info("Dropping shadow table if exists.")
+            conn.execute(
+                text(
+                    f'DROP TABLE IF EXISTS "{schema_name}"."{main_table}_new";'
+                )
+            )
+
+            # 2. Create new table like main
+            logger.info("Creating new table from main")
+            conn.execute(
+                text(
+                    f'''
+                    CREATE TABLE "{schema_name}"."{main_table}_new"
+                    (LIKE "{schema_name}"."{main_table}" INCLUDING ALL);
+                    '''
+                )
+            )
+
+            # 3. Populate new main table
+            logger.info("Inserting data to new main table")
+            conn.execute(text(sql))
+
+            # 4. Lock main table and swap
+            logger.info(f"Lock main and swap: rename {main_table} to {main_table}_old, {main_table}_new to {main_table}, drop {main_table}_old")
+            conn.execute(
+                text(
+                    f'LOCK TABLE "{schema_name}"."{main_table}" '
+                    f'IN ACCESS EXCLUSIVE MODE;'
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{schema_name}"."{main_table}" '
+                    f'RENAME TO "{main_table}_old";'
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{schema_name}"."{main_table}_new" '
+                    f'RENAME TO "{main_table}";'
+                )
+            )
+
+            # 5. Drop old main table 
+            logger.info("Drop old main")
+            conn.execute(
+                text(
+                    f'DROP TABLE "{schema_name}"."{main_table}_old";'
+                )
+            )
+
+            # 6. TRUNCATE staging so it's always empty after a successful run
+            conn.execute(
+                text(
+                    f'TRUNCATE TABLE "{schema_name}"."{staging_table}";'
+                )
+            )
+
+    def execute_ddl_dml(self, engine: Engine, sql: str) -> None:
+        """
+        Execute a SQL DDL/DML statements that do not return result sets such as
+        - REFRESH MATERIALIZED VIEW
+        - UPDATE
+        - DELETE
+        - INSERT
+        - DDL statements
+
+        Parameters
+        ----------
+        engine : sqlalchemy.engine.Engine
+            SQLAlchemy database engine.
+        query : str
+            SQL query string to execute.
+
+        Returns
+        ------
+        None
+        """
+
+        if not isinstance(engine, Engine):
+            raise ValueError("engine must be a SQLAlchemy Engine instance")
+
+        if not isinstance(sql, str) or not sql.strip():
+            raise ValueError("query must be a non-empty string")
+
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(sql))
+        except SQLAlchemyError:
+            raise

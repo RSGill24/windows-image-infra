@@ -1,54 +1,101 @@
-import polars as pl
-from enum import StrEnum
+- name: Ensure /tmp/logs exists
+  ansible.builtin.file:
+    path: /tmp/logs
+    state: directory
+    mode: '0755'
 
-class VulnStates(StrEnum):
-    OPEN = "OPEN"
-    REOPENED = "REOPENED"
-    FIXED = "FIXED"
+- name: Run Free to track memory usage with timestamp
+  ansible.builtin.shell: |
+    nohup bash -c 'free -m -s 10 | while IFS= read -r line; do
+    printf "%s %s\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$line"
+    done >> /tmp/logs/free.log 2>&1 &'
+  args:
+    executable: /bin/bash
+  become: true
 
-class VulnSources(StrEnum):
-    AGENT = "AGENT"
-    NNM = "NNM"
-    NESSUS = "NESSUS"
+- name: Script block
+  block:
+  - name: Run Poam Creation Automation
+    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_create.py
+    register: output_create
 
-class VulnSeverity(StrEnum):
-    info = "info"
-    low = "low"
-    medium = "medium"
-    high = "high"
-    critical = "critical"
+  - name: Run Poam Closure Automation
+    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_closure.py
+    register: output_close
 
-class ComplianceResults(StrEnum):
-    PASSED = "PASSED"
-    FAILED = "FAILED"
-    WARNING = "WARNING"
-    SKIPPED = "SKIPPED"
-    ERROR = "ERROR"
-    UNKNOWN = "UNKNOWN"
+  - name: Run SNOW/CSAM RCA Poam Milestone Sync
+    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_update.py
+    register: output_sync
 
-NNM_FILTER = {
-    'source': [VulnSources.AGENT, VulnSources.NESSUS] #filter out NNM
-}
+  always:
+  - debug:
+      var: output_create
+  - debug:
+      var: output_close
+  - debug:
+      var: output_sync
 
-IRA_FILTER = {
-    "plugin_id": pl.Series([10267,10396,10400,10902,11011,11936,12634,19506,20811,21745,22869,24269,104410,110095,110385,110723,117885,141118])
-}
+  - name: Dump kernel ring buffer (dmesg)
+    shell: dmesg > /tmp/logs/dmesg.log
+    become: true
 
-SCAN_ANALYSIS_FILTER = {
-    "severity": list(VulnSeverity)[1:],
-    # "plugin_type": 'active' # looks like the available types are combined,local,remote,summary, or null...
-}
+  - name: Dump full journalctl
+    shell: journalctl --no-pager > /tmp/logs/journalctl.log
+    become: true
 
-FAILED_FILTER = {
-    "plugin_id": pl.Series([12634,19506,21745,24786,91822,102094,104410,110385,110723,117885,1025070,1028543])
-}
+  - name: Copy /var/log/messages
+    copy:
+      src: /var/log/messages
+      dest: /tmp/logs/messages.log
+      remote_src: yes
+    become: true
 
-# VM doesn't have filters, not sure what to do another those. We don't care about "info" which is passed, only need mancheck or failed
-# Not sure what to do with ERROR...it seems to be in some way a mancheck...
-# Also no plugin_type
-COMPLIANCE_RESULTS_FILTER = {
-    "compliance_results": [ComplianceResults.WARNING, ComplianceResults.ERROR, ComplianceResults.FAILED]
-}
-# status = "WARNING" seems to be mancheck, "ERROR" means there was an error with the check, "FAILED" is a hard fail, "PASSED" is success
-# There is also "UNKNOWN" and "SKIPPED"
-# Can filter using `compliance_results`
+  - name: set timestamp
+    set_fact:
+      date: "{{ lookup('pipe', 'date +%Y%m%d-%H%M') }}"
+
+  - name: set log filename
+    set_fact:
+      logs_fn: logs_{{ date }}_{{ branch_name }}.zip
+
+  - name: Create a zip archive of /tmp/logs
+    community.general.archive:
+      path: /tmp/logs/
+      format: zip
+      dest: /tmp/{{ logs_fn }}
+    become: true
+
+  - name: change ownership
+    ansible.builtin.file:
+      path: /tmp/{{ logs_fn }}
+      owner: zzadmin
+      group: zzadmin
+    become: true
+
+  - name: Fetch the log zip file to Jenkins workspace
+    ansible.builtin.fetch:
+      src: /tmp/{{ logs_fn }}
+      dest: "{{ lookup('env', 'WORKSPACE') }}/{{ logs_fn }}"
+      flat: yes
+
+  - name: move logs.zip to s3
+    amazon.aws.s3_object:
+      bucket: sara-weakness-tracking
+      object: weakness_tracking_poams/{{ logs_fn }}
+      src: /tmp/{{ logs_fn }}
+      mode: put
+      region: us-gov-west-1
+
+  - name: See if /tmp/logs/unstable_notify exists
+    ansible.builtin.stat:
+      path: /tmp/logs/unstable_notify
+    register: unstable
+
+  - name: write soft fail sentinel
+    ansible.builtin.file:
+      path: "{{ lookup('env', 'WORKSPACE') }}/.soft_fail"
+      state: touch
+      mode: '0644'
+    when: unstable.stat.exists
+    delegate_to: localhost
+    run_once: true

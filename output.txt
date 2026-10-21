@@ -1,230 +1,54 @@
-import os
-import json
-import time
-import tempfile
-import shutil
-import logging
-from pathlib import Path
-from datetime import datetime
-from typing import Union
-from logging.handlers import RotatingFileHandler
-
 import polars as pl
-from tenable.io import TenableIO
-from tenable.io.exports.iterator import ExportsIterator
-from tenable.errors import ServerError, RestflyException, TioExportsError
+from enum import StrEnum
 
-from .tenable_vm_standard_filters import *
+class VulnStates(StrEnum):
+    OPEN = "OPEN"
+    REOPENED = "REOPENED"
+    FIXED = "FIXED"
 
-FORMATTER = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+class VulnSources(StrEnum):
+    AGENT = "AGENT"
+    NNM = "NNM"
+    NESSUS = "NESSUS"
 
-def set_file_handler(logger, logfile_name, level):
-    # Updated to use pathlib for directory and file construction
-    log_dir = Path(tempfile.gettempdir()) / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    log_file = log_dir / logfile_name
-    file_handler = RotatingFileHandler(log_file, maxBytes=(10*(2**20)), backupCount=10)
-    file_handler.setFormatter(FORMATTER)
-    file_handler.setLevel(level)
-    logger.addHandler(file_handler)
-    return logger
+class VulnSeverity(StrEnum):
+    info = "info"
+    low = "low"
+    medium = "medium"
+    high = "high"
+    critical = "critical"
 
-def set_stream_handler(logger, level):
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(FORMATTER)
-    stream_handler.setLevel(level)
-    logger.addHandler(stream_handler)
-    return logger
+class ComplianceResults(StrEnum):
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+    WARNING = "WARNING"
+    SKIPPED = "SKIPPED"
+    ERROR = "ERROR"
+    UNKNOWN = "UNKNOWN"
 
-for obj in [TenableIO, ExportsIterator]:
-    tio_logger = logging.getLogger(f'{obj.__module__}.{obj.__name__}')
-    tio_logger.setLevel(logging.DEBUG)
-    set_stream_handler(tio_logger, logging.DEBUG)
-    set_file_handler(tio_logger, "tenable_io.log", logging.DEBUG)
+NNM_FILTER = {
+    'source': [VulnSources.AGENT, VulnSources.NESSUS] #filter out NNM
+}
 
-logger = logging.getLogger("tenable_vm_pull")
-logger.propagate=False
-logger.setLevel(logging.DEBUG)
+IRA_FILTER = {
+    "plugin_id": pl.Series([10267,10396,10400,10902,11011,11936,12634,19506,20811,21745,22869,24269,104410,110095,110385,110723,117885,141118])
+}
 
-logger = set_file_handler(logger, "tenable_vm_pull.log", logging.DEBUG)
-logger = set_stream_handler(logger, logging.DEBUG)
+SCAN_ANALYSIS_FILTER = {
+    "severity": list(VulnSeverity)[1:],
+    # "plugin_type": 'active' # looks like the available types are combined,local,remote,summary, or null...
+}
 
-TENABLE_VM_URL = "https://fedcloud.tenable.com"
+FAILED_FILTER = {
+    "plugin_id": pl.Series([12634,19506,21745,24786,91822,102094,104410,110385,110723,117885,1025070,1028543])
+}
 
-def get_io_api_client(access_key, secret_key, url=TENABLE_VM_URL, retries=5, backoff=2.0):
-    ServerError.set_retryable(True)
-
-    return TenableIO(
-        url=url, 
-        access_key=access_key, 
-        secret_key=secret_key,
-        retries=retries,
-        backoff=backoff
-    )
-
-def join_assets_tags(df: pl.LazyFrame, assets_df: pl.LazyFrame, left_on: str) -> pl.LazyFrame:
-    """asset_uuid for vulns"""
-    return df.join(assets_df['id', 'tags'], left_on=left_on, right_on='id') #do this to get asset tags for vulns
-
-def flatten_exports(export_data: pl.LazyFrame):
-    structs = [name for name, schema in export_data.collect_schema().items() if isinstance(schema, pl.Struct)]
-    export_data = export_data.with_columns(*[pl.col(name).name.prefix_fields(f"{name}_") for name in structs]).unnest(structs)
-    return export_data
-
-def null_empty_child_struct(df: Union[pl.DataFrame, pl.LazyFrame]):
-    def rebuild_path(path: list, dtype: pl.DataType) -> list[pl.Expr] | None:
-        field_name = path[-1]
-        if not isinstance(dtype, pl.Struct):
-            return []
-        
-        if not len(dtype.fields):
-            head, *rest = path
-            *children, tail = rest
-            _expr = pl.col(head)
-            for child in children:
-                _expr = _expr.struct.field(child)
-            _expr = _expr.struct.with_fields(pl.lit(None).alias(tail))
-            return [_expr]
-        
-        child_exprs = []
-        for f in dtype.fields:
-            child_path = path + [f.name]
-            built = rebuild_path(child_path, f.dtype)
-            if not built:
-                continue
-            child_exprs.extend(built)
-
-        return child_exprs
-    
-    out_exprs = []
-    for col, dt in df.collect_schema().items():
-        built = rebuild_path([col], dt)
-        if not built:
-            continue
-        expr = built[0].alias(col)
-        out_exprs.append(expr)
-
-    return df.with_columns(out_exprs)
-
-# --- Updated Export Logic ---
-
-def _write_chunk_ndjson(data: list[dict], export_uuid: str, export_type: str, export_chunk_id: int, version: int, base_dir: Path):
-    """
-    Callback function for run_threaded(). Writes an individual chunk to its own NDJSON file.
-    """
-    fn = base_dir / f"{export_type}-{export_uuid}-{export_chunk_id}-{version}.ndjson"
-    with fn.open('w') as f:
-        for item in data:
-            f.write(json.dumps(item) + "\n")
-
-_original_get_status = ExportsIterator._get_status
-
-def _patched_get_status(self):
-    # Call the original method to do its normal checks and assignments
-    status = _original_get_status(self)
-    
-    # Intercept a CANCELLED status and force an exception to break infinite loops
-    if status.status == 'CANCELLED':
-        self._log.error(f"Export {self.type} {self.uuid} was CANCELLED. Forcing exit.")
-        raise TioExportsError(
-                export=self.type, 
-                uuid=self.uuid, 
-                msg=f"Export job {self.uuid} was CANCELLED by the server."
-            )
-        
-    return status
-
-# Apply the patch to the class
-ExportsIterator._get_status = _patched_get_status
-
-def _run_threaded_export_with_retries(tio_method, *filters: dict, retries: int = 5, num_threads: int = 4) -> pl.LazyFrame:
-    """
-    Generic method to execute PyTenable exports using threads and pathlib.
-    Implements retry logic for transient API and Restfly exceptions.
-    """
-    attempts_left = retries + 1
-    if not filters:
-        filters = [{}]
-        
-    temp_dir = Path(tempfile.gettempdir())
-    base_export_dir = temp_dir / f"_export_{tio_method.__name__}_{int(time.time())}"
-    
-    while attempts_left > 0:
-        try:
-            start = datetime.now()
-            
-            if base_export_dir.exists():
-                shutil.rmtree(base_export_dir)
-            
-            base_export_dir.mkdir(parents=True, exist_ok=True)
-            
-            for filts in filters:
-                iterator = tio_method(**filts)
-                
-                iterator.run_threaded(
-                    func=_write_chunk_ndjson,
-                    kwargs={'base_dir': base_export_dir},
-                    num_threads=num_threads
-                )
-            
-            logger.debug("Took %s to complete threaded export for %s", datetime.now() - start, tio_method.__name__)
-            
-            glob_path = base_export_dir / "*.ndjson"
-            return null_empty_child_struct(pl.scan_ndjson(glob_path, infer_schema_length=None))
-            
-        except (RestflyException, ServerError) as e:
-            attempts_left -= 1
-            logger.exception("Exception hit during %s export. Retries left: %s", tio_method.__name__, attempts_left)
-            
-            if base_export_dir.exists():
-                shutil.rmtree(base_export_dir, ignore_errors=True)
-            
-            if attempts_left == 0:
-                raise e
-            
-            time.sleep(5) 
-
-# --- Export Wrapper Functions ---
-
-def get_assets(tio: TenableIO, filter_null_tags=True) -> pl.LazyFrame:
-    assets_df = _run_threaded_export_with_retries(tio.exports.assets_v2)
-    if filter_null_tags:
-        assets_df = assets_df.filter(~pl.col('tags').is_null()) 
-    return assets_df
-
-def get_vulns_exports(tio: TenableIO, *filter:dict, no_nnm=True, flatten=True, retries=5):
-    if no_nnm:
-        if filter:
-            filter = [{**NNM_FILTER, **_filts} for _filts in filter]
-        else:
-            filter = [NNM_FILTER]
-            
-    results = _run_threaded_export_with_retries(tio.exports.vulns, *filter, retries=retries)
-    if flatten:
-        results = flatten_exports(results)
-    return results
-
-def get_compliance_exports(tio: TenableIO, *filter:dict, flatten=True, retries=5):
-    results = _run_threaded_export_with_retries(tio.exports.compliance, *filter, retries=retries)
-    if flatten:
-        results = flatten_exports(results)
-    return results
-
-def xref_to_sc_format(xref_key) -> pl.Expr:
-    return (
-        pl.col(xref_key).list.eval(
-            pl.element().struct.field("type") + " #" + pl.element().struct.field("id")
-        ).list.join(',').name.keep()
-    )
-    
-if __name__ == "__main__":
-    # Keeping os here since pathlib does not manage environment variables
-    ak = os.environ['TENABLE_VM_ACCESS_KEY']
-    sk = os.environ['TENABLE_VM_SECRET_KEY']
-    tio = get_io_api_client(ak, sk)
-    assets_df = get_assets(tio)
-    vulns = get_vulns_exports(tio, {'severity': [VulnSeverity.critical]}, no_nnm=True, flatten=True, retries=1)
-    # compliance = get_compliance_exports(tio, COMPLIANCE_RESULTS_FILTER, flatten=True, retries=1)
-
-    pass
+# VM doesn't have filters, not sure what to do another those. We don't care about "info" which is passed, only need mancheck or failed
+# Not sure what to do with ERROR...it seems to be in some way a mancheck...
+# Also no plugin_type
+COMPLIANCE_RESULTS_FILTER = {
+    "compliance_results": [ComplianceResults.WARNING, ComplianceResults.ERROR, ComplianceResults.FAILED]
+}
+# status = "WARNING" seems to be mancheck, "ERROR" means there was an error with the check, "FAILED" is a hard fail, "PASSED" is success
+# There is also "UNKNOWN" and "SKIPPED"
+# Can filter using `compliance_results`

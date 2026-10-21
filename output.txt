@@ -1,77 +1,278 @@
-resource "aws_glue_workflow" "crma_hive_snow_workflow" {
-    name        = "crma_hive_snow_workflow"
-    description = "Glue workflow for CRMA HIVE to contain SNOW jobs"
-}
+import logging
+import time
+from typing import Optional
 
-resource "aws_glue_workflow" "crma_hive_mobius_workflow" {
-    name        = "crma_hive_mobius_workflow"
-    description = "Glue workflow for CRMA HIVE to contain MOBIUS jobs"
-}
+import urllib3
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
-resource "aws_glue_workflow" "crma_hive_csam_workflow" {
-    name        = "crma_hive_csam_workflow"
-    description = "Glue workflow for CRMA HIVE to contain CSAM jobs"
-}
 
-resource "aws_glue_workflow" "crma_hive_audit_controls_workflow" {
-    name        = "crma_hive_audit_controls_workflow"
-    description = "Glue workflow for CRMA HIVE to contain Audit Controlds trend dashbaord data prep jobs"
-}
+from crma_hive_connections import Connection
+from crma_hive_utilities import Utility
+from crma_hive_utilities_spark import Spark_Read_Write_Utility
+from crma_hive_data_quality_utilities_spark import SparkDfDataQualityUtilities
+from crma_hive_tvm_utilities import TvmUtility
 
-resource "aws_glue_workflow" "crma_hive_axonius_workflow" {
-    name        = "crma_hive_axonius_workflow"
-    description = "Glue workflow for CRMA HIVE to contain AXONIUS jobs"
-}
 
-resource "aws_glue_workflow" "crma_hive_tvm_light_workflow" {
-    name        = "crma_hive_tvm_light_workflow"
-    description = "Glue workflow for CRMA HIVE to contain TVM jobs for cisco vulns jobs"
-}
 
-resource "aws_glue_workflow" "crma_hive_fisma_scorecard_workflow" {
-    name        = "crma_hive_fisma_scorecard_workflow"
-    description = "Glue workflow for CRMA HIVE to compute FISMA Scorecard Metrics"
-    max_concurrent_runs = 1
-}
+# Turning off warnings
+urllib3.disable_warnings()
 
-resource "aws_glue_workflow" "crma_hive_nvd_and_cisa_workflow" {
-    name        = "crma_hive_nvd_and_cisa_workflow"
-    description = "Glue workflow for CRMA HIVE to fetch, process and load NVD and CISA data to HIVE"
-    max_concurrent_runs = 1
-}
+# Setting up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-resource "aws_glue_workflow" "crma_hive_references_workflow" {
-    name        = "crma_hive_references_workflow"
-    description = "Glue workflow for CRMA HIVE to process and load SSCG data to HIVE"
-    max_concurrent_runs = 1
-}
+# Instantiate classes
+utility = Utility()
+spark_rw_util = Spark_Read_Write_Utility()
+connection = Connection()
+sparkDataQualityUtils = SparkDfDataQualityUtilities()
+tvmUtil = TvmUtility()
+    
+    
+def process_vulns(
+        bucket_name: str,
+        spark: SparkSession,
+        backfill_date: Optional[str] = None
+        ) -> None:
+    """
+    Handles  data cleaning and enrichement of the TVM Vulnerablities dataset 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
 
-resource "aws_glue_workflow" "crma_hive_tvm_vulns_workflow" {
-    name        = "crma_hive_tvm_vulns_workflow"
-    description = "Glue workflow for CRMA HIVE to process and load SSCG data to HIVE"
-    max_concurrent_runs = 1
-}
+    Parameters:
+        bucket_name (str): Name of the s3 bucket
+        dataset (str): name of the dataset to be processed
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
 
-resource "aws_glue_workflow" "crma_hive_tvm_compliance_workflow" {
-    name        = "crma_hive_tvm_compliance_workflow"
-    description = "Glue workflow for CRMA HIVE to fetch, process, and load tvm compliance data to HIVE"
-    max_concurrent_runs = 1
-}
+    """
+    logger.info(f"Fetching data from landing zone...")
+        
+    dataset = "CRMA_HIVE_TVM_VULNS"
+    base_name = f"raw_data/TVM/{dataset}"
 
-resource "aws_glue_workflow" "crma_hive_cmdb_workflow" {
-    name        = "crma_hive_cmdb_workflow"
-    description = "Glue workflow for CRMA HIVE to fetch, process, and CMDB tables datasets to HIVE"
-    max_concurrent_runs = 1
-}
+    if backfill_date:
+        df = spark_rw_util.fetch_spark_df_from_s3_by_date(
+            bucket_name=bucket_name,
+            base_folder=base_name,
+            spark=spark,
+            backfill_date=backfill_date
+        )
+    else:
+        df = spark_rw_util.fetch_spark_df_from_s3(
+            bucket_name=bucket_name,
+            base_folder=base_name,
+            spark=spark
+            )
+    if df is None:
+        raise ValueError("No data fetched from landing zone") 
+    
+    logger.info(f"Retrieve raw data, total records: {df.count()}")
 
-resource "aws_glue_workflow" "crma_hive_audit_report_workflow" {
-    name    = "crma_hive_audit_report_workflow"
-    description = "Glue workflow for CRMA HIVE to maintain software and os entity resolution refrence map/tables"
-}
+    logger.info("Selecting target columns...")
+    target_columns = [   
+        "finding_id" , "severity", "severity_id", "state", "first_found", "last_found", "last_fixed", "indexed", "resurfaced_date", "time_taken_to_fix", "asset_uuid", "asset_operating_system", "asset_hostname", "asset_ipv4", "plugin_id", "plugin_name", "plugin_cvss3_base_score",
+        "plugin_cvss3_temporal_score", "plugin_cvss3_temporal_vector", "plugin_epss_score", "plugin_exploit_available", "plugin_exploitability_ease", "plugin_family", "plugin_cve", "plugin_xrefs", "port_port",
+        "port_protocol", "scan_uuid", "source",    
+    ]
+    df = sparkDataQualityUtils.select_fields(df, target_columns)
 
-################## Roll Back Fill Workflow
-resource "aws_glue_workflow" "crma_hive_rollback_backfill_workflow" {
-    name        = "crma_hive_rollback_backfill_workflow"
-    description = "Glue workflow for CRMA HIVE to reprocess historical tables"
-    max_concurrent_runs = 1
-}
+    logger.info("Exttract is_kev_tenable flag using `CISA_KNOWN_EXPLOITED` in plugin_xrefs")
+    df = df.withColumn(
+        "is_kev_tenable",
+        F.lower(F.col("plugin_xrefs").cast("string")).contains("cisa-known-exploited")
+    )
+
+    logger.info("Exttract is_kev flag using the CISA KEV Catalog")
+
+    logger.info("1. Get CVE lookup")
+    jdbc_url, user, password = connection.parse_pg_uri_to_jdbc("edae-crma-hive", "crmahivedb_fqt")
+    cve_table ="crma_hive.crma_hive_cisa_kev_catalog"
+    cve_lookup_df = spark_rw_util.get_cve_lookup(
+        spark=spark,
+        cve_table=cve_table,
+        jdbc_url=jdbc_url,
+        user=user,
+        password=password
+    )
+
+    logger.info("2. Flantten plugin_cve field")
+    exploded_cves_df = (
+        df
+        .select(
+            "finding_id",
+            F.explode_outer("plugin_cve").alias("cve_id")
+        )
+        .withColumn("cve_id", F.upper(F.trim(F.col("cve_id"))))
+        .filter(F.col("cve_id").isNotNull())
+    )
+
+    logger.info("3. Find rows where there is at least one match in cve lookup")
+    matched_df = (
+        exploded_cves_df
+        .join(
+            F.broadcast(cve_lookup_df),
+            on="cve_id",
+            how="inner"
+        )
+        .select("finding_id")
+        .distinct()
+        .withColumn("is_kev", F.lit(True))
+    )
+
+    logger.info("Add is_kev Columns to the Dataframe")
+    df = (
+        df
+        .join(matched_df, on="finding_id", how="left")
+        .withColumn(
+            "is_kev",
+            F.coalesce(F.col("is_kev"), F.lit(False))
+        )
+    )
+
+        
+    logger.info("Convert struct to JSON string for JDBC loadig compatibility")
+    df = sparkDataQualityUtils.normalize_for_postgres_jdbc(df)
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["first_found", "last_found", "last_fixed", "indexed", "resurfaced_date", ]    
+    df = sparkDataQualityUtils.clean_timestamp_fields(df, cols)
+   
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["severity_id", "plugin_id",  "port_port" ]
+    df = sparkDataQualityUtils.clean_int_fields(df, cols)    
+ 
+
+     #Apply DQ9: Convert columns to float/decimal 
+    cols = ["time_taken_to_fix", "plugin_cvss3_base_score", "plugin_cvss3_temporal_score", "plugin_epss_score"]
+    df = sparkDataQualityUtils.clean_float_fields(df, cols)
+
+    #Apply DQ3: Normalize boolean fields 
+    cols = ["plugin_exploit_available"]
+    df = sparkDataQualityUtils.normalize_boolean_fields(df, cols)
+
+    #Apply DQ1: Not nullabe, Quarantine
+    cols = ["finding_id", "state", "first_found","last_found", "indexed", "asset_uuid", "plugin_id", "port_port", "port_protocol", "scan_uuid" ]
+    df, quarantine_not_null = sparkDataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = [ "finding_id",]
+    df, quarantine_dups = sparkDataQualityUtils.apply_no_duplicates_constraint(df, cols)
+  
+    #Merge quarantine dataframes
+    quarantine_df = quarantine_dups.unionByName(quarantine_not_null, allowMissingColumns=True)
+
+    # Load to destination 
+    logger.info("Loading processed data to destination...")
+    prefix = f"processed/TVM/"
+    spark_rw_util.load_processed_spark_df_to_s3(
+        bucket_name = bucket_name, 
+        spark=spark,
+        prefix=prefix,
+        dataset = dataset, 
+        clean_df=df, 
+        quarantine_df=quarantine_df,
+        backfill_date=backfill_date,
+        )
+
+
+def run_normal_mode(
+        bucket_name: str,
+        spark: SparkSession
+) -> None:
+    """
+    Executes TenableVM datasets processing.
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+    Returns:
+        None
+    """
+    logger.info("TVM data processing running in NORMAL mode.")
+
+    logger.info(f"Processing TenableVM Vulnerablities dataset")
+    process_vulns(bucket_name=bucket_name, spark=spark)
+    utility.log_memory_usage() 
+
+
+def run_backfill_mode(
+        bucket_name: str,
+        spark: SparkSession,
+        hist_table_name: str,
+        backfill_date: str,
+        datasets: list,
+) -> None:
+    """
+    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
+
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+        datasets (list): List of datsets upstream to a historical table
+    
+    Returns:
+        None
+    """
+    logger.info(f"TVM data processing running in BACKFILL mode.")
+    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
+
+    if not utility.is_valid_backfill_date(backfill_date):
+        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
+        raise
+
+    if not datasets:
+        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
+        raise
+
+    for dataset in datasets:
+        dataset_upper = dataset.upper().strip()
+
+        # call processors with backfill_date        
+        if dataset_upper == "TVM_VULNS":
+            logger.info("Processing TVM vulns (in backfill mode)")
+            process_vulns(bucket_name, spark, backfill_date)
+            utility.log_memory_usage() 
+
+def main():
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    if not bucket_name:
+       raise ValueError("S3 bucket not found!")
+    try:    
+        spark= SparkSession.builder.getOrCreate()
+    except Exception as e:
+        logger.error(f"Error creaign spark session: {e}")
+        raise
+  
+    # resolve workflow run properties
+    workflow_params = utility.get_workflow_props()
+    backfill_date = workflow_params.get("--backfill_date")
+    hist_table_name = workflow_params.get("--hist_table_name")
+    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
+
+    # run in backfill mode if all backfill properties are present
+    backfill_mode = bool(backfill_date and hist_table_name)
+ 
+    if backfill_mode:
+        run_backfill_mode(
+            bucket_name=bucket_name, 
+            spark=spark,
+            hist_table_name=hist_table_name, 
+            backfill_date=backfill_date, 
+            datasets=datasets
+        ) 
+
+    else:
+        run_normal_mode(
+            bucket_name=bucket_name,
+            spark=spark
+        )
+
+    elapsed_minutes = (time.time() - start_time)/60
+    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+
+if __name__ == "__main__":
+    main()

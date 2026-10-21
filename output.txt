@@ -1,21 +1,17 @@
-from typing import Optional
-
 import pandas as pd
-import urllib3
-from datetime import datetime
-import logging
+import numpy as np
+from datetime import datetime, timedelta, timezone
 import time
+import logging
+
+from crma_hive_data_aggregator import DataAggregator
 from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_tvm_utilities_spark import SparkTvmUtility
+from crma_hive_tvm_utilities import TvmUtility
 from crma_hive_connections import Connection
 from sqlalchemy.engine import Engine
-import re
+from sqlalchemy import text
+from typing import Optional
 
-from pyspark.sql import SparkSession
-
-
-# Turning off warnings
-urllib3.disable_warnings()
 
 # Setting up logger
 logger = logging.getLogger()
@@ -23,173 +19,425 @@ logger.setLevel(logging.INFO)
 
 # Instantiate classes
 utility = Utility()
+tvmutils = TvmUtility()
 rw_util = Read_Write_Utility()
 connection = Connection()
-sparkTvmUtil = SparkTvmUtility()
 
 
-# Define global vars
+# Instantiate DQ utilities
+metrics_utils = DataAggregator()
+
 MAIN_SCHEMA = rw_util.MAIN_SCHEMA
 BACKFILL_SCHEMA = rw_util.BACKFILL_SCHEMA
-TABLE_CRMA_HIVE_TVM_VULNS= "TVM_VULNS" 
-
-VULNS_HIST_TABLE_NAME = "crma_hive_tvm_vulns_hist"
+HIST_TABLE = "crma_hive_tvm_vulns_agg_hist"
+BACKFILL_CRITERIA = "crma_hive_tvm_vulns_hist"
 METADATA_TABLE = "crma_hive_load_control_metadata"
+
+def _run_query(engine: Engine, schema_name: str, query_template: str) -> pd.DataFrame:
+    """
+    Retireve data from a given table
+    """
+    query = query_template.format(schema=schema_name)
+    logger.info(f"Executing following sql in '{schema_name}' schema: {query}")
+    return rw_util.fetch_postgres_table(engine, text(query))
+
+def create_vuln_agg_metrics(
+        engine: Engine,
+        input: dict,
+        schema: str,
+        backfill_date: Optional[str] = None
+) -> pd.DataFrame:
+    """
+    Pull data from source tables, join, and compute aggregate metrics
+
+    Parameters:
+        engine: SQLAlchemy engine to connect to Postgres server
+        input: Contains info on source table names and fields 
+        schema: Database schema 
+        backfill_date: Specifies the etl_date to use when running in backfill mode 
+
+    Returns:
+        Dataframe containing aggregate metrics for cisco vulnerabilites and assets
+    """
+    logger.info(f"Creating metris for cisco_vuln_agg_hist table")
+    now = datetime.now().date()
+    # get total device count
+    total_device_count = _run_query(engine,schema,input["total_number_of_devices_query"])["count"].iloc[0]
+    logger.info(f"Total Axonius Device count: {total_device_count}")
+
+    # get total scanned count
+    total_scanned_asset_count = _run_query(engine,schema,input["total_number_of_scanned_devices_query"])["count"].iloc[0]
+    logger.info(f"Total count of Axonius devices cross refrenced with TVM assets (scanned within last 30 days): {total_scanned_asset_count}")
+
+    # get vuln findings enriched with assets and devices data
+    vuln_assets_devices_df = _run_query(engine,schema,input["vuln_assets_devices_query"])
+    logger.info(f"Total count of TVM Vuln Findings enriched with TVM Assets and Axonius devices: {len(vuln_assets_devices_df)} rows")
+    logger.info(vuln_assets_devices_df.head(1).to_dict())
+
+    # add indicator fields
+    vuln_assets_devices_df['is_mitigated_in_last_seven_days'] = vuln_assets_devices_df['last_fixed'].notna() & ((now - vuln_assets_devices_df['last_fixed'].dt.date) <= pd.Timedelta(days=7))
+    vuln_assets_devices_df['is_mitigated_in_last_thirty_days'] = vuln_assets_devices_df['last_fixed'].notna() & ((now - vuln_assets_devices_df['last_fixed'].dt.date) <= pd.Timedelta(days=30))
+    vuln_assets_devices_df['is_mitigated_in_last_nintey_days'] = vuln_assets_devices_df['last_fixed'].notna() & ((now - vuln_assets_devices_df['last_fixed'].dt.date) <= pd.Timedelta(days=90)) 
+    vuln_assets_devices_df['last_scan_time_dt'] = pd.to_datetime(vuln_assets_devices_df["scan_last_scan_time"], unit="s")
+    vuln_assets_devices_df['is_recent_scan'] = vuln_assets_devices_df['last_scan_time_dt'].notna() & ((now - vuln_assets_devices_df['last_scan_time_dt'].dt.date) <= pd.Timedelta(days=30))  
+
+    vuln_assets_devices_df["devices_os_category"] = tvmutils.classify_operating_system(vuln_assets_devices_df) 
+    # logger.info(vuln_assets_devices_df["devices_os_category"].value_counts().to_dict())
+    vuln_assets_devices_df["devices_type_category"] = tvmutils.classify_device_type(vuln_assets_devices_df) 
+    # logger.info(vuln_assets_devices_df["devices_type_category"].value_counts().to_dict())
+    
+    # compute metrics for last 7 days
+    logger.info(f"Computing metrics")
+    avg_tt_remediate_critical_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "critical"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_high_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "high"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_medium_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "medium"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_low_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "low"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_kevs_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("is_kev", True), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_vulns_in_last_7_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_critical_kevs_in_last_7_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "critical"), ("is_kev", True), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_critical_vulns_in_last_7_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "critical"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_high_kevs_in_last_7_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "high"), ("is_kev", True), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_high_vulns_in_last_7_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "high"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_medium_kevs_in_last_7_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "medium"), ("is_kev", True), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_medium_vulns_in_last_7_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "medium"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_low_kevs_in_last_7_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "low"), ("is_kev", True), ("is_mitigated_in_last_seven_days", True)], "finding_id"))    
+    total_fixed_low_vulns_in_last_7_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "low"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    total_fixed_kevs_in_last_7_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("is_kev", True), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    
+    avg_tt_remediate_windows_os_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "windows"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_linux_os_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "linux"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_cisco_os_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "cisco"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_juniper_os_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "juniper"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_esxi_os_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "esxi"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_unknown_os_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "unknown"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_server_device_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "server"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_workstation_device_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "workstation"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_network_device_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "network"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_hypervisor_device_vulns_in_last_7_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "hypervisor"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
+    avg_tt_remediate_unknown_device_vulns_in_last_7_days  = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "unknown"), ("is_mitigated_in_last_seven_days", True)], "finding_id"))
   
-def run_normal_mode(
-    engine: Engine, 
-    spark: SparkSession,
-    jdbc_url: str,
-    user: str,
-    password: str, 
-    bucket_name: str, 
-    schema: str
-) -> None:
-    """
-    Prepares input parameters and calls a utility function to load TVM historical tables.
+    # compute metrics for last 30 days
+    avg_tt_remediate_critical_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "critical"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_high_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "high"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_medium_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "medium"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_low_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "low"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_kevs_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("is_kev", True), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_vulns_in_last_30_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_critical_kevs_in_last_30_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "critical"), ("is_kev", True), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_critical_vulns_in_last_30_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "critical"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_high_kevs_in_last_30_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "high"), ("is_kev", True), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_high_vulns_in_last_30_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "high"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_medium_kevs_in_last_30_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "medium"), ("is_kev", True), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_medium_vulns_in_last_30_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "medium"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_low_kevs_in_last_30_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "low"), ("is_kev", True), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))    
+    total_fixed_low_vulns_in_last_30_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "low"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    total_fixed_kevs_in_last_30_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("is_kev", True), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
 
-    Parameters:
-        engine (str): SQLalchemy engine
-        schema (str): The database schema in which data is loaded.
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files 
-    Returns:
-        None
-    """
-    logger.info("Running in NORMAL mode.")
+    avg_tt_remediate_windows_os_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "windows"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_linux_os_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "linux"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_cisco_os_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "cisco"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_juniper_os_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "juniper"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_esxi_os_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "esxi"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_unknown_os_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "unknown"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_server_device_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "server"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_workstation_device_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "workstation"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_network_device_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "network"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_hypervisor_device_vulns_in_last_30_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "hypervisor"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+    avg_tt_remediate_unknown_device_vulns_in_last_30_days  = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "unknown"), ("is_mitigated_in_last_thirty_days", True)], "finding_id"))
+      
+    # compute metrics for last 90 days
+    avg_tt_remediate_critical_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "critical"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_high_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "high"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_medium_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "medium"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_low_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("severity", "low"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_kevs_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("is_kev", True), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_vulns_in_last_90_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_critical_kevs_in_last_90_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "critical"), ("is_kev", True), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_critical_vulns_in_last_90_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "critical"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_high_kevs_in_last_90_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "high"), ("is_kev", True), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_high_vulns_in_last_90_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "high"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_medium_kevs_in_last_90_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "medium"), ("is_kev", True), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_medium_vulns_in_last_90_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "medium"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_low_kevs_in_last_90_days = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "low"), ("is_kev", True), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))    
+    total_fixed_low_vulns_in_last_90_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("severity", "low"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    total_fixed_kevs_in_last_90_days =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", "FIXED"), ("is_kev", True), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
 
-    logger.info(f"Preparing to load TVM {TABLE_CRMA_HIVE_TVM_VULNS} to {VULNS_HIST_TABLE_NAME}")
-    sparkTvmUtil.load_tvm_data_to_db_hist_tables(
-        engine=engine, 
-        spark=spark,
-        jdbc_url=jdbc_url,
-        user=user,
-        password=password, 
-        bucket_name=bucket_name, 
-        dataset=TABLE_CRMA_HIVE_TVM_VULNS,
-        target_table=VULNS_HIST_TABLE_NAME,
-        load_control_table=METADATA_TABLE,
-        schema=schema,
-        )
-
-    ##Parallel loading##
-    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{VULNS_HIST_TABLE_NAME}' to '{schema}' schema")     
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")  
-    jdbc_url2, user2, password2 = connection.parse_pg_uri_to_jdbc("edae-crma-hive", "crmahivedb_fqt")
-    sparkTvmUtil.load_tvm_data_to_db_hist_tables(
-        engine=engine2, 
-        spark=spark,
-        jdbc_url=jdbc_url2,
-        user=user2,
-        password=password2,
-        bucket_name=bucket_name, 
-        dataset=TABLE_CRMA_HIVE_TVM_VULNS,
-        target_table=VULNS_HIST_TABLE_NAME,
-        load_control_table=METADATA_TABLE,
-        schema=schema,
-        )
-
-    utility.log_memory_usage() 
-
-def run_backfill_mode(
-    engine: Engine,
-    spark: SparkSession,
-    jdbc_url: str,
-    user: str,
-    password: str, 
-    schema: str, 
-    bucket_name: str, 
-    hist_table_name: str, 
-    backfill_date: str
-)->None:
-    """
-    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
-
-    Parameters:
-        engine (str): SQLalchemy engine
-        schema (str): The database schema in which data is loaded.
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+    avg_tt_remediate_windows_os_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "windows"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_linux_os_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "linux"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_cisco_os_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "cisco"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_juniper_os_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "juniper"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_esxi_os_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "esxi"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_unknown_os_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_os_category", "unknown"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))    
+    avg_tt_remediate_server_device_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "server"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_workstation_device_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "workstation"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_network_device_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "network"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_hypervisor_device_vulns_in_last_90_days = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "hypervisor"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
+    avg_tt_remediate_unknown_device_vulns_in_last_90_days  = metrics_utils.avg_time_days(metrics_utils.filter_dataframe(vuln_assets_devices_df, [("state", "FIXED"),("devices_type_category", "unknown"), ("is_mitigated_in_last_nintey_days", True)], "finding_id"))
    
-    Returns:
-        None
+    # compute metrics with no time constraint
+    total_open_vulns = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"])], "finding_id"))
+    total_open_critical_kevs = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("severity", "critical"), ("is_kev", True)], "finding_id"))    
+    total_open_critical_vulns =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("severity", "critical")], "finding_id"))
+    total_open_high_kevs = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("severity", "high"), ("is_kev", True)], "finding_id"))    
+    total_open_high_vulns =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("severity", "high")], "finding_id"))
+    total_open_medium_kevs = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("severity", "medium"), ("is_kev", True)], "finding_id"))      
+    total_open_medium_vulns =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("severity", "medium")], "finding_id"))
+    total_open_low_kevs = len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("severity", "low"), ("is_kev", True)], "finding_id"))    
+    total_open_low_vulns =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("severity", "low")], "finding_id"))
+    total_open_kevs =  len(metrics_utils.filter_dataframe(vuln_assets_devices_df,[("state", ["OPEN","REOPENED"]), ("is_kev", True)], "finding_id"))
+    total_assets = total_device_count
+    total_assets_scanned = total_scanned_asset_count
+    
+    if backfill_date:
+        etl_date = datetime.strptime(backfill_date, "%m%d%y").strftime("%Y-%m-%d")
+    else:
+        etl_date = now
+
+    # build schema for agg metrics
+    data = {
+        "avg_tt_remediate_critical_vulns_in_last_7_days": avg_tt_remediate_critical_vulns_in_last_7_days,
+        "avg_tt_remediate_high_vulns_in_last_7_days": avg_tt_remediate_high_vulns_in_last_7_days,
+        "avg_tt_remediate_medium_vulns_in_last_7_days": avg_tt_remediate_medium_vulns_in_last_7_days,
+        "avg_tt_remediate_low_vulns_in_last_7_days": avg_tt_remediate_low_vulns_in_last_7_days,
+        "avg_tt_remediate_kevs_in_last_7_days": avg_tt_remediate_kevs_in_last_7_days,
+        "total_fixed_vulns_in_last_7_days": total_fixed_vulns_in_last_7_days,
+        "total_fixed_critical_kevs_in_last_7_days": total_fixed_critical_kevs_in_last_7_days,
+        "total_fixed_critical_vulns_in_last_7_days": total_fixed_critical_vulns_in_last_7_days,
+        "total_fixed_high_kevs_in_last_7_days": total_fixed_high_kevs_in_last_7_days,
+        "total_fixed_high_vulns_in_last_7_days": total_fixed_high_vulns_in_last_7_days,
+        "total_fixed_medium_kevs_in_last_7_days": total_fixed_medium_kevs_in_last_7_days,
+        "total_fixed_medium_vulns_in_last_7_days": total_fixed_medium_vulns_in_last_7_days,
+        "total_fixed_low_kevs_in_last_7_days": total_fixed_low_kevs_in_last_7_days,
+        "total_fixed_low_vulns_in_last_7_days": total_fixed_low_vulns_in_last_7_days,
+        "total_fixed_kevs_in_last_7_days": total_fixed_kevs_in_last_7_days,
+        "avg_tt_remediate_windows_os_vulns_in_last_7_days": avg_tt_remediate_windows_os_vulns_in_last_7_days,
+        "avg_tt_remediate_linux_os_vulns_in_last_7_days": avg_tt_remediate_linux_os_vulns_in_last_7_days,
+        "avg_tt_remediate_cisco_os_vulns_in_last_7_days": avg_tt_remediate_cisco_os_vulns_in_last_7_days,
+        "avg_tt_remediate_juniper_os_vulns_in_last_7_days": avg_tt_remediate_juniper_os_vulns_in_last_7_days,
+        "avg_tt_remediate_esxi_os_vulns_in_last_7_days": avg_tt_remediate_esxi_os_vulns_in_last_7_days,
+        "avg_tt_remediate_unknown_os_vulns_in_last_7_days": avg_tt_remediate_unknown_os_vulns_in_last_7_days,
+        "avg_tt_remediate_server_device_vulns_in_last_7_days": avg_tt_remediate_server_device_vulns_in_last_7_days,
+        "avg_tt_remediate_workstation_device_vulns_in_last_7_days": avg_tt_remediate_workstation_device_vulns_in_last_7_days,
+        "avg_tt_remediate_network_device_vulns_in_last_7_days": avg_tt_remediate_network_device_vulns_in_last_7_days,
+        "avg_tt_remediate_hypervisor_device_vulns_in_last_7_days": avg_tt_remediate_hypervisor_device_vulns_in_last_7_days,
+        "avg_tt_remediate_unknown_device_vulns_in_last_7_days": avg_tt_remediate_unknown_device_vulns_in_last_7_days,
+        "avg_tt_remediate_critical_vulns_in_last_30_days": avg_tt_remediate_critical_vulns_in_last_30_days,
+        "avg_tt_remediate_high_vulns_in_last_30_days": avg_tt_remediate_high_vulns_in_last_30_days,
+        "avg_tt_remediate_medium_vulns_in_last_30_days": avg_tt_remediate_medium_vulns_in_last_30_days,
+        "avg_tt_remediate_low_vulns_in_last_30_days": avg_tt_remediate_low_vulns_in_last_30_days,
+        "avg_tt_remediate_kevs_in_last_30_days": avg_tt_remediate_kevs_in_last_30_days,
+        "total_fixed_vulns_in_last_30_days": total_fixed_vulns_in_last_30_days,
+        "total_fixed_critical_kevs_in_last_30_days": total_fixed_critical_kevs_in_last_30_days,
+        "total_fixed_critical_vulns_in_last_30_days": total_fixed_critical_vulns_in_last_30_days,
+        "total_fixed_high_kevs_in_last_30_days": total_fixed_high_kevs_in_last_30_days,
+        "total_fixed_high_vulns_in_last_30_days": total_fixed_high_vulns_in_last_30_days,
+        "total_fixed_medium_kevs_in_last_30_days": total_fixed_medium_kevs_in_last_30_days,
+        "total_fixed_medium_vulns_in_last_30_days": total_fixed_medium_vulns_in_last_30_days,
+        "total_fixed_low_kevs_in_last_30_days": total_fixed_low_kevs_in_last_30_days,
+        "total_fixed_low_vulns_in_last_30_days": total_fixed_low_vulns_in_last_30_days,
+        "total_fixed_kevs_in_last_30_days": total_fixed_kevs_in_last_30_days,
+        "avg_tt_remediate_windows_os_vulns_in_last_30_days": avg_tt_remediate_windows_os_vulns_in_last_30_days,
+        "avg_tt_remediate_linux_os_vulns_in_last_30_days": avg_tt_remediate_linux_os_vulns_in_last_30_days,
+        "avg_tt_remediate_cisco_os_vulns_in_last_30_days": avg_tt_remediate_cisco_os_vulns_in_last_30_days,
+        "avg_tt_remediate_juniper_os_vulns_in_last_30_days": avg_tt_remediate_juniper_os_vulns_in_last_30_days,
+        "avg_tt_remediate_esxi_os_vulns_in_last_30_days": avg_tt_remediate_esxi_os_vulns_in_last_30_days,
+        "avg_tt_remediate_unknown_os_vulns_in_last_30_days": avg_tt_remediate_unknown_os_vulns_in_last_30_days,
+        "avg_tt_remediate_server_device_vulns_in_last_30_days": avg_tt_remediate_server_device_vulns_in_last_30_days,
+        "avg_tt_remediate_workstation_device_vulns_in_last_30_days": avg_tt_remediate_workstation_device_vulns_in_last_30_days,
+        "avg_tt_remediate_network_device_vulns_in_last_30_days": avg_tt_remediate_network_device_vulns_in_last_30_days,
+        "avg_tt_remediate_hypervisor_device_vulns_in_last_30_days": avg_tt_remediate_hypervisor_device_vulns_in_last_30_days,
+        "avg_tt_remediate_unknown_device_vulns_in_last_30_days": avg_tt_remediate_unknown_device_vulns_in_last_30_days,
+        "avg_tt_remediate_critical_vulns_in_last_90_days": avg_tt_remediate_critical_vulns_in_last_90_days,
+        "avg_tt_remediate_high_vulns_in_last_90_days": avg_tt_remediate_high_vulns_in_last_90_days,
+        "avg_tt_remediate_medium_vulns_in_last_90_days": avg_tt_remediate_medium_vulns_in_last_90_days,
+        "avg_tt_remediate_low_vulns_in_last_90_days": avg_tt_remediate_low_vulns_in_last_90_days,
+        "avg_tt_remediate_kevs_in_last_90_days": avg_tt_remediate_kevs_in_last_90_days,
+        "total_fixed_vulns_in_last_90_days": total_fixed_vulns_in_last_90_days,
+        "total_fixed_critical_kevs_in_last_90_days": total_fixed_critical_kevs_in_last_90_days,
+        "total_fixed_critical_vulns_in_last_90_days": total_fixed_critical_vulns_in_last_90_days,
+        "total_fixed_high_kevs_in_last_90_days": total_fixed_high_kevs_in_last_90_days,
+        "total_fixed_high_vulns_in_last_90_days": total_fixed_high_vulns_in_last_90_days,
+        "total_fixed_medium_kevs_in_last_90_days": total_fixed_medium_kevs_in_last_90_days,
+        "total_fixed_medium_vulns_in_last_90_days": total_fixed_medium_vulns_in_last_90_days,
+        "total_fixed_low_kevs_in_last_90_days": total_fixed_low_kevs_in_last_90_days,
+        "total_fixed_low_vulns_in_last_90_days": total_fixed_low_vulns_in_last_90_days,
+        "total_fixed_kevs_in_last_90_days": total_fixed_kevs_in_last_90_days,
+        "avg_tt_remediate_windows_os_vulns_in_last_90_days": avg_tt_remediate_windows_os_vulns_in_last_90_days,
+        "avg_tt_remediate_linux_os_vulns_in_last_90_days": avg_tt_remediate_linux_os_vulns_in_last_90_days,
+        "avg_tt_remediate_cisco_os_vulns_in_last_90_days": avg_tt_remediate_cisco_os_vulns_in_last_90_days,
+        "avg_tt_remediate_juniper_os_vulns_in_last_90_days": avg_tt_remediate_juniper_os_vulns_in_last_90_days,
+        "avg_tt_remediate_esxi_os_vulns_in_last_90_days": avg_tt_remediate_esxi_os_vulns_in_last_90_days,
+        "avg_tt_remediate_unknown_os_vulns_in_last_90_days": avg_tt_remediate_unknown_os_vulns_in_last_90_days,
+        "avg_tt_remediate_server_device_vulns_in_last_90_days": avg_tt_remediate_server_device_vulns_in_last_90_days,
+        "avg_tt_remediate_workstation_device_vulns_in_last_90_days": avg_tt_remediate_workstation_device_vulns_in_last_90_days,
+        "avg_tt_remediate_network_device_vulns_in_last_90_days": avg_tt_remediate_network_device_vulns_in_last_90_days,
+        "avg_tt_remediate_hypervisor_device_vulns_in_last_90_days": avg_tt_remediate_hypervisor_device_vulns_in_last_90_days,
+        "avg_tt_remediate_unknown_device_vulns_in_last_90_days": avg_tt_remediate_unknown_device_vulns_in_last_90_days,
+        "total_open_vulns": total_open_vulns,
+        "total_open_critical_kevs": total_open_critical_kevs,
+        "total_open_critical_vulns": total_open_critical_vulns,
+        "total_open_high_kevs": total_open_high_kevs,
+        "total_open_high_vulns": total_open_high_vulns,
+        "total_open_medium_kevs": total_open_medium_kevs,
+        "total_open_medium_vulns": total_open_medium_vulns,
+        "total_open_low_kevs": total_open_low_kevs,
+        "total_open_low_vulns": total_open_low_vulns,
+        "total_open_kevs": total_open_kevs,
+        "total_assets": total_assets,
+        "total_assets_scanned": total_assets_scanned,
+        "etl_date": etl_date
+    }
+
+    metrics_df = pd.DataFrame(data, index=[0])
+    logger.info(f"Final metrics: {len(metrics_df)} rows, {len(metrics_df.columns)} columns")
+    logger.info(metrics_df.head(1).to_dict())
+    return metrics_df
+
+def load_to_db(
+        engine: Engine,
+        df: pd.DataFrame,
+        schema: str,
+        table: str, 
+        load_control_table: str,
+        backfill_date: Optional[str] = None
+) -> bool:
+    """
+    Loads data to desttination database
+    
+    Parameters:
+        engine (create_engine): Database connection engine
+        df (pd.DataFrame):
+        schema (str):
+        table (str):
+        load_control_table (str):
+    """
+    logger.info(f"Loading table '{table}' to '{schema}' schema")
+
+    # replicate schema if in backfill mode
+    if schema == BACKFILL_SCHEMA:
+        created_objects = rw_util.replicate_schema(engine, MAIN_SCHEMA, BACKFILL_SCHEMA)
+        if created_objects:
+            logger.info(f"Succesfully created the following objects in backfill schema:'{BACKFILL_SCHEMA}'")
+            for obj in created_objects:
+                obj_type, obj_name = obj.split(".",1)
+                logger.info(f"{obj_type.upper():6} {obj_name}")
+        else:
+            logger.info(f"'{BACKFILL_SCHEMA}' schema is up to date. No tables/views created.")
+
+    # load data to hist table 
+    load_control_etl_date = datetime.now().date()
+
+    db_load_flag = rw_util.load_table_to_db_daily_idempotent(etl_date=load_control_etl_date, engine=engine, df=df, schema_name=schema, table_name=table, load_control_table=load_control_table, exist_type="append" )
+
+    if db_load_flag: #if loaded, perfoma post load validation
+        logger.info(f"Perfomming post load validation on table '{table}' in '{schema}' schema")
+        if rw_util.post_load_validation_hist_tables(engine=engine, df=df, schema_name=schema, table_name=table, backfill_date=backfill_date):
+            logger.info(f"Post load validation check passed for table '{table}' in '{schema}' schema")
+
+            ##Parallel loading##
+            logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+            logger.info(f"Loading table '{table}' to '{schema}' schema")     
+            engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+            rw_util.load_table_to_db_daily_idempotent(etl_date=load_control_etl_date, engine=engine2, df=df, schema_name=schema, table_name=table, load_control_table=load_control_table, exist_type="append" )
+
+        else:
+            raise RuntimeError(f"Post load validation check failed for {table} in '{schema}' schema")
+    
+    return db_load_flag
+
+def run_backfill_mode(engine: Engine, input: dict, bucket_name: str, hist_table_name: str, backfill_date: str ):
+    """
+    Backfill mode will query and load data from/to backfill schema and load a copy of reults to s3, overwring existing file if one exists
+
+    Parameters:
+        input (dict): configuration dictionary for source tables and fields
+        engine (Engine): SQLAlchmey engine 
+        bucket_name (str): Name of S3 bucket name to write output file
+        backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525) 
     """
     logger.info(f"Running in BACKFILL mode.")
     logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}")
-
+    
     if not utility.is_valid_backfill_date(backfill_date):
         logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
         raise
 
-    if hist_table_name.lower() == VULNS_HIST_TABLE_NAME.lower():
-        logger.info(f"Preparing to load TVM {TABLE_CRMA_HIVE_TVM_VULNS} to {hist_table_name}")
-        sparkTvmUtil.load_tvm_data_to_db_hist_tables(
-            engine=engine, 
-            jdbc_url=jdbc_url,
-            user=user,
-            password=password, 
-            bucket_name=bucket_name, 
-            dataset=TABLE_CRMA_HIVE_TVM_VULNS,
-            target_table=VULNS_HIST_TABLE_NAME,
-            load_control_table=METADATA_TABLE,
-            schema=schema,
-            backfill_date=backfill_date,
-            )
-        utility.log_memory_usage() 
+    if hist_table_name.lower() == BACKFILL_CRITERIA.lower():    
+        # retrieve input data
+        df = create_vuln_agg_metrics(engine=engine, input=input, schema=BACKFILL_SCHEMA, backfill_date=backfill_date)
+        
+        # load input data to hist table
+        is_success = load_to_db(engine = engine, df=df, schema=BACKFILL_SCHEMA, table=HIST_TABLE, load_control_table= METADATA_TABLE, backfill_date=backfill_date)
+
+        # overwrite/write file to s3
+        if is_success:
+            prefix = "processed/MISC/CLEAN/"
+            base_filename = f"CRMA_HIVE_TVM_VULNS_AGG_HIST"
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, base_filename, backfill_date, "PARQUET")
+            rw_util.load_to_s3(bucket_name, df, target_filename, "PARQUET", True)
 
 def main():
+    
     start_time = time.time()
+    utility.log_memory_usage() 
 
     engine = connection.postgres_engine("edae-crma-hive")
-    jdbc_url, user, password = connection.parse_pg_uri_to_jdbc("edae-crma-hive")
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
 
-    try: 
-        bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]  
-    except Exception as e:
-       logger.error(f"Error retrieving bucket name:{e}")   
-       raise     
-    try: 
-        spark= SparkSession.builder.getOrCreate()
-    except Exception as e:
-       logger.error(f"Error creating spark session:{e}")   
-       raise  
+    # create sql queries to ingest source data
+    input=  {
+            "total_number_of_devices_query":    """
+                                                SELECT COUNT(DISTINCT internal_axon_id) 
+                                                FROM {schema}.crma_hive_axonius_devices
+                                                """,
 
+            "total_number_of_scanned_devices_query":    """
+                                                        SELECT COUNT(distinct internal_axon_id)
+                                                        FROM {schema}.crma_hive_axonius_devices d
+                                                        INNER JOIN {schema}.crma_hive_tvm_assets a ON a.id = ANY(d.asset_uuid)
+                                                        WHERE DATE_TRUNC('day', a.scan_last_scan_time) >= DATE_TRUNC('day', NOW() - INTERVAL '30 days')
+                                                        """,
 
-    logger.info("Extracting workflow run protperies.")
+            "vuln_assets_devices_query":    """
+                                            SELECT finding_id, severity, state, time_taken_to_fix, last_fixed, asset_operating_system, is_kev, v.etl_date as etl_date,
+                                            id, operating_systems, network_ipv4s, network_hostnames, scan_last_scan_time, 
+                                            devices_type, devices_os_type, devices_hostname_preferred, devices_ips_v4_preferred, internal_axon_id
+                                            FROM {schema}.crma_hive_tvm_vulns v
+                                            LEFT JOIN {schema}.crma_hive_tvm_assets a ON v.asset_uuid = a.id		
+                                            LEFT JOIN {schema}.crma_hive_axonius_devices d ON d.asset_uuid @> ARRAY[a.id]
+                                            """
+            }  
+
+        
+
+    # resolve workflow run properties
     workflow_params = utility.get_workflow_props()
     backfill_date = workflow_params.get("--backfill_date")
-    hist_table_name = workflow_params.get("--hist_table_name") 
+    hist_table_name = workflow_params.get("--hist_table_name")
 
-    backfill_mode = bool(backfill_date and hist_table_name)
+    # set backfill mode flag
+    backfill_mode = bool(backfill_date) and bool(hist_table_name)
 
+    # run in backfill mode if all backfill properties are present
     if backfill_mode:
-        run_backfill_mode(
-            engine=engine, 
-            spark=spark,
-            jdbc_url=jdbc_url,
-            user=user,
-            password=password, 
-            schema=BACKFILL_SCHEMA, 
-            bucket_name=bucket_name, 
-            hist_table_name=hist_table_name, 
-            backfill_date=backfill_date
-        )   
-    
+        run_backfill_mode(engine, input, bucket_name, hist_table_name, backfill_date)
     else:
-        run_normal_mode(
-            engine=engine, 
-            spark=spark,
-            jdbc_url=jdbc_url,
-            user=user,
-            password=password, 
-            bucket_name=bucket_name, 
-            schema=MAIN_SCHEMA
-        )
+        logger.info(f"Running in Normal mode.")
+        
+        #Retrieve input data and create table
+        df = create_vuln_agg_metrics(engine=engine, input=input, schema=MAIN_SCHEMA)
 
+        # #Load to database
+        db_load_flag = load_to_db(engine = engine, df=df, schema=MAIN_SCHEMA, table=HIST_TABLE, load_control_table=METADATA_TABLE)
 
+        if db_load_flag:
+            # If data loaded to db, save copy in S3 bucket for backup
+            filename= f"processed/MISC/CLEAN/CRMA_HIVE_TVM_VULNS_AGG_HIST"
+            rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
+    
     elapsed_minutes = (time.time() - start_time)/60
     logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+
 
 
 if __name__ == "__main__":

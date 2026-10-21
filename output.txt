@@ -1,1107 +1,1208 @@
-#### SNOW Workflow Triggers ###
-resource "aws_glue_trigger" "crma_hive_fetch_snow_tables_trigger" {
-  name     = "crma_hive_fetch_snow_tables_trigger"
-  schedule = "cron(0 6 ? * SAT *)" # At 6:00AM UTC Every Saturday 
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_snow_tables.name
+terraform {
+  backend "s3" {
+    # The 'key' is passed by the 'terraform -init' command
+    bucket = "maa-edae"
+    region = "us-gov-west-1"
   }
 }
 
-resource "aws_glue_trigger" "crma_hive_snow_process_data_trigger" {
-  name     = "crma_hive_snow_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_snow_tables.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_connection" "crma_hive_network_connection" {
+  name = "crma_hive_network_connection"
+  connection_type = "NETWORK"
+  physical_connection_requirements {
+    subnet_id = var.subnet_id
+    security_group_id_list = var.glue_security_group_ids
+    availability_zone = var.availability_zone
   }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_process_data.name
-  }
+  tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_snow_data_to_target_trigger" {
-  name     = "crma_hive_snow_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_snow_process_data.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_fetch_snow_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_snow_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_snow_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_data_to_target.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_snow_downstream_jobs_trigger" {
-  name     = "crma_hive_snow_downstream_jobs_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_snow_data_to_target.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_snow_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_snow_process_data"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_snow_process_data.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_create_derived_tables.name
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_snow_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_snow_data_to_target"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_snow_data_to_target.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_snow_etl_manager.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_ucmm_integration.name
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_snow_create_derived_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_snow_create_derived_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_snow_create_derived_tables.py"
+    python_version  = "3.9"
   }
+  default_arguments = {
+    "--additional-python-modules" = "psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+
+resource "aws_glue_job" "crma_hive_fetch_mobius_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_mobius_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_mobius_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_mobius_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_mobius_process_data"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_mobius_process_data.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_mobius_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_mobius_data_to_target"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_mobius_data_to_target.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_snow_etl_manager.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_fetch_csam_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_csam_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_csam_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_csam_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_csam_process_data"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_csam_process_data.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_csam_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_csam_data_to_target"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_csam_data_to_target.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_snow_etl_manager.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_load_audit_controls" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_load_audit_controls"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_load_audit_controls.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_fetch_axonius_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_axonius_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_axonius_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_axonius_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_axonius_process_data"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_axonius_process_data.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_axonius_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_axonius_data_to_target"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_axonius_data_to_target.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_snow_etl_manager.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+
+
+resource "aws_glue_job" "crma_hive_fetch_tvm_light_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_tvm_light_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_tvm_light_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,sqlalchemy==2,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_light_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_light_process_data"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_light_process_data.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_light_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_light_data_to_target"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_light_data_to_target.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py "
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_light_data_to_hist_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_light_data_to_hist_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_light_data_to_hist_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py "
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_light_data_to_hist_agg_table" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_light_data_to_hist_agg_table"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_light_data_to_hist_agg_table.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_data_aggregator.py, s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+
+###TVM Vulns Workflow jobs ####
+resource "aws_glue_job" "crma_hive_fetch_tvm_vulns_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_tvm_vulns_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_tvm_vulns_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,sqlalchemy==2,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_vulns_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_vulns_process_data"
+  role_arn     = var.glue_role
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  
+  worker_type       = "G.2X"
+  number_of_workers = 10
+  command {
+    name            = "glueetl"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_vulns_process_data.py"
+    python_version  = "3"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,sqlalchemy==2,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py,s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py,s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities_spark.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities_spark.py,s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_vulns_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_vulns_data_to_target"
+  role_arn     = var.glue_role
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+
+  worker_type       = "G.2X"
+  number_of_workers = 10
+  command {
+    name            = "glueetl"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_vulns_data_to_target.py"
+    python_version  = "3"
+  }
+
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,sqlalchemy==2,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities_spark.py,s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities_spark.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_vulns_data_to_hist_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_vulns_data_to_hist_tables"
+  role_arn     = var.glue_role
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+
+  worker_type       = "G.2X"
+  number_of_workers = 10
+  command {
+    name            = "glueetl"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_vulns_data_to_hist_tables.py"
+    python_version  = "3"
+  }
+
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,sqlalchemy==2,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities_spark.py,s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities_spark.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_vulns_data_to_hist_agg_table" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_vulns_data_to_hist_agg_table"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_vulns_data_to_hist_agg_table.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_data_aggregator.py, s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
 }
 ###
 
-### Mobius Workflow Triggers ############
-resource "aws_glue_trigger" "crma_hive_fetch_mobius_tables_trigger" {
-  name     = "crma_hive_fetch_mobius_tables_trigger"
-  schedule = "cron(0 6 * * ? *)" #Daily at 6am UTC
-  type     = "SCHEDULED"
 
-  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
 
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_mobius_tables.name
+
+###TVM Compliance Workflow jobs ####
+resource "aws_glue_job" "crma_hive_fetch_tvm_compliance_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_tvm_compliance_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_tvm_compliance_tables.py"
+    python_version  = "3.9"
   }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,sqlalchemy==2,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_compliance_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_compliance_process_data"
+  role_arn     = var.glue_role
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  
+  worker_type       = "G.2X"
+  number_of_workers = 10
+  command {
+    name            = "glueetl"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_compliance_process_data.py"
+    python_version  = "3"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,sqlalchemy==2,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py,s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py,s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities_spark.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities_spark.py,s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_tvm_compliance_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_compliance_data_to_target"
+  role_arn     = var.glue_role
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+
+  worker_type       = "G.2X"
+  number_of_workers = 10
+  command {
+    name            = "glueetl"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_compliance_data_to_target.py"
+    python_version  = "3"
+  }
+
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,sqlalchemy==2,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities.py,s3://${var.s3_bucket}/scripts/crma_hive_utilities_spark.py,s3://${var.s3_bucket}/scripts/crma_hive_tvm_utilities_spark.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+###
+
+
+
+
+resource "aws_glue_job" "crma_hive_fetch_process_load_nvd_and_cisa" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_process_load_nvd_and_cisa"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_process_load_nvd_and_cisa.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_scorecard_compute_vmscore" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_compute_vmscore"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_compute_vmscore.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_scorecard_compute_cmscore" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_compute_cmscore"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_compute_cmscore.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_scorecard_compute_swamscore" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_compute_swamscore"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_compute_swamscore.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_scorecard_compute_hwamscore" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_compute_hwamscore"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_compute_hwamscore.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_scorecard_compute_hbdscore" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_compute_hbdscore"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_compute_hbdscore.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_scorecard_compute_prohibited_osscore" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_compute_prohibited_osscore"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_compute_prohibited_osscore.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_scorecard_compute_security_authz_score" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_compute_security_authz_score"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_compute_security_authz_score.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
+}
+
+resource "aws_glue_job" "crma_hive_scorecard_compute_sc_score" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_compute_sc_score"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_compute_sc_score.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
 }
 
 
-resource "aws_glue_trigger" "crma_hive_mobius_process_data_trigger" {
-  name     = "crma_hive_mobius_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_mobius_tables.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_scorecard_aggregate_scores" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_aggregate_scores"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_aggregate_scores.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_mobius_process_data.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_mobius_data_to_target_trigger" {
-  name     = "crma_hive_mobius_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_mobius_process_data.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_scorecard_impact_computation" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_impact_computation"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_impact_computation.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_normalize_mobius_softwares_trigger" {
-  name     = "crma_hive_normalize_mobius_softwares_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_normalize_mobius_softwares.name
-  }
-}
-####
-
-#### CSAM Workflow Triggers #####
-resource "aws_glue_trigger" "crma_hive_fetch_csam_tables_trigger" {
-  name     = "crma_hive_fetch_csam_tables_trigger"
-  schedule = "cron(0 8 * * ? *)" #Daily at 8am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_csam_tables.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_csam_process_data_trigger" {
-  name     = "crma_hive_csam_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_csam_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_csam_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_csam_data_to_target_trigger" {
-  name     = "crma_hive_csam_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_csam_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_csam_data_to_target.name
-  }
-}
-####
-
-####  Audit Controls Workflow Triggers #####
-resource "aws_glue_trigger" "crma_hive_load_audit_controls_trigger" {
-  name     = "crma_hive_load_audit_controls_trigger"
-  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_audit_controls_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_load_audit_controls.name
-  }
-}
-##############
-
-
-####   AXONIUS Workflow Triggers
-
-resource "aws_glue_trigger" "crma_hive_fetch_axonius_tables_trigger" {
-  name     = "crma_hive_fetch_axonius_tables_trigger"
-  schedule = "cron(0 10 * * ? *)" #Daily at 10am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_axonius_tables.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_axonius_process_data_trigger" {
-  name     = "crma_hive_axonius_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_axonius_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_axonius_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_axonius_data_to_target_trigger" {
-  name     = "crma_hive_axonius_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_axonius_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
-  }
-}
-
-##############
-
-
-########  TVM Light Workflow Triggers ########
-
-resource "aws_glue_trigger" "crma_hive_fetch_tvm_light_tables_trigger" {
-  name     = "crma_hive_fetch_tvm_light_tables_trigger"
-  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_tvm_light_tables.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_light_process_data_trigger" {
-  name     = "crma_hive_tvm_light_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_tvm_light_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
-  }
+    tags = local.common_tags
 }
 
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_target_trigger" {
-  name     = "crma_hive_tvm_light_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_scorecard_input_devices" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_input_devices"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_input_devices.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_tables_trigger" {
-  name     = "crma_hive_tvm_light_data_to_hist_tables_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_sscg_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_sscg_process_data"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_sscg_process_data.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,openpyxl==3.1.2"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_agg_table_trigger" {
-  name     = "crma_hive_tvm_light_data_to_hist_agg_table_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_sscg_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_sscg_data_to_target"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_sscg_data_to_target.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_normalize_tvm_softwares_trigger" {
-  name     = "crma_hive_normalize_tvm_softwares_trigger"
-  type     = "CONDITIONAL"
 
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_tvm_to_mobius_software_map" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_tvm_to_mobius_software_map"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_tvm_to_mobius_software_map.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,openpyxl==3.1.2"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_normalize_tvm_softwares.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_normalize_tvm_os_trigger" {
-  name     = "crma_hive_normalize_tvm_os_trigger"
-  type     = "CONDITIONAL"
 
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_device_to_mobius_os_map" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_device_to_mobius_os_map"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_device_to_mobius_os_map.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,openpyxl==3.1.2"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_normalize_tvm_os.name
-  }
-}
-#################
-
-##### TVM Vunls Workflow Jobs Triggers ####
-resource "aws_glue_trigger" "crma_hive_fetch_tvm_vulns_tables_tables_trigger" {
-  name     = "crma_hive_fetch_tvm_vulns_tables_tables_trigger"
-  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
-
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_tvm_vulns_tables.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_process_data_data_trigger" {
-  name     = "crma_hive_tvm_vulns_process_data_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_tvm_vulns_tables.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_known_mobius_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_known_mobius_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_known_mobius_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,openpyxl==3.1.2"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_target_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_normalize_tvm_softwares" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_normalize_tvm_softwares"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_normalize_tvm_softwares.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_tables_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_hist_tables_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_normalize_tvm_os" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_normalize_tvm_os"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_normalize_tvm_os.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
-  }
+    tags = local.common_tags
 }
 
-# resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_agg_table_trigger" {
-#   name     = "crma_hive_tvm_vulns_data_to_hist_agg_table_trigger"
-#   type     = "CONDITIONAL"
-
-#   workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-#   predicate {
-#       conditions {
-#         job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-#         state    = "SUCCEEDED"
-#       }
-#   }
-
-#   actions {
-#     job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_agg_table.name
-#   }
-# }
-
-############
-
-##### TVM Compliance Workflow Jobs Triggers ####
-resource "aws_glue_trigger" "crma_hive_fetch_tvm_compliance_tables_trigger" {
-  name     = "crma_hive_fetch_tvm_compliance_tables_trigger"
-  schedule = "cron(0 3 * * ? *)" #Daily at 3am UTC
-
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_tvm_compliance_tables.name
+resource "aws_glue_job" "crma_hive_normalize_mobius_softwares" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_normalize_mobius_softwares"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_normalize_mobius_softwares.py"
+    python_version  = "3.9"
   }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_compliance_process_data_trigger" {
-  name     = "crma_hive_tvm_compliance_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_tvm_compliance_tables.name
-        state    = "SUCCEEDED"
-      }
+######## CMDB workflow jobs
+resource "aws_glue_job" "crma_hive_fetch_cmdb_tables" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_fetch_cmdb_tables"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_fetch_cmdb_tables.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_compliance_data_to_target_trigger" {
-  name     = "crma_hive_tvm_compliance_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_cmdb_process_data" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_cmdb_process_data"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_cmdb_process_data.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "requests==2.32.5,psycopg2-binary==2.9.10,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,pyarrow==17.0.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
-  }
+    tags = local.common_tags
 }
 
-#####
-
-
-####  FISMA Scorecard Workflow Jobs Triggers ######
-resource "aws_glue_trigger" "crma_hive_scorecard_input_devices_trigger" {
-  name     = "crma_hive_scorecard_input_devices_trigger"
-  schedule      = "cron(0 11 * * ? *)" # Daily at 11am UTC
-  type          = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_input_devices.name
+resource "aws_glue_job" "crma_hive_cmdb_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_cmdb_data_to_target"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_cmdb_data_to_target.py"
+    python_version  = "3.9"
   }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_snow_etl_manager.py"
+    "library-set"                 = "analytics"
+  }
+
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_scorecard_scoring_jobs_trigger" {
-  name     = "crma_hive_scorecard_scoring_jobs_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_input_devices.name
-        state    = "SUCCEEDED"
-      }
+######## REFRENCE MAP AUDIT workflow jobs ########
+resource "aws_glue_job" "crma_hive_audit_report_software_map" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_audit_report_software_map"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_audit_report_software_map.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,xlsxwriter==3.2.9,openpyxl==3.1.2,fsspec==2022.11.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_audit_report_models.py, s3://${var.s3_bucket}/scripts/crma_hive_audit_report_utils.py, s3://${var.s3_bucket}/scripts/crma_hive_audit_email_utils.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_vmscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_cmscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_swamscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_hwamscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_hbdscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_prohibited_osscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_security_authz_score.name
-  }  
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_sc_score.name
-  } 
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_scorecard_aggregate_score_and_impact_computation_trigger" {
-  name     = "crma_hive_scorecard_aggregate_score_and_impact_computation_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_vmscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_cmscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_swamscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_hwamscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_hbdscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_prohibited_osscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_security_authz_score.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_sc_score.name
-        state    = "SUCCEEDED"
-      }
-
-      logical = "AND"
+resource "aws_glue_job" "crma_hive_audit_report_os_map" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_audit_report_os_map"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_audit_report_os_map.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,xlsxwriter==3.2.9,openpyxl==3.1.2,fsspec==2022.11.0"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_audit_report_models.py, s3://${var.s3_bucket}/scripts/crma_hive_audit_report_utils.py, s3://${var.s3_bucket}/scripts/crma_hive_audit_email_utils.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_aggregate_scores.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_impact_computation.name
-  }
-
-}
-#############
-
-#######  NVD/CISA Workflow Jobs Triggers #####
-resource "aws_glue_trigger" "crma_hive_fetch_process_load_nvd_and_cisa_trigger" {
-  name     = "crma_hive_fetch_process_load_nvd_and_cisa_trigger"
-  schedule = "cron(0 6 * * ? *)" #Daily at 6am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_nvd_and_cisa_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_process_load_nvd_and_cisa.name
-  }
-}
-##############
-
-
-######## Reference Workflow Jobs Triggers ######
-resource "aws_glue_trigger" "crma_hive_references_workflow_trigger" {
-  name     = "crma_hive_references_workflow_trigger"
-  schedule = "cron(0 6 ? * MON *)" # Every Monday at at 6am UTC (2am EDT)
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_references_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_sscg_process_data.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_to_mobius_software_map.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_device_to_mobius_os_map.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_known_mobius_tables.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_sscg_data_to_target_trigger" {
-  name     = "crma_hive_sscg_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_references_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_sscg_process_data.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_ucmm_data_to_target" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_ucmm_data_to_target"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_ucmm_data_to_target.py"
+    python_version  = "3.9"
   }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_sscg_data_to_target.name
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4,openpyxl==3.1.2"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py"
+    "library-set"                 = "analytics"
   }
-}
-#####
-
-#### CMDB Workflow Triggers ###
-resource "aws_glue_trigger" "crma_hive_fetch_cmdb_tables_trigger" {
-  name     = "crma_hive_fetch_cmdb_tables_trigger"
-  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_cmdb_tables.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_cmdb_process_data_trigger" {
-  name     = "crma_hive_cmdb_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_cmdb_tables.name
-        state    = "SUCCEEDED"
-      }
+resource "aws_glue_job" "crma_hive_scorecard_ucmm_integration" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_scorecard_ucmm_integration"
+  role_arn     = var.glue_role
+  max_capacity = 1
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_scorecard_ucmm_integration.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_data_quality_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_scorecard_utilities.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_cmdb_process_data.name
-  }
+    tags = local.common_tags
 }
 
-resource "aws_glue_trigger" "crma_hive_cmdb_data_to_target_trigger" {
-  name     = "crma_hive_cmdb_data_to_target_trigger"
-  type     = "CONDITIONAL"
 
-  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
 
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_cmdb_process_data.name
-        state    = "SUCCEEDED"
-      }
+######### backfill/rollback jobs##############
+resource "aws_glue_job" "crma_hive_rollback_backfill_orchestrator" {
+  # checkov:skip=CKV_AWS_195 "Glue resource policy managed elsewhere"
+  name         = "crma_hive_rollback_backfill_orchestrator"
+  role_arn     = var.glue_role
+  max_capacity = 0.0625
+  glue_version = "4.0"
+  connections  = [aws_glue_connection.crma_hive_network_connection.name]
+  command {
+    name            = "pythonshell"
+    script_location = "s3://${var.s3_bucket}/scripts/crma_hive_rollback_backfill_orchestrator.py"
+    python_version  = "3.9"
+  }
+  default_arguments = {
+    "--additional-python-modules" = "pyarrow==17.0.0,psycopg2-binary==2.9.10,sqlalchemy==2.0.43,psutil==7.0.0,pandas==2.3.2,numpy==1.26.4"
+    "--extra-py-files"            = "s3://${var.s3_bucket}/scripts/crma_hive_connections.py, s3://${var.s3_bucket}/scripts/crma_hive_utilities.py, s3://${var.s3_bucket}/scripts/crma_hive_snow_etl_manager.py"
+    "library-set"                 = "analytics"
   }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_cmdb_data_to_target.name
-  }
-}
-
-#### Entity Resolution Audit Report Workflow Triggers ###
-resource "aws_glue_trigger" "crma_hive_audit_report_trigger" {
-  name     = "crma_hive_audit_report_workflow_trigger"
-  schedule = "cron(0 12 ? * MON *)" # Every Monday at at 12pm UTC (8am EDT)
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_audit_report_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_audit_report_software_map.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_audit_report_os_map.name
-  }
-}
-
-####
-
-### Triggers for Rollback/Backfill Workflows ####
-resource "aws_glue_trigger" "crma_hive_snow_process_data_backfill_trigger" {
-  name     = "crma_hive_snow_process_data_backfill_trigger"
-  type     = "ON_DEMAND"
-  enabled  = false    // blocks auto trigger during jenkins deployment
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_csam_process_data_backfill_trigger" {
-  name     = "crma_hive_csam_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_snow_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_csam_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_mobius_process_data_backfill_trigger" {
-  name     = "crma_hive_mobius_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_csam_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_mobius_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_axonius_process_data_backfill_trigger" {
-  name     = "crma_hive_axonius_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_mobius_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_axonius_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_light_process_data_backfill_trigger" {
-  name     = "crma_hive_tvm_light_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_axonius_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_process_data_backfill_trigger" {
-  name     = "crma_hive_tvm_vulns_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_compliance_process_data_backfill_trigger" {
-  name     = "crma_hive_tvm_compliance_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_snow_data_to_target_backfill_trigger" {
-  name     = "crma_hive_snow_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_data_to_target.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_csam_data_to_target_backfill_trigger" {
-  name     = "crma_hive_csam_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_snow_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_csam_data_to_target.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_mobius_data_to_target_backfill_trigger" {
-  name     = "crma_hive_mobius_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_csam_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_axonius_data_to_target_backfill_trigger" {
-  name     = "crma_hive_axonius_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_target_backfill_trigger" {
-  name     = "crma_hive_tvm_light_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_target_backfill_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_compliance_data_to_target_backfill_trigger" {
-  name     = "crma_hive_tvm_compliance_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_audit_controls_backfill_trigger" {
-  name     = "crma_hive_audit_controls_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_load_audit_controls.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_tables_backfill_trigger" {
-  name     = "crma_hive_tvm_light_data_to_hist_tables_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_load_audit_controls.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_tables_backfill_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_hist_tables_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_agg_table_backfill_trigger" {
-  name     = "crma_hive_tvm_light_data_to_hist_agg_table_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
-  }
-}
-
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_agg_table_backfill_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_hist_agg_table_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_agg_table.name
-  }
+    tags = local.common_tags
 }

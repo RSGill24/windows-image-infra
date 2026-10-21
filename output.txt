@@ -1,39 +1,56 @@
-# NEED TO BE CAREFUL OF POAMS THAT ISSOs INPUT. perhaps check to see if the VAFT tag is in the poam before proceeding?
-# actually, use the creator field to see who created it...if isso, then skip
-import csam_api_client
-from functools import partial
-from weakness_tracking_poams_create import WeaknessTrackerPoam, wtp_failed_log
 import uuid
+import re
+from html import unescape
+from typing import Dict, Any, Tuple, List
+
+import polars as pl
+import csam_api_client
+from deepdiff import DeepDiff
+
 import os
+
+from csam_helpers import get_poc_report
+
+from weakness_tracking_poams_create import get_rca
 
 from csam_helpers import (
     CSAM_CONFIG,
-    submit_to_csam,
-    post_poam_workflow,
-    created_by_rise,
-    get_poam_level_api_call,
-    put_draft_poam_milestone,
-    post_poam_findings_mitigated_list,
+    csam_retry,
+    get_poam_milestone_level_api_call,
     put_poam_update,
-    CLOSURE_WORFLOW,
-    csam_retry
+    post_draft_poam_milestone,
+    put_draft_poam_milestone,
+    delete_poam_milestone,
+    post_poam_milestone_note,
+    delete_poam_milestone_note,
+    submit_to_csam,
+    get_assignee,
+    get_csam_poc_position,
+    created_by_rise,
+    poam_is_closed,
+    STANDARD_POAM_CLOSURE_MILESTONE,
+    STANDARD_POAM_INITIATION_MILESTONE,
+    US_BUSINESS_DAY,
+    RLThreadPoolExecutor, CSAM_RATE_LIMIT
 )
-
 from snow_helpers import (
-    get_n_transform_snow,
+    SNOW_QUERIES,
+    SNOW_MILESTONE_TABLE_NAME,
     SNOW_POAM_TABLE_NAME,
     SNOW_WEAKNESS_TRACKING_TABLE_NAME,
-    SNOW_FINDINGS_TABLE_NAME,
+    SNOW_USERS_TABLE_NAME,
+    SNOW_API,
+    get_n_transform_snow,
+    get_latest_snow_table,
+    send_to_snow,
+    dedupe_snow_milestones,
+    canonicalize_snow_action_numbers
 )
 
 import logging
-from lib import set_file_handler, set_stream_handler, set_unstable, get_unstable_logger
-import datetime
-import polars as pl
+from lib import set_file_handler, set_stream_handler, get_unstable_logger, set_unstable
 
-from functools import lru_cache
-
-_name = "sara_wt_poam_closure_automation"
+_name = "sara_wt_snow_csam_sync"
 logger = logging.getLogger(_name)
 logger.propagate=False
 logger.setLevel(logging.DEBUG)
@@ -43,184 +60,807 @@ logger = set_stream_handler(logger)
 
 unstable_logger, unstable_fn_path = get_unstable_logger(_name)
 
-log_failed = partial(wtp_failed_log, unstable_logger)
+
+# ---------------------
+# Small helper functions
+# ---------------------
+
+
+
+def dedupe_csam_milestones(poam_ms_df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Duplicates in CSAM: all fields equal except action_number.
+    Keep row with minimum action_number.
+    """
+    if poam_ms_df.is_empty():
+        return poam_ms_df
+
+    business_cols = [c for c in poam_ms_df.columns if c != "action_number"]
+
+    poam_ms_df = poam_ms_df.with_row_index("row_idx")
+
+    keep_idx = (
+        poam_ms_df
+        .sort("action_number")
+        .group_by(business_cols)
+        .agg(pl.col("row_idx").first())
+        .rename({"row_idx": "keep_idx"})
+    )
+
+    keep = poam_ms_df.join(keep_idx, left_on="row_idx", right_on="keep_idx", how="inner")
+    return keep.drop(["row_idx", "keep_idx"], strict=False)
+
+
+def reorder_csam_to_match_snow(
+    milestones_api: csam_api_client.PoamMilestonesApi,
+    poam: csam_api_client.Poam,
+    poam_ms_df: pl.DataFrame,   # CSAM milestones (full list, post-sync)
+    snow_ms: pl.DataFrame,      # SNOW milestones (canonical: 1..N action_number)
+) -> None:
+    """
+    Reorder CSAM milestones so that:
+      - All milestones that correspond to SNOW milestones (joined via 'number')
+        appear first, in SNOW's canonical action_number order.
+      - CSAM-only milestones (no SNOW 'number') appear AFTER the mapped ones,
+        preserving their relative order.
+      - Uses current CSAM action_number values as stable item IDs during simulation.
+    
+    This avoids corrupting order when someone manually creates a CSAM-only milestone
+    and inserts it in the middle.
+    """
+
+    if poam_ms_df.is_empty() or snow_ms.is_empty():
+        return
+
+    # Join SNOW canonical action_number onto CSAM by 'number' (SNOW milestone number)
+    # CSAM-only milestones will have action_number_snow = null
+    joined = poam_ms_df.join(
+        snow_ms.select("number", "action_number"),
+        on="number",
+        how="left",
+        suffix="_snow",
+    )
+
+    # 'action_number' in joined is the current CSAM position (1..total)
+    # 'action_number_snow' is SNOW's canonical position for mapped milestones
+    if "action_number_snow" not in joined.columns:
+        # No mapping at all; nothing to do
+        return
+
+    joined = joined.with_columns(
+        pl.col("action_number_snow").is_not_null().alias("mapped")
+    )
+
+    # Current full order of CSAM milestones = sorted by their current action_number
+    current_order = (
+        joined
+        .sort("action_number")
+        ["action_number"]
+        .to_list()
+    )
+    n = len(current_order)
+    if n <= 1:
+        return
+
+    # Build desired order:
+    # 1) All mapped milestones, ordered by SNOW's canonical action_number_snow
+    mapped = joined.filter(pl.col("mapped"))
+    unmapped = joined.filter(~pl.col("mapped"))
+
+    mapped_ids = (
+        mapped
+        .sort("action_number_snow")
+        ["action_number"]
+        .to_list()
+    )
+
+    # 2) All CSAM-only milestones, keeping their current relative order
+    unmapped_ids = (
+        unmapped
+        .sort("action_number")
+        ["action_number"]
+        .to_list()
+    )
+
+    desired_order = mapped_ids + unmapped_ids
+
+    if len(desired_order) != n:
+        logger.warning(
+            "reorder_csam_to_match_snow: length mismatch (current=%d, desired=%d) for POAM %s",
+            n,
+            len(desired_order),
+            poam.poam_id,
+        )
+        return
+
+    # If already in desired order, nothing to do
+    if desired_order == current_order:
+        return
+
+    # Simulate moves on the full list.
+    # current_order is a list of item IDs == original CSAM action_numbers.
+    # desired_order is the target list of those same IDs, reordered.
+    for target_idx in range(n):
+        desired_item = desired_order[target_idx]
+        current_idx = current_order.index(desired_item)
+
+        if current_idx == target_idx:
+            continue
+
+        # Convert to 1-based positions for the API
+        old_pos = current_idx + 1
+        new_pos = target_idx + 1
+
+        csam_retry(milestones_api.v1_systems_system_id_poams_poam_id_milestones_action_number_movetoaction_new_action_number_put)(
+            poam.system_id,
+            poam.poam_id,
+            action_number=old_pos,
+            new_action_number=new_pos,
+        )
+
+        # Update our local order so indices stay correct
+        item = current_order.pop(current_idx)
+        current_order.insert(target_idx, item)
+
+def milestone_to_business_dict(m: Any) -> Dict[str, Any]:
+    """Normalize a CSAM milestone model into a dict for diffing."""
+    d = m.to_dict() if hasattr(m, "to_dict") else dict(m)
+    # Drop non-business fields if needed
+    d.pop("addi_data", None)
+    d.pop("status", None)
+    return d
+
+
+# ---------------------
+# Main per-weakness sync
+# ---------------------
+
+def sync_weakness(
+    run_id: str,
+    csam_api: csam_api_client.ApiClient,
+    system_poam_api: csam_api_client.PoamDetailsApi,
+    milestones_api: csam_api_client.PoamMilestonesApi,
+    snow_users: pl.DataFrame,
+    poc_report: pl.DataFrame,
+    wt: Dict[str, Any],
+) -> None:
+    """
+    Sync a single weakness (WEAK record) between SNOW and CSAM, with SNOW as source of truth.
+    """
+    wt_sys_id = wt['sys_id']
+    number = wt["number"]
+    log_ctx = {"run_id": run_id, "weakness": number}
+    logger.info("Syncing weakness", extra=log_ctx)
+
+    # -----------------
+    # Resolve SNOW POAM → CSAM POAM
+    # -----------------
+    snow_poam = get_n_transform_snow(
+        SNOW_POAM_TABLE_NAME,
+        offset_limit=1,
+        limit=1,
+        fields=["csam_id", "poam_id"],
+        sysparm_query=f"sys_id={wt['poa_m_id']['value']}",
+    )
+
+    if snow_poam.is_empty():
+        unstable_logger.warning("No SNOW POAM record for weakness %s", number, extra=log_ctx)
+        return
+
+    try:
+        csam_id = int(snow_poam["csam_id"].item())
+        poam_id = int(snow_poam["poam_id"].item())
+    except ValueError:
+        unstable_logger.warning("'csam_id' or 'poam_id' is missing/invalid for SNOW CSAM POAM entry for %s. POAM Sys Id: %s", number, poam_id['value'])
+        return
+
+    try:
+        poam = csam_retry(system_poam_api.v1_systems_system_id_poams_poam_id_get)(csam_id, poam_id)
+    except csam_api_client.exceptions.ForbiddenException:
+        unstable_logger.exception(
+            "Exception hit querying %s in %s: ",
+            poam_id,
+            csam_api.configuration.host,
+            extra=log_ctx,
+        )
+        return
+
+    if poam is None:
+        unstable_logger.warning(
+            "POAM %s not found in CSAM host %s",
+            poam_id,
+            csam_api.configuration.host,
+            extra=log_ctx,
+        )
+        return
+
+    if not created_by_rise(csam_api, poam.system_id, poam.poam_id):
+        # Only manage POAMs created by RISE; others are manual.
+        logger.debug(
+            "POAM %s was manually created; skipping",
+            poam_id,
+            extra=log_ctx,
+        )
+        return
+    
+    if poam_is_closed(csam_api, poam.system_id, poam.poam_id):
+        logger.debug(
+            "POAM %s was manually closed in CSAM; skipping",
+            poam_id,
+            extra=log_ctx,
+        )
+        return
+
+
+    # -----------------
+    # RCA handling (leave as-is)
+    # -----------------
+    rca = get_rca(pl.from_dicts([wt]))
+    rca_regex = re.compile(r"(RCA:</strong>\s*)(.*?)(\s*<br>)", re.M)
+
+    if rca and poam.description and rca not in poam.description:
+        poam_update = csam_api_client.PoamUpdate(**poam.to_dict())
+        poam_update.description = rca_regex.sub(
+            lambda m: m.group(1) + rca + m.group(3),
+            poam_update.description,
+        )
+        poam_update.assigned_to_poc_id = poam.assigned
+        logger.info(
+            "Updating RCA for POAM %s (%s) to '%s'",
+            poam_update.poam_id,
+            number,
+            rca,
+            extra=log_ctx,
+        )
+        put_poam_update(csam_api, poam_update)
+
+    # Determine ISSO fallback
+    isso = get_csam_poc_position(poc_report, poam.system_id, "Information System Security Officer")
+    if isso is not None:
+        isso = get_assignee(csam_api, name_wildcard="", email=isso["Email"])
+    else:
+        logger.warning(
+            "%s: can't find assignee, defaulting to RISE",
+            poam.system_name,
+            extra=log_ctx,
+        )
+        isso = get_assignee(csam_api, name_wildcard="", email="ICECRMARISE")
+
+    # -----------------
+    # Load CSAM milestones + notes
+    # -----------------
+    
+    def get_poam_ms_with_notes() -> pl.DataFrame:
+        poam_ms = csam_retry(milestones_api.v1_systems_system_id_poams_poam_id_milestones_get)(
+            poam.system_id,
+            poam.poam_id,
+        )
+        if not poam_ms:
+            return pl.DataFrame(schema={"description": pl.String, "number": pl.String, "action_number": pl.Int32})
+        
+        poam_ms_notes = get_poam_milestone_level_api_call(
+            milestones_api.v1_systems_system_id_poams_poam_id_milestones_action_number_notes_get,
+            [(poam.system_id, poam.poam_id, m) for m in poam_ms],
+        )
+
+        poam_ms_df = (
+            pl.DataFrame([m.__dict__ for m in poam_ms])
+            .with_columns(
+                pl.col(pl.Datetime).cast(pl.Date),
+                pl.col("description").map_elements(unescape, return_dtype=pl.String),
+            )
+            .drop(["addi_data", "status"], strict=False)
+        )
+
+        ms_notes_df = (
+            pl.DataFrame(
+                [
+                    {
+                        "action_number": ac_number,
+                        "number": n.comment.strip(),
+                    }
+                    for ac_number, ns in poam_ms_notes[poam.poam_id].items()
+                    for n in ns
+                    if n.comment and n.comment.strip().startswith("PRE")
+                ],
+                schema={'number': pl.String, 'action_number': pl.Int16}
+            )
+
+            # somehow some poam milestones have multiple, dispirate, notes correlating PRE number. 
+            # Aggregating to hopefully take the latest that should be correct
+            .group_by('action_number')
+            .agg(pl.col('number'))
+            .with_columns(
+                pl.col('number').list.eval(
+                    pl.element().sort_by(pl.element().str.replace('PRE', "").cast(pl.Int32), descending=True)
+                )
+                .list.first()
+            )
+        )
+
+        poam_ms_df = poam_ms_df.join(
+            ms_notes_df,
+            on="action_number",
+            how="left",
+            nulls_equal=True,
+        )
+        return poam_ms_df.with_columns(pl.col(pl.Date).cast(pl.Datetime))
+
+    poam_ms_df = get_poam_ms_with_notes()
+    poam_ms_df = dedupe_csam_milestones(poam_ms_df)
+
+
+    # -----------------
+    # Load SNOW milestones
+    # -----------------
+    snow_ms = get_latest_snow_table(
+            SNOW_MILESTONE_TABLE_NAME,
+            SNOW_API,
+            offset_limit=10,
+            sysparm_query=f"weakness_tracking_id={wt_sys_id}",
+        )
+    
+    # De-duplicate SNOW milestones
+    snow_ms, snow_deleted = dedupe_snow_milestones(snow_ms)
+    if not snow_deleted.is_empty():
+        delete_dupes = snow_deleted.select(
+            pl.col("sys_id"),
+            pl.lit("DELETE").alias("HTTP Action"),
+        )
+        send_to_snow(delete_dupes, SNOW_MILESTONE_TABLE_NAME)
+        logger.info(
+            "Deleted %d duplicate SNOW milestones",
+            delete_dupes.height,
+            extra=log_ctx,
+        )
+    
+    # for 'backwards' compatibility. before these changes older POAMs auto-generated did now have standardized milestones uploaded to SNOW
+    # could also be used to ensure that all poams have the proper canned milestones
+    canned_milestones = [
+            unescape(STANDARD_POAM_INITIATION_MILESTONE.description),
+            unescape(STANDARD_POAM_CLOSURE_MILESTONE.description), 
+        ]
+    canned_milestone_mask = pl.col('description').is_in(canned_milestones)
+    if len(snow_ms.filter(canned_milestone_mask)) != len(canned_milestones):
+        try:
+            snow_user_id = snow_users.filter(pl.col('email').str.strip_chars().str.to_lowercase().eq(isso.email.strip().lower()))['sys_id'].item()
+        except ValueError:
+            snow_user_id = None
+
+        time_format = '%m/%d/%Y'
+        to_create = []
+
+        _poam_ms_df = poam_ms_df.select(pl.exclude("^.*_right$", 'number'))
+
+        first_ms_mask = pl.col('description').eq(unescape(STANDARD_POAM_INITIATION_MILESTONE.description))
+        if snow_ms.filter(first_ms_mask).is_empty():
+            if (test:=_poam_ms_df.filter(first_ms_mask).to_dicts()):
+                to_create.extend(test)
+            else:
+                first_milestone = STANDARD_POAM_INITIATION_MILESTONE.model_copy()
+                first_milestone.planned_start_date = poam.planned_start_date
+                first_milestone.actual_start_date = first_milestone.planned_start_date
+                first_milestone.planned_finish_date = (poam.planned_start_date + US_BUSINESS_DAY).to_pydatetime()
+                first_milestone.due_date = (poam.planned_start_date + US_BUSINESS_DAY).to_pydatetime()
+                first_milestone.assigned_to_poc_id = isso.poc_id
+                first_milestone.__dict__['action_number'] = 1
+                to_create.append(first_milestone.__dict__)
+        
+        last_ms_mask = pl.col('description').eq(unescape(STANDARD_POAM_CLOSURE_MILESTONE.description))
+        if snow_ms.filter(last_ms_mask).is_empty():
+            if (test:=_poam_ms_df.filter(last_ms_mask).to_dicts()):
+                to_create.extend(test)
+            else:
+                last_milestone = STANDARD_POAM_CLOSURE_MILESTONE.model_copy()
+                last_milestone.planned_start_date = (poam.planned_finish_date - (3*US_BUSINESS_DAY)).to_pydatetime()
+                last_milestone.planned_finish_date = poam.planned_finish_date
+                last_milestone.due_date = poam.planned_finish_date
+                last_milestone.assigned_to_poc_id = isso.poc_id
+                last_milestone.__dict__['action_number'] = len(snow_ms)+2
+                to_create.append(last_milestone.__dict__)
+
+        to_create_df = (
+            pl.DataFrame(to_create)
+            .with_columns(
+                pl.lit(snow_user_id).alias('assigned_to_poc_id'),
+                pl.lit(wt_sys_id).alias('weakness_tracking_id'),
+                pl.col(pl.Datetime, pl.Date).dt.to_string(time_format),
+                pl.lit("POST").alias("HTTP Action"),
+            )
+            .rename({'assigned_to_poc_id': "milestone_assignee"})
+        )
+        
+        if not to_create_df.filter(pl.col('description').fill_null('').str.len_chars().eq(0)).is_empty():
+            unstable_logger.warning("%s is creating blank milestones: %s", number, str(to_create))
+
+        send_to_snow(to_create_df, SNOW_MILESTONE_TABLE_NAME)
+        snow_ms = get_latest_snow_table(
+            SNOW_MILESTONE_TABLE_NAME,
+            SNOW_API,
+            offset_limit=10,
+            sysparm_query=f"weakness_tracking_id={wt_sys_id}",
+        )
+
+        to_update_note = snow_ms.join(poam_ms_df, on=pl.col("description").map_elements(unescape, return_dtype=pl.String), suffix="_sync").filter(pl.col('number').fill_null('').ne(pl.col('number_sync').fill_null('')))
+
+        if not to_update_note.is_empty():
+            drafts_notes = []
+            for ac_num, snow_ms_num in to_update_note[["action_number", "number"]].rows():
+                current_notes = csam_retry(milestones_api.v1_systems_system_id_poams_poam_id_milestones_action_number_notes_get)(poam.system_id, poam.poam_id, int(ac_num))
+                pre_notes = list(filter(lambda x: x.comment.startswith("PRE"), current_notes))
+                to_delete = [(poam.system_id, poam.poam_id, int(ac_num), n.id) for n in filter(lambda x: x.comment != snow_ms_num, pre_notes)]
+                res = submit_to_csam(delete_poam_milestone_note, csam_api, to_delete)
+
+                note = csam_api_client.NoteCreate(comments=snow_ms_num)
+                drafts_notes.append((poam.system_id, poam.poam_id, int(ac_num), note))
+
+            created_notes, failed_notes = submit_to_csam(
+                post_poam_milestone_note,
+                csam_api,
+                drafts_notes,
+            )
+            for f in failed_notes:
+                unstable_logger.warning("FAILED NOTE: '%s'", str(f), extra=log_ctx)
+
+            poam_ms_df = get_poam_ms_with_notes()
+            poam_ms_df = dedupe_csam_milestones(poam_ms_df)
+
+    # Need to ensure all 'required' fields have a value. Otherwise we'll hit exceptions via csam api
+    blank_mask = pl.any_horizontal([pl.col(c).str.len_chars().eq(0) for c in ['description', 'planned_start_date', 'planned_finish_date']])
+    blank_ms_df = snow_ms.filter(blank_mask)
+    if not blank_ms_df.is_empty():
+        # not using unstable_logger here since this doesn't affect what this script does
+        logger.warning("%s: Has SNow Milestones with blank required fields - %s", number, str(blank_ms_df.to_dicts()))
+        snow_ms = snow_ms.filter(~blank_mask)
+
+    snow_ms = (
+        snow_ms
+        .with_columns(
+            pl.col("^.*_date.*$").str.to_datetime("%Y-%m-%d", strict=False, time_unit="us"),
+            pl.col("sys_updated_on").str.to_datetime(
+                "%Y-%m-%d %H:%M:%S",
+                strict=False,
+                time_unit="us",
+            ),
+        )
+        .sort(["action_number", "sys_updated_on"])
+    )
+
+    # todo: need to follow up with Tyler if we can enforce table edits to ensure the dates are appropriate
+    # Enforce that planned/actual start date is before or equal to planned/actual finish date
+
+    # ensure the canned milestones are in the proper order
+    snow_ms = (
+        snow_ms
+        .with_columns(
+            pl.when(pl.col('description').eq(canned_milestones[0]))
+            .then(0)
+            .when(pl.col('description').eq(canned_milestones[-1]))
+            .then(2)
+            .otherwise(1)
+            .alias('sort_key')
+        )
+    )
+
+    # Canonicalize SNOW action numbers (1..N)
+    snow_ms = canonicalize_snow_action_numbers(snow_ms)
+    action_updates = snow_ms.filter(
+        pl.col("action_number").ne(pl.col("action_number_old").fill_null(-1))
+    )
+    if not action_updates.is_empty():
+        send_to_snow(
+            action_updates.select(
+                "sys_id",
+                "action_number",
+                pl.lit("PUT").alias("HTTP Action"),
+            ),
+            SNOW_MILESTONE_TABLE_NAME,
+        )
+        logger.info(
+            "Canonicalized SNOW action numbers for %d milestones",
+            action_updates.height,
+            extra=log_ctx,
+        )
+
+    # Drop old action_number col
+    snow_ms = snow_ms.drop(["action_number_old"], strict=False)
+
+    # -----------------
+    # Align SNOW → CSAM: determine to_create / to_update / to_delete
+    # -----------------
+    if poam_ms_df.is_empty():
+        logger.debug("POAM %s has no CSAM milestones before sync", poam.poam_id, extra=log_ctx)
+
+    # Key is SNOW 'number'
+    snow_numbers = snow_ms["number"]
+    csam_numbers = poam_ms_df["number"] if "number" in poam_ms_df.columns else pl.Series([], dtype=pl.Utf8)
+
+    to_update_df = snow_ms.filter(pl.col("number").is_in(csam_numbers))
+    to_create_df = snow_ms.filter(~pl.col("number").is_in(csam_numbers))
+    to_delete_df = poam_ms_df.filter(~pl.col("number").fill_null('').is_in(snow_numbers)).sort(
+        "action_number",
+        descending=True,
+    )
+
+    # -----------------
+    # Resolve assignees for create/update
+    # -----------------
+    # Normalize snow_users email (assumed done globally; safe to re-apply)
+    snow_users_norm = snow_users.with_columns(
+        pl.col("email").str.to_lowercase().str.strip_chars()
+    )
+
+    def attach_assignee(record: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            snow_ms_assignee_sys_id = record["milestone_assignee"]["value"]
+            if not snow_ms_assignee_sys_id:
+                logger.warning(
+                    "No Milestone Assignee defined for %s, %s, defaulting to ISSO",
+                    number,
+                    record["number"],
+                    extra=log_ctx,
+                )
+                ms_assignee = isso
+            else:
+                snow_user = snow_users_norm.filter(
+                    pl.col("sys_id").eq(snow_ms_assignee_sys_id)
+                )
+                email = snow_user["email"][0] if snow_user.height > 0 else None
+                if email:
+                    ms_assignee = get_assignee(csam_api, name_wildcard="", email=email)
+                    if not ms_assignee:
+                        logger.warning(
+                            "No CSAM account found for %s, defaulting to ISSO",
+                            email,
+                            extra=log_ctx,
+                        )
+                        ms_assignee = isso
+                else:
+                    logger.warning(
+                        "No Email in SNOW associated to sys_id %s, assigning milestone to ISSO",
+                        snow_ms_assignee_sys_id,
+                        extra=log_ctx,
+                    )
+                    ms_assignee = isso
+        except (TypeError, KeyError):
+            ms_assignee = isso
+
+        record["assigned_to_poc_id"] = ms_assignee.poc_id
+        return record
+
+    # Apply assignee resolution
+    to_update_records = [attach_assignee(r) for r in to_update_df.to_dicts()]
+    to_create_records = [attach_assignee(r) for r in to_create_df.to_dicts()]
+
+    # -----------------
+    # Prepare CSAM updates (PUT)
+    # -----------------
+    updates: List[Tuple[int, int, int, csam_api_client.PoamMilestoneUpdate]] = []
+
+    for m in to_update_records:
+        snow_ms_obj = csam_api_client.PoamMilestoneUpdate(**m)
+
+        # Find corresponding CSAM milestone
+        poam_ms_raw = (
+            poam_ms_df
+            .filter(pl.col("number").eq(m["number"]))
+            .to_dicts()[0]
+        )
+        poam_ms_obj = csam_api_client.PoamMilestoneUpdate(**poam_ms_raw)
+
+        snow_dict = milestone_to_business_dict(snow_ms_obj)
+        csam_dict = milestone_to_business_dict(poam_ms_obj)
+        diff = DeepDiff(csam_dict, snow_dict, ignore_order=True)
+        if diff:
+            logger.debug(
+                "Milestone diff for %s: %s",
+                m["number"],
+                diff.to_dict(),
+                extra=log_ctx,
+            )
+            updates.append((poam.system_id, poam.poam_id, poam_ms_raw["action_number"], snow_ms_obj))
+
+    if updates:
+        passed, failed = submit_to_csam(put_draft_poam_milestone, csam_api, updates)
+        logger.info(
+            "Updated %d CSAM milestones for weakness %s",
+            len(passed),
+            number,
+            extra=log_ctx,
+        )
+        for f in failed:
+            unstable_logger.warning("PUT FAILED: '%s'", str(f), extra=log_ctx)
+
+    # -----------------
+    # Prepare CSAM deletes
+    # -----------------
+    if not to_delete_df.is_empty():
+        # sort by descending so we can delete in order from highest to lower. CSAM will reorder
+        # milestones so starting high ensures lower milestones aren't renumbered
+        delete_action_numbers = to_delete_df['action_number'].sort(descending=True)
+        deletes = [(poam.system_id, poam.poam_id, an) for an in delete_action_numbers]
+        for delete in deletes:
+            res = delete_poam_milestone(csam_api, delete)
+            logger.info(
+                "Deleted POAM %s milestone with action number '%s', for weakness %s",
+                poam.poam_id,
+                delete[-1],
+                number,
+                extra=log_ctx,
+            )
+
+    # -----------------
+    # Prepare CSAM creates
+    # -----------------
+    creates: List[Tuple[int, int, csam_api_client.PoamMilestoneUpdate]] = [
+        (poam.system_id, poam.poam_id, csam_api_client.PoamMilestoneUpdate(**c))
+        for c in to_create_records
+    ]
+
+    created: List[csam_api_client.PoamMilestoneDetails] = []
+    if creates:
+        for draft in creates:
+            try:
+                created.append(post_draft_poam_milestone(csam_api, draft))
+            except Exception as exc:
+                unstable_logger.warning("CREATE FAILED: '%s'", str(exc), extra=log_ctx)
+
+        # Have run into issues where creating milestones with bad input would leave created empty. This
+        # should catch that and avoid those errors
+        if created:
+            logger.info(
+                "Created %d CSAM milestones for weakness %s",
+                len(created),
+                number,
+                extra=log_ctx,
+            )
+
+            # Backfill notes with SNOW numbers for created milestones
+            created_ms_df = pl.DataFrame([m.__dict__ for m in created]).with_columns(
+                pl.col("description").map_elements(unescape, return_dtype=pl.String),
+            )
+            created_snow_ms = (
+                pl.DataFrame([m for m in to_create_records])
+                .select(
+                    pl.exclude("^sys_.*$", "action_number", "weakness_tracking_id", "milestone_assignee"),
+                )
+                .with_columns(
+                    pl.col("description").map_elements(unescape, return_dtype=pl.String),
+                )
+            )
+
+            created_ms_df = created_ms_df.join(
+                created_snow_ms,
+                on=set(created_ms_df.columns) & set(created_snow_ms.columns),
+                how="left",
+                nulls_equal=True,
+            )
+
+            drafts_notes = []
+            for ac_num, snow_ms_num in created_ms_df[["action_number", "number"]].rows():
+                note = csam_api_client.NoteCreate(comments=snow_ms_num)
+                drafts_notes.append((poam.system_id, poam.poam_id, ac_num, note))
+
+            created_notes, failed_notes = submit_to_csam(
+                post_poam_milestone_note,
+                csam_api,
+                drafts_notes,
+            )
+            for f in failed_notes:
+                unstable_logger.warning("FAILED NOTE: '%s'", str(f), extra=log_ctx)
+
+    # -----------------
+    # Re-fetch CSAM milestones and reorder to match SNOW
+    # -----------------
+    poam_ms_df_post = get_poam_ms_with_notes()
+    poam_ms_df_post = dedupe_csam_milestones(poam_ms_df_post)
+    reorder_csam_to_match_snow(milestones_api, poam, poam_ms_df_post, snow_ms)
+
+    logger.info("Completed sync for weakness %s", number, extra=log_ctx)
+
 
 def get_run_id() -> str:
     return uuid.uuid4().hex
 
 
-def _run(run_id):
-    today = datetime.date.today()
-
-    csam_api = csam_api_client.ApiClient(CSAM_CONFIG)
-    systems_api = csam_api_client.SystemsApi(csam_api)
-
-    @lru_cache
-    def get_system_acronym(sys_id):
-        system = csam_retry(systems_api.v1_systems_id_get)(sys_id)
-        return system.acronym
-
-    # get snow poam table to correlate
-
-    # all_poam_df = pl.DataFrame([poam.to_dict() for poams in poams_by_system_id.values() for poam in poams], infer_schema_length=None)
-    # need to get the latest WTs that are closed_complete with a poa_m_id
-    test_wts_fn = os.path.join("tests", "test_wt_closed.parquet")
-    try:
-        closed_weakness_trackers = pl.read_parquet(test_wts_fn)
-    except FileNotFoundError:
-        closed_weakness_trackers = get_n_transform_snow(SNOW_WEAKNESS_TRACKING_TABLE_NAME, offset_limit=5000, fields=[], sysparm_query="state=closed_complete^poa_m_idISNOTEMPTY")
-
-    # snow_poams = get_latest_snow_table(SNOW_POAM_TABLE_NAME, SNOW_API, offset_limit=5000)
-
-    # systems = systems_api.v1_systems_get()
-    # systems_ids = [x.id for x in systems]
+def _run(run_id: str) -> None:
+    # -----------------
+    # Initialize CSAM APIs
+    # -----------------
+    csam_api = csam_api_client.ApiClient(CSAM_CONFIG)  # assumes CSAM_CONFIG is in scope
     system_poam_api = csam_api_client.PoamDetailsApi(csam_api)
-    # poams_by_system_id = get_system_level_api_call(system_poam_api.v1_systems_system_id_poams_get, systems_ids)
-    # poams = {poam.poam_id: poam for poams in poams_by_system_id.values() for poam in poams}
+    milestones_api = csam_api_client.PoamMilestonesApi(csam_api)
     
-    # closed_weakness_trackers = closed_weakness_trackers.join(snow_poams['sys_id', 'poam_id'], left_on=pl.col('poa_m_id').struct.field('value'), right_on="sys_id")
-    # closed_weakness_trackers = closed_weakness_trackers.with_columns(
-        # pl.col('poam_id').cast(pl.Int32)
-    # )
+    # POC report (unchanged behavior)
+    poc_report = get_poc_report(csam_api)
 
-    if closed_weakness_trackers.is_empty():
-        logger.info("No closed WTs with POAMs")
-        return
+    # -----------------
+    # Load SNOW users (with caching if desired)
+    # -----------------
+    results: dict[str, pl.DataFrame] = {}
 
-    # # get findings related to closed WT that have a poa_m_id
-    # test_findings_fn = os.path.join("tests", "test_findings_closed.parquet")
-    # try:
-    #     closed_findings = pl.read_parquet(test_findings_fn)
-    # except FileNotFoundError:
-    #     closed_findings = []
-    #     for sys_id in closed_weakness_trackers['sys_id']:
-    #         closed_findings.append(get_n_transform_snow(SNOW_FINDINGS_TABLE_NAME, offset_limit=5000, fields=[], sysparm_query=f"weakness_tracking={sys_id}"))
-    #     closed_findings = pl.concat(closed_findings)
+    tmp_file, offset_limit, fields, sysparm_query = SNOW_QUERIES[SNOW_USERS_TABLE_NAME]
+    if os.path.exists(tmp_file):
+        logger.debug("Loading SNOW users from %s", tmp_file, extra={"run_id": run_id})
+        results[SNOW_USERS_TABLE_NAME] = pl.read_parquet(tmp_file)
+    else:
+        results[SNOW_USERS_TABLE_NAME] = get_n_transform_snow(
+            SNOW_USERS_TABLE_NAME,
+            offset_limit=offset_limit,
+            fields=fields,
+            sysparm_query=sysparm_query,
+        )
 
-    # set of (system_id, poam_id) that need closing
-    to_close = []
-    poam_findings = {}
-    poam_status = csam_api_client.PoamStatus
-    closed_statuses = {poam_status.COMPLETED, poam_status.CANCELLED}
-    for wt_number, wt_sys_id, poam_id, total_findings in closed_weakness_trackers['number', 'sys_id', 'poa_m_id', 'total_findings'].rows():
-        log_ctx = {"run_id": run_id, "weakness": wt_number}
-
-        snow_poam = get_n_transform_snow(
-        SNOW_POAM_TABLE_NAME,
-        offset_limit=1,
-        limit=1,
-        fields=["csam_id", "poam_id"],
-        sysparm_query=f"sys_id={poam_id['value']}",
+    snow_users = results[SNOW_USERS_TABLE_NAME].with_columns(
+        pl.col("email").str.to_lowercase().str.strip_chars()
     )
-        try:
-            csam_id = int(snow_poam["csam_id"].item())
-            poam_id = int(snow_poam["poam_id"].item())
-        except ValueError:
-            unstable_logger.warning("'csam_id' or 'poam_id' is missing/invalid for SNOW CSAM POAM entry for %s. POAM Sys Id: %s", wt_number, poam_id['value'])
-            continue
 
-        try:
-            poam = csam_retry(system_poam_api.v1_systems_system_id_poams_poam_id_get)(csam_id, poam_id)
-        except KeyError:
-            unstable_logger.warning(
-                "POAM %s not found in CSAM host %s",
-                poam_id,
-                csam_api.configuration.host,
-                extra=log_ctx,
-            )
-            continue
-        except csam_api_client.exceptions.ForbiddenException as e:
-            unstable_logger.warning(
-                "Got %s when querying %s-%s CSAM host %s",
-                str(e),
-                csam_id, 
-                poam_id,
-                csam_api.configuration.host,
-                extra=log_ctx,
-            )
-            continue
+    # -----------------
+    # Load SNOW weakness tracking records (WTS)
+    # -----------------
+    tmp_file, offset_limit, fields, _ = SNOW_QUERIES[SNOW_WEAKNESS_TRACKING_TABLE_NAME]
+    # You can override wt_query if needed (e.g., "state=poa&m^poa_m_idISNOTEMPTY")
+    wts = get_n_transform_snow(
+        SNOW_WEAKNESS_TRACKING_TABLE_NAME,
+        offset_limit=offset_limit,
+        fields=fields,
+        sysparm_query="state=poa&m^poa_m_idISNOTEMPTY",
+        # sysparm_query="number=WEAK0004812", #todo: test case
 
+    )
 
-        if poam is None:
-            unstable_logger.warning(
-                "POAM %s not found in CSAM host %s",
-                poam_id,
-                csam_api.configuration.host,
-                extra=log_ctx,
-            )
-            continue
+    if wts.is_empty():
+        logger.info("No weakness tracking records found", extra={"run_id": run_id})
+        return
+    
+    # -----------------
+    # Per-weakness sync
+    # -----------------
+    logger.info("Checking %s WTs for possible RCA/Pre-POAM Milestone updates", len(wts))
+    with RLThreadPoolExecutor(rate_limit=CSAM_RATE_LIMIT) as executor:
+        futures = {}
+        for wt in wts.to_dicts():
+                f = executor.submit(
+                        sync_weakness,
+                        run_id=run_id,
+                        csam_api=csam_api,
+                        system_poam_api=system_poam_api,
+                        milestones_api=milestones_api,
+                        snow_users=snow_users,
+                        poc_report=poc_report,
+                        wt=wt,
+                    )
+                futures[wt.get("number")] = f
 
-        if not created_by_rise(csam_api, poam.system_id, poam.poam_id):
-            logger.warning("%s not created by RISE Automation, skipping. ISSO must follow up on closure.", poam.poam_id)
-            continue
-
-        findings = get_n_transform_snow(SNOW_FINDINGS_TABLE_NAME, offset_limit=500, limit=int(total_findings)+100, fields=[], sysparm_query=f"weakness_tracking={wt_sys_id}")
-
-        if not findings.select(pl.col('state').eq('mitigated'))['state'].all():
-            logger.warning("%s Findings are not all mitigated...skipping", wt_number)
-            continue
-
-        
-        if poam.status not in closed_statuses:
-            logger.debug("Prepparing %s POAM %s for closure", wt_number, poam_id)
-            wtp = WeaknessTrackerPoam(wt_sys_id)
-            wtp.poam = poam
-            wtp.number = wt_number
-            to_close.append(wtp)
-            poam_findings[poam_id] = findings
-        
-    logger.info("%s POAMs will be closed", len(to_close))
-
-    if to_close:
-        draft_poam_updates = []
-        for wtp in to_close:
-            update = csam_api_client.PoamUpdate(**wtp.poam.to_dict())
-            update.actual_finish_date = today
-            if update.actual_start_date == update.actual_finish_date:
-                update.actual_start_date = update.actual_start_date - datetime.timedelta(days=1)
-            draft_poam_updates.append(update)
-        updated_poams, failed_updated_poams = submit_to_csam(put_poam_update, csam_api, draft_poam_updates)
-        log_failed(to_close, failed_updated_poams)
-
-        logger.debug("Getting Milestone information from POAMs to close")
-        milestones_api = csam_api_client.PoamMilestonesApi(csam_api)
-        milestones = get_poam_level_api_call(milestones_api.v1_systems_system_id_poams_poam_id_milestones_get, [(wtp.poam.system_id, wtp.poam.poam_id) for wtp in to_close])
-        draft_update_milestones = [(*x, ms.action_number, csam_api_client.PoamMilestoneUpdate(**ms.to_dict())) for x, mss in milestones.items() for ms in mss]
-        for draft in draft_update_milestones:
-            for date in ['actual_start_date', 'actual_finish_date']:
-                if not getattr(draft[-1], date):
-                    setattr(draft[-1], date, today)
-
-        wtp_milestones = [wtp for wtp, mss in zip(to_close, milestones) for ms in mss]
-        logger.debug("Updating Milestones Actual Finish Date to today: %s", today)
-        updated_milestones, failed_updated_milestones = submit_to_csam(put_draft_poam_milestone, csam_api, draft_update_milestones)
-        log_failed(wtp_milestones, failed_updated_milestones)
-
-        # need to attach mitigated findings
-        findings_cols = ['plugin', 'plugin_name', 'ip_address', 'netbios_name', 'dns_name', 'first_discovered', 'last_observed', 'state']
-        draft_mit_findings_artifacts = [(wtp.poam.system_id, get_system_acronym(wtp.poam.system_id), wtp.poam.poam_id, poam_findings[wtp.poam.poam_id][findings_cols]) for wtp in to_close]
-        _, failed_mit_artifacts = submit_to_csam(post_poam_findings_mitigated_list, csam_api, draft_mit_findings_artifacts)
-        log_failed(to_close, failed_mit_artifacts)
-
-        # after attachments, move poam to closed.
-        draft_workflow = [[wtp.poam.system_id, wtp.poam.poam_id] for wtp in to_close]
-        for workflow_request in CLOSURE_WORFLOW:
-            drafts = [dw+[workflow_request] for dw in draft_workflow]
-            posted_workflow, failed_workflow = submit_to_csam(post_poam_workflow, csam_api, drafts)
-            log_failed(to_close, failed_workflow)
-        # update csam poam data table with poam state?
+        fails = [(_number, f) for _number, f in futures.items() if f.exception()]
+        for _number, future in fails:
+            try:
+                future.result()
+            except Exception:
+                unstable_logger.exception(
+                    "Fatal error while syncing weakness %s",
+                    _number,
+                    extra={"run_id": run_id},
+                )
 
     set_unstable(unstable_logger, unstable_fn_path)
 
+    if fails:
+        raise Exception("Fatal Errors occured. Check logs")
+
+                
+
+
 def main() -> None:
     run_id = get_run_id()
-    logger.info("Starting POAM Closure", extra={"run_id": run_id})
+    logger.info("Starting POAM milestone sync", extra={"run_id": run_id})
     try:
         _run(run_id)
-        logger.info("POAM Closure Complete", extra={"run_id": run_id})
+        logger.info("POAM milestone sync completed", extra={"run_id": run_id})
     except Exception:
-        logger.exception("CRITCIAL ERROR: ")
+        # Already logged inside _run; re-raise to fail the job
         raise
+
 
 if __name__ == "__main__":
     main()

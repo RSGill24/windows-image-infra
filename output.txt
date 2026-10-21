@@ -1,18 +1,12 @@
-import boto3
-import logging
 import pandas as pd
-import requests
+import logging
 import time
+import gc
 import urllib3
 from crma_hive_connections import Connection
 from crma_hive_utilities import Utility, Read_Write_Utility
-from datetime import datetime, timezone
-from io import StringIO
-from requests.auth import HTTPBasicAuth
-from typing import Optional, List
-import pyarrow
-
-
+from crma_hive_tvm_utilities import TvmUtility
+from typing import Optional
 
 # Turning off warnings
 urllib3.disable_warnings()
@@ -25,215 +19,58 @@ logger.setLevel(logging.INFO)
 connection = Connection()
 utility = Utility()
 rw_util = Read_Write_Utility()
-
-# Creating global variables
-failed_table_list = []
-
-class NonRetryableHTTPError(Exception):
-    pass
-
-def get_with_retries(
-        session: requests.Session,
-        url: str,
-        params: dict,
-        timeout: tuple,
-        max_retries: int,
-        backoff_factor: float,
-) -> List[dict]:
-    """
-    Get request with retries and exponential backoff
-    """
-    attempt = 0
-    retryable_status_codes = (429, 500, 502, 503, 504)  
-
-    while True:
-        try:
-            resp = session.get(url, params=params, timeout=timeout, verify=False)
-            
-            if resp.status_code == 200:
-                result = resp.json().get("result", [])
-                if not isinstance(result, list):
-                    raise ValueError("Unexpected response format: 'result' is not a list")
-                return result 
-            
-            if resp.status_code not in retryable_status_codes:
-                logger.error(f"Non-retryable status code {resp.status_code} received: {resp.text}")
-                raise NonRetryableHTTPError(f"Non-retryable status code: {resp.status_code}")
-                
-            resp.raise_for_status()  
-            
-        except ValueError as ve: 
-            logger.error(f"Rerutned invalid response format: {ve}")
-            raise
-
-        except NonRetryableHTTPError as nre: 
-            logger.error(f"Non-retryable HTTP error occurred: {nre}")
-            raise
-        
-        except Exception as e:
-            attempt +=1
-            if attempt > max_retries:
-                logger.error(f"Max retries exceeded: {e}")
-                raise
-
-            sleep = min(backoff_factor * (2 ** attempt), 60)  # Cap backoff at 60 seconds
-            logger.warning(f"Retry {attempt} for URL {url} with params {params} after error: {e}, sleeping for {sleep} seconds")
-            time.sleep(sleep)
-
-def fetch_snow_data(
-        bucket_name: str,
-        dataset: str,
-        user: str, 
-        password: str, 
-        url: str ,
-        table_name: str,
-        fields: Optional[List[str]]= None,
-        query: Optional[str] = None,
-    ) -> None:
-    """
-    Fetches data from a SNOW table.
-
-    Parameters:
-        user (str): API username
-        password (str): API user password
-        url (str): Table url
-        table_name (str): Table name
-        fields(str): Fields to fetch
-        query(str): Query to filter records records to fetch
-    Returns:
-        None
-    """
-    logger.info("Setup destinaation folder:")
-    s3_folder = f"raw_data/SNOW/{dataset.upper()}_{datetime.now(timezone.utc).strftime('%m%d%y_%H%M%S')}" 
-    logger.info(f"Destination folder: {s3_folder}")
-
-    def _flush_buffer_to_s3(current_part: int, records: list) -> None:
-        """Convert records to DataFrame and write to S3, then clear the list."""
-        if not records:
-            return
-
-        logger.info(f"Loading PART_{current_part} to S3 with {len(records)} records")
-        df = pd.DataFrame(records)
-
-        # Main destination - Parquet
-        filename = f"{s3_folder}/PART_{current_part}"
-        rw_util.load_to_s3_multipart_datasets(bucket_name, df, filename, "PARQUET")
-
-        # # *Uncomment if storing in test destination - CSV* 
-        # test_filename = f"{test_s3_folder}/PART_{current_part}"
-        # self.rw_util.load_to_s3_multipart_datasets(bucket_name, df, test_filename, "CSV")
-
-        # Explicitly free DataFrame and clear buffer
-        del df
-        records.clear()
-
-
-
-    # Request params
-    page_size = 5000
-    timeout = (10, 420)
-    max_retries = 5
-    backoff_factor = 1.5
-
-    session = requests.Session()
-    session.auth = HTTPBasicAuth(user, password)
-    session.headers.update({
-        "Content-Type": "application/json", 
-        "Accept": "application/json",
-        "Connection": "keep-alive",
-    })
-
-    params = {
-        "sysparm_limit": page_size,
-        "sysparm_offset": 0,
-        "sysparm_display_value": "false",
-        "sysparm_exclude_reference_link": "true",
-         "sysparm_orderby": "sys_updated_on, sys_id",
-    }
-    if fields:
-        params["sysparm_fields"] = ",".join(fields)
-    if query:
-        params["sysparm_query"] = query
-
-    
-
-    buffer = []
-    total_fetched = 0
-    part=0
-    logger.info(f"Fetching data from SNOW Tables API: {url}")
-
-    while True:
-
-        records = get_with_retries(session, url,params, timeout, max_retries, backoff_factor)
-
-        if not records:
-            logger.info(f"Completed fetching records for {table_name}. Total records fetched: {total_fetched}")
-            _flush_buffer_to_s3(part, buffer) 
-            break
-
-        buffer.extend(records)
-        now_fetched = len(records)
-        total_fetched += now_fetched
-        params["sysparm_offset"] += now_fetched
-        logger.info(f"Total records fetched so far: {total_fetched}")
-
-        
-        if len(buffer) >= 100000:
-            _flush_buffer_to_s3(part, buffer) 
-            part += 1            
-    
+tvmUtil = TvmUtility()
 
 
 def main():
-   
     start_time = time.time()
 
-    # Set the service account user and password credentials
-    user = connection.get_secret("edae-crma-hive")["snow_username"]
-    password = connection.get_secret("edae-crma-hive")["snow_password"]
+    logger.info("Retrieving account credentials...")
+    ACCESS_KEY = connection.get_secret("edae-crma-hive")["tvm_access_key"]
+    SECRETE_SECRET = connection.get_secret("edae-crma-hive")["tvm_secrete_key"]
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    base_url = "https://iceserviceportal.servicenowservices.com/api/now/table"
+    base_url ="https://fedcloud.tenable.com"
 
-
-
-    tables = [
-        {
-            "name": "x_g_dh5_poam_findings",
-            "output_filename": "CRMA_HIVE_SNOW_POAM_FINDINGS",
-            "fields": None,
-            "query": "scan_idLIKE,^state=mitigated",  #State=mitigated and ScanID contains ","
-        } ,
-                {
-          "name": "cmdb_ci", 
-          "output_filename": "CRMA_HIVE_SNOW_CMDB",
-          "fields": None,   
-          "query": None,
-        } 
+    # log memory usage
+    utility.log_memory_usage()
+    #setup
+    headers = {
+        'accept': 'application/json',
+        'content-type': 'application/json',
+        'X-ApiKeys': f'accessKey={ACCESS_KEY}; secretKey={SECRETE_SECRET}'
+    }
+ 
+    targets = [
+    {
+            "dataset": "vulns",
+            "output_filename": "CRMA_HIVE_TVM_VULNS",
+            "payload": {
+                "filters": {
+                    "severity": ["low", "medium", "high", "critical"],
+                    "state": ["OPEN", "REOPENED", "FIXED" ],
+                },            
+            "num_assets": 1500
+            }        
+    },  
     ]
 
-    
-    for table in tables:
-        # Creating variable names
-        table_name = table["name"]
-        output_filename = table["output_filename"]
-        fields = table["fields"] 
-        query = table["query"]
-        table_url = f"{base_url}/{table_name}"
-        fetch_snow_data(bucket_name=bucket_name, 
-                             dataset=output_filename, 
-                             user=user, 
-                             password=password, 
-                             url=table_url, 
-                             table_name=table_name, 
-                             fields=fields, 
-                             query=query
-                        )        
+    for target in targets:    
 
+        dataset =   target["dataset"] 
+
+        logger.info(f"Fetching TenableVM {dataset} dataset using Tenable export API") 
+
+        if dataset=="vulns":
+            tvmUtil.setup_and_start_tvm_vulns_export(
+                base_url=base_url,
+                headers = headers,
+                target = target,
+                bucket_name=bucket_name,
+            )
         utility.log_memory_usage() 
 
-    elapsed_minutes = (time.time() - start_time) / 60   
+    elapsed_minutes = (time.time() - start_time) / 60 
     logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
-
 
 
 if __name__ == "__main__":

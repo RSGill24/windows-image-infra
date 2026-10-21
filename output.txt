@@ -1,77 +1,77 @@
-import pandas as pd
-import logging
-import time
-import gc
-import urllib3
-from crma_hive_connections import Connection
-from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_tvm_utilities import TvmUtility
-from typing import Optional
+resource "aws_glue_workflow" "crma_hive_snow_workflow" {
+    name        = "crma_hive_snow_workflow"
+    description = "Glue workflow for CRMA HIVE to contain SNOW jobs"
+}
 
-# Turning off warnings
-urllib3.disable_warnings()
+resource "aws_glue_workflow" "crma_hive_mobius_workflow" {
+    name        = "crma_hive_mobius_workflow"
+    description = "Glue workflow for CRMA HIVE to contain MOBIUS jobs"
+}
 
-# Setting up logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+resource "aws_glue_workflow" "crma_hive_csam_workflow" {
+    name        = "crma_hive_csam_workflow"
+    description = "Glue workflow for CRMA HIVE to contain CSAM jobs"
+}
 
-# Instantiate classes
-connection = Connection()
-utility = Utility()
-rw_util = Read_Write_Utility()
-tvmUtil = TvmUtility()
+resource "aws_glue_workflow" "crma_hive_audit_controls_workflow" {
+    name        = "crma_hive_audit_controls_workflow"
+    description = "Glue workflow for CRMA HIVE to contain Audit Controlds trend dashbaord data prep jobs"
+}
 
+resource "aws_glue_workflow" "crma_hive_axonius_workflow" {
+    name        = "crma_hive_axonius_workflow"
+    description = "Glue workflow for CRMA HIVE to contain AXONIUS jobs"
+}
 
-def main():
-    start_time = time.time()
+resource "aws_glue_workflow" "crma_hive_tvm_light_workflow" {
+    name        = "crma_hive_tvm_light_workflow"
+    description = "Glue workflow for CRMA HIVE to contain TVM jobs for cisco vulns jobs"
+}
 
-    logger.info("Retrieving account credentials...")
-    ACCESS_KEY = connection.get_secret("edae-crma-hive")["tvm_access_key"]
-    SECRETE_SECRET = connection.get_secret("edae-crma-hive")["tvm_secrete_key"]
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    base_url ="https://fedcloud.tenable.com"
+resource "aws_glue_workflow" "crma_hive_fisma_scorecard_workflow" {
+    name        = "crma_hive_fisma_scorecard_workflow"
+    description = "Glue workflow for CRMA HIVE to compute FISMA Scorecard Metrics"
+    max_concurrent_runs = 1
+}
 
-    # log memory usage
-    utility.log_memory_usage()
-    #setup
-    headers = {
-        'accept': 'application/json',
-        'content-type': 'application/json',
-        'X-ApiKeys': f'accessKey={ACCESS_KEY}; secretKey={SECRETE_SECRET}'
-    }
- 
-    targets = [
-    {
-            "dataset": "vulns",
-            "output_filename": "CRMA_HIVE_TVM_VULNS",
-            "payload": {
-                "filters": {
-                    "severity": ["low", "medium", "high", "critical"],
-                    "state": ["OPEN", "REOPENED", "FIXED" ],
-                },            
-            "num_assets": 1500
-            }        
-    },  
-    ]
+resource "aws_glue_workflow" "crma_hive_nvd_and_cisa_workflow" {
+    name        = "crma_hive_nvd_and_cisa_workflow"
+    description = "Glue workflow for CRMA HIVE to fetch, process and load NVD and CISA data to HIVE"
+    max_concurrent_runs = 1
+}
 
-    for target in targets:    
+resource "aws_glue_workflow" "crma_hive_references_workflow" {
+    name        = "crma_hive_references_workflow"
+    description = "Glue workflow for CRMA HIVE to process and load SSCG data to HIVE"
+    max_concurrent_runs = 1
+}
 
-        dataset =   target["dataset"] 
+resource "aws_glue_workflow" "crma_hive_tvm_vulns_workflow" {
+    name        = "crma_hive_tvm_vulns_workflow"
+    description = "Glue workflow for CRMA HIVE to process and load SSCG data to HIVE"
+    max_concurrent_runs = 1
+}
 
-        logger.info(f"Fetching TenableVM {dataset} dataset using Tenable export API") 
+resource "aws_glue_workflow" "crma_hive_tvm_compliance_workflow" {
+    name        = "crma_hive_tvm_compliance_workflow"
+    description = "Glue workflow for CRMA HIVE to fetch, process, and load tvm compliance data to HIVE"
+    max_concurrent_runs = 1
+}
 
-        if dataset=="vulns":
-            tvmUtil.setup_and_start_tvm_vulns_export(
-                base_url=base_url,
-                headers = headers,
-                target = target,
-                bucket_name=bucket_name,
-            )
-        utility.log_memory_usage() 
+resource "aws_glue_workflow" "crma_hive_cmdb_workflow" {
+    name        = "crma_hive_cmdb_workflow"
+    description = "Glue workflow for CRMA HIVE to fetch, process, and CMDB tables datasets to HIVE"
+    max_concurrent_runs = 1
+}
 
-    elapsed_minutes = (time.time() - start_time) / 60 
-    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+resource "aws_glue_workflow" "crma_hive_audit_report_workflow" {
+    name    = "crma_hive_audit_report_workflow"
+    description = "Glue workflow for CRMA HIVE to maintain software and os entity resolution refrence map/tables"
+}
 
-
-if __name__ == "__main__":
-    main()
+################## Roll Back Fill Workflow
+resource "aws_glue_workflow" "crma_hive_rollback_backfill_workflow" {
+    name        = "crma_hive_rollback_backfill_workflow"
+    description = "Glue workflow for CRMA HIVE to reprocess historical tables"
+    max_concurrent_runs = 1
+}

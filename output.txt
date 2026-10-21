@@ -1,11 +1,115 @@
 
-csam-api-client @ git+ssh://git@github.ice.dhs.gov/M-A/csam_python_sdk.git
-Jinja2==3.1.4
-pandas==2.2.3
-polars==1.25.2
-deepdiff==9.0.0
-requests
-pyarrow
-xlsxwriter
-ratemate
-retry
+"""
+Some Service Now functions and variables
+"""
+
+import os
+import tempfile
+import polars as pl
+import time
+from functools import wraps
+import logging
+from logging.handlers import RotatingFileHandler
+
+branch = os.environ['BRANCH_NAME']
+IS_MAIN_BRANCH = branch == "main"
+if not IS_MAIN_BRANCH or os.environ.get('debug', None):
+    LOG_LEVEL = logging.DEBUG
+else:
+    LOG_LEVEL = logging.INFO
+
+TEMP_DIR = tempfile.gettempdir()
+LOG_DIR = os.path.join(TEMP_DIR, "logs")
+
+FORMATTER = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+def set_file_handler(logger, logfile_name):
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_file = os.path.join(LOG_DIR, logfile_name)
+    file_handler = RotatingFileHandler(log_file, maxBytes=(10*(2**20)), backupCount=10, encoding='utf-8', errors='ignore')
+    file_handler.setFormatter(FORMATTER)
+    file_handler.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
+    return logger
+
+
+def set_stream_handler(logger):
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(FORMATTER)
+    stream_handler.setLevel(LOG_LEVEL)
+    logger.addHandler(stream_handler)
+    return logger
+
+def get_unstable_logger(logger_name):
+    unstable_name = f"{logger_name}_unstable"
+    fn = f"{unstable_name}.log"
+    fn_path = os.path.join(LOG_DIR, fn)
+    try:
+        os.remove(fn_path)
+    except FileNotFoundError:
+        pass
+    unstable_logger = logging.getLogger(unstable_name)
+    unstable_logger.propagate=False
+    unstable_logger.setLevel(logging.DEBUG)
+    unstable_logger = set_file_handler(unstable_logger, fn)
+    unstable_logger = set_stream_handler(unstable_logger)
+    return unstable_logger, fn_path
+
+def set_unstable(unstable_logger, unstable_fn_path):
+    if os.stat(unstable_fn_path).st_size:
+        # need to close the filehandler
+        fhs = []
+        for handlr in unstable_logger.handlers:
+            try:
+                if handlr.baseFilename == unstable_fn_path:
+                    fhs.append(handlr)
+            except AttributeError:
+                pass
+        for fh in fhs:
+            fh.flush()
+            fh.close()
+            unstable_logger.removeHandler(fh)
+
+        import shutil
+        unstable_dir = os.path.join(LOG_DIR, "unstable_notify")
+        if not os.path.exists(unstable_dir):
+            os.mkdir(unstable_dir)
+        try:
+            os.remove(os.path.join(unstable_dir, os.path.split(unstable_fn_path)[-1]))
+        except FileNotFoundError:
+            pass
+        shutil.move(unstable_fn_path, unstable_dir)
+    else:
+        os.remove(unstable_fn_path)
+
+def execute_timer(logger):
+    def decorator(f):
+        @wraps(f)
+        def wrap(*args, **kw):
+            ts = time.time()
+            result = f(*args, **kw)
+            te = time.time()
+            logger.info(f'func:{f.__name__} took: {te-ts:.2f} seconds to execute')
+            return result
+        return wrap
+    return decorator
+
+# res = get_snow_table("u_fisma_inventory", SNOW_URL_BASE.replace("test", "")+API_SUFFIX)
+# SNOW_FISMA_IVENTORY_TABLE = pl.from_dicts(res.json()['result'])
+# FISMA_MAPPING = parse_fisma_inventories_table_portfolios(SNOW_FISMA_IVENTORY_TABLE)
+
+VAFT_POAM_TAG = "VAFT POAM AUTOMATION"
+
+def html_commentize(txt):
+    return f"<!--{txt}-->"
+
+def concat_dfs(*args, schema=None, how='vertical', rechunk=False, parallel=True) -> pl.DataFrame:
+    """A helper funcion that ensures that 2 dataframes can be concat'd, even either is empty or the schema mismatches"""
+
+    to_concat = []
+    for a in args:
+        if a.is_empty():
+            to_concat.append(pl.DataFrame(schema=schema))
+        else:
+            to_concat.append(a.cast(schema))
+    return pl.concat(to_concat, how=how, rechunk=rechunk, parallel=parallel)

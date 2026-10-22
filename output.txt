@@ -1,17 +1,35 @@
-roles:
-- src: git+https://github.ice.dhs.gov/M-A/register_agents_rhel8.git
-  name: register_agents
-  version: main
-  scm: git
-- src: git+https://github.ice.dhs.gov/M-A/aide-update.git
-  name: aide_update
-  version: main
-- src: git+https://github.ice.dhs.gov/M-A/install_syft.git
-  version: main
-  scm: git
-- src: git+https://github.ice.dhs.gov/M-A/generate_sbom.git
-  version: main
-  scm: git
-- src: git+https://github.ice.dhs.gov/M-A/AddNessusScanUser.git
-  name: AddNessusScanUser
-  version: main
+Hi Pete,
+
+Thanks for the clarification. I understand that ServiceNow exposes an API for HIVE to retrieve data, rather than pushing data directly into HIVE, and that HIVE maintains its own schema and data storage logic.
+
+As part of the broader RiskOps architecture and reusable-code assessment, I've since completed a detailed review of the available HIVE, Weakness Tracker, Tenable, and CSAM integration repositories.
+
+The code review confirms several implementation details:
+
+HIVE ingestion and processing: The reviewed HIVE code includes the ingestion, transformation, validation, enrichment, and persistence logic for the data flows examined, including the Tenable TVM pipeline.
+
+Weakness Tracker processing: The Python implementation independently retrieves Tenable vulnerability and compliance data, performs enrichment and reconciliation, and publishes findings into ServiceNow through REST APIs.
+
+ServiceNow integration: The Python code interacts with ServiceNow tables and import endpoints, including the findings and Weakness Tracker records. However, the available repositories do not establish whether additional transformations, grouping, state transitions, or workflow decisions occur within ServiceNow.
+
+CSAM integration: Separate Python automation handles POA&M creation, updates, and closure based on ServiceNow records and the applicable workflow conditions.
+
+Your clarification helps establish that HIVE owns its downstream schema and storage processing for the ServiceNow API data it consumes. However, I would like to distinguish that responsibility from any business rules or processing that may occur within ServiceNow before the data is exposed through the API.
+
+There are a few remaining items I'd appreciate your help confirming:
+
+ServiceNow API contract: Which specific API endpoints, tables, views, or data sources does HIVE consume? Is there an existing API specification or mapping document identifying the fields and filters exposed to HIVE?
+
+Business rules and transformations: Are the relevant data mappings, finding correlation/grouping, deduplication, remediation-plan rules, and workflow/state transitions implemented entirely outside ServiceNow, or are any ServiceNow business rules, transform maps, scripted APIs, or flows involved?
+
+Findings and Weakness Tracker: Does ServiceNow perform any additional processing when findings are imported, particularly in creating or updating Weakness Tracker records? Our Python review confirms the publishing interface, but not the server-side behavior after submission.
+
+ISVM, KEV, and Remediation Plan rules: Are these rules maintained in HIVE, ServiceNow, or another component? If they are outside your area, could you point me to the appropriate technical owner or source documentation?
+
+CMDB reference architecture: The artifact inventory also identifies a CMDB reference architecture associated with your work. Could you share its current location or point me to the latest version?
+
+I'm not looking to duplicate work already implemented in HIVE. The objective is to establish clear ownership of the processing logic, identify any remaining dependencies, and ensure that reusable business functionality is not overlooked as we evaluate the Foundry/Databricks direction.
+
+If the ServiceNow side is limited to exposing existing records without additional transformation or business-rule processing for these flows, a confirmation of that scope, along with the API contract, would help us close out the corresponding items in the assessment.
+
+Thanks for your help.

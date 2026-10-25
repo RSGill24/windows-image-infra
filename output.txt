@@ -1,19 +1,12 @@
-import re
-from typing import  Optional
 import logging
 import pandas as pd
+from datetime import timedelta, date
 import urllib3
-import time
-from datetime import datetime, timedelta, timezone
-
-import requests
-from requests.exceptions import RequestException
-from sqlalchemy.engine import Engine
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import current_date, lit
-
-from crma_hive_utilities_spark import Spark_Read_Write_Utility
 from crma_hive_utilities import Read_Write_Utility
+from crma_hive_connections import Connection
+
+
+from sqlalchemy.engine import Engine
 
 
 # Turning off warnings
@@ -23,234 +16,145 @@ urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+rw_util = Read_Write_Utility()
+connection = Connection()
 
-class SparkTvmUtility:
 
-    def __init__(self, number_of_days=15):
-        self.number_of_days = number_of_days  
-        self.spark_rw_util = Spark_Read_Write_Utility()
-        self.rw_util = Read_Write_Utility()
+MAIN_SCHEMA = rw_util.MAIN_SCHEMA
+METADATA_TABLE = "crma_hive_load_control_metadata"
 
-    def load_tvm_data_to_db(
+class FismaScorecardUtility:
+
+    def compute_date_params(
+            self,
+            etl_date: date
+        ) -> dict:
+        """
+        Compute key date parameters for ETL processing
+
+        Parameters:
+            etl_date (date): Reference date for calculations.
+
+        Returns:
+            params(dict)L Dictionary of date params
+        """
+        logger.info(f"Compute query parameters.")
+
+        look_back = etl_date - timedelta(days=31)
+        cve_kev_cutoff_date = etl_date - timedelta(days=45)
+
+        return {
+            "lookback_date": look_back,
+            "cve_kev_cutoff_date": cve_kev_cutoff_date
+        }
+
+    def load_to_db_and_perform_post_load_validation(
             self,
             engine: Engine,
-            spark: SparkSession,
-            jdbc_url: str,
-            user: str,
-            password: str, 
-            bucket_name: str,
-            load_config: dict,
-            schema: str,
-            backfill_date: Optional[str] = None
+            df: pd.DataFrame,
+            table: str, 
+            etl_date: date
     ) -> None:
         """
         Loads data to desttination database
         
         Parameters:
             engine (create_engine): Database connection engine
-            spark (str): PySpark connection session
-            jdbc_url(str): JDBC connection url
-            jdbc_user(str): db user
-            jdbc_password(str): db user password
-            bucket (str): Name of the S3 bucket to fetch the data from
-            load_config (dict): The parameters of the dataset to store to database
-            schema(str): The database schema in which data is loaded.
-            backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525)
+            df (pd.DataFrame):
+            schema (str):
+            table (str):
+            load_control_table (str):
         """
-        dataset = load_config["dataset"]
-        logger.info(f"Preparing to load {dataset} tables to database...")
+        logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")
 
-        classes = ["CLEAN", "QUARANTINE", "WARNING"]
-
-        for cls in classes:
-            prefix = f"processed/TVM/{cls}/CRMA_HIVE"
-            base_name = f"{prefix}_{dataset}_{cls}" 
-
-            if backfill_date:
-                df = self.spark_rw_util.fetch_spark_df_from_s3_by_date(
-                    bucket_name=bucket_name,
-                    base_folder=base_name,
-                    spark=spark,
-                    backfill_date=backfill_date
-                )
-                if df is not None:
-                    df = df.withColumn("etl_date", lit(datetime.strptime(backfill_date, "%m%d%y").strftime("%Y-%m-%d")))
-
-            else:         
-                df =self.spark_rw_util.fetch_spark_df_from_s3(
-                    bucket_name=bucket_name, 
-                    base_folder=base_name,
-                    spark=spark,
-                    )
-
-                if df is not None:
-                    df = df.withColumn("etl_date", current_date()) 
-            
-            if cls == "CLEAN":
-                if df is None:
-                    raise ValueError("Dataset not found")                       
-
-                if load_config["load_strategy"]=="upsert":  
-                    table_name = f"crma_hive_{dataset.lower()}"
-                    logger.info(f"Loading {table_name} ...")
-                    pk_columns = load_config["pk_columns"]    
-                    logger.info(f"Dataset pk_columns: {pk_columns}")          
-                    self.spark_rw_util.bulk_spark_df_upsert_with_jdbc_staging(
-                        engine = engine,
-                        spark_df = df,
-                        jdbc_url=jdbc_url,
-                        user=user,
-                        password=password,
-                        schema =schema,
-                        target_table =table_name,
-                        pk_columns=pk_columns,         
-                    )
-                    logger.info(f"Perfomming post load validation on table '{table_name}' in '{schema}' schema")
-                    if self.spark_rw_util.post_load_validation_hist_tables_spark_df(
-                        engine=engine, 
-                        spark_df=df, 
-                        schema_name=schema, 
-                        table_name=table_name,
-                        backfill_date=backfill_date
-                        ):
-                        logger.info(f"Post load validation check passed for table '{table_name}' in '{schema}' schema")             
-                    else:
-                        raise RuntimeError(f"Post load validation check failed for table '{table_name}' in '{schema}' schema")
-                    
-                elif load_config["load_strategy"]=="stage": 
-                    main_table = f"crma_hive_{dataset.lower()}"
-                    staging_table = f"crma_hive_{dataset.lower()}_staging"
-                    pk_columns = load_config["pk_columns"] 
-                    all_columns = load_config["all_columns"] 
-
-                    #Step-1: Truncate staging table
-                    logger.info(f"Trancating staging table, {schema}.{staging_table}")  
-                    self.rw_util.truncate_table(
-                        engine=engine,
-                        schema_name=schema,
-                        table_name=staging_table
-                    )
-
-                    #Step-2: Load staging table
-                    logger.info(f"Load data to staging table, {schema}.{staging_table}")
-                    self.spark_rw_util.bulk_spark_df_load_to_staging_with_jdbc(
-                        spark_df=df,
-                        schema=schema,
-                        jdbc_url=jdbc_url,
-                        user=user,
-                        password=password,
-                        target_table=staging_table
-                    )
-
-                    #Step-3: Perform post-load validation on staging 
-                    logger.info("Perform post-laod validation on staging table.")
-                    if not  self.spark_rw_util.post_load_validation_spark_df(
-                        engine=engine,
-                        spark_df=df,
-                        schema_name=schema,
-                        table_name=staging_table
-                    ):
-                        raise RuntimeError(f"Post load validation check failed for table {staging_table}") 
-                    
-                    #Step-4: Apply stagging to main
-                    logger.info(f"Apply staging to main table:{schema}.{main_table}")
-                    self.rw_util.apply_staging_to_main(
-                        engine=engine,
-                        schema_name=schema,
-                        main_table=main_table,
-                        staging_table=staging_table,
-                        all_cols=all_columns,
-                        key_cols=pk_columns
-                    )
-                                
-            else:
-                if df is not None:                    
-                    table_name = f"crma_hive_tvm_{dataset.lower()}_{cls.lower()}"
-                    logger.info(f"Loading {table_name} ...")
-                    self.spark_rw_util.bulk_spark_df_load_with_jdbc(
-                        spark_df = df,
-                        jdbc_url=jdbc_url,
-                        user=user,
-                        password=password,
-                        schema =schema,
-                        target_table =table_name,
-                    )
-
-    def load_tvm_data_to_db_hist_tables(
-            self,
-            engine: Engine,
-            spark: SparkSession,
-            jdbc_url: str,
-            user: str,
-            password: str, 
-            bucket_name: str,
-            dataset: str,
-            target_table:str,
-            load_control_table:str,
-            schema: str,
-            backfill_date: Optional[str] = None
-    ) -> None:
-        """
-        Loads data to desttination database
-        
-        Parameters:
-            engine (create_engine): Database connection engine
-            bucket (str): Name of the S3 bucket to fetch the data from
-            spark (str): PySpark connection session
-            jdbc_url(str): JDBC connection url
-            jdbc_user(str): db user
-            jdbc_password(str): db user password
-            dataset (str): The dataset to store to database
-            backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525)
-        """
-
-        prefix = f"processed/TVM/CLEAN/CRMA_HIVE"
-        base_name = f"{prefix}_{dataset}_CLEAN"   
-        etl_date = datetime.now().date() 
-
-        if backfill_date:
-            df = self.spark_rw_util.fetch_spark_df_from_s3_by_date(
-                    bucket_name=bucket_name,
-                    base_folder=base_name,
-                    spark=spark,
-                    backfill_date=backfill_date
-                ) 
-            if df is not None:
-                    df = df.withColumn("etl_date", lit(datetime.strptime(backfill_date, "%m%d%y").strftime("%Y-%m-%d")))
-        else:    
-            df = self.spark_rw_util.fetch_spark_df_from_s3(
-                    bucket_name=bucket_name, 
-                    base_folder=base_name,
-                    spark=spark,
-                    )
-            if df is not None:
-                df = df.withColumn("etl_date", current_date())
-        
-        if df is None:
-            raise ValueError("Dataset not found")
-        
-        db_load_flag = self.spark_rw_util.bulk_spark_df_load_to_hist_tables_with_jdbc_daily_idempotent(
-            etl_date=etl_date,
-            spark_df=df,
-            schema=schema,
-            engine=engine,
-            jdbc_url=jdbc_url,
-            user=user,
-            password=password,
-            target_table=target_table,
-            load_control_table=load_control_table,
+        db_load_flag = rw_util.load_table_to_db_daily_idempotent(
+            etl_date=etl_date, 
+            engine=engine, 
+            df=df, 
+            schema_name=MAIN_SCHEMA, 
+            table_name=table, 
+            load_control_table=METADATA_TABLE, 
+            exist_type="append" 
         )
-        if db_load_flag:
-            logger.info(f"Perfomming post load validation on table '{target_table}' in '{schema}' schema")
-            if self.spark_rw_util.post_load_validation_hist_tables_spark_df(
+        if db_load_flag: #if loaded, perfoma post load validation
+            logger.info(f"Perfomming post load validation on table '{table}' in '{MAIN_SCHEMA}' schema")
+            if rw_util.post_load_validation_hist_tables(
                 engine=engine, 
-                spark_df=df, 
-                schema_name=schema, 
-                table_name=target_table,
-                backfill_date=backfill_date
+                df=df, 
+                schema_name=MAIN_SCHEMA, 
+                table_name=table, 
                 ):
-                logger.info(f"Post load validation check passed for table '{target_table}' in '{schema}' schema")             
+                logger.info(f"Post load validation check passed for table '{table}' in '{MAIN_SCHEMA}' schema")
+
+                ##Parallel loading##
+                logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+                logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")     
+                engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+                rw_util.load_table_to_db_daily_idempotent(
+                    etl_date=etl_date, 
+                    engine=engine2, 
+                    df=df, 
+                    schema_name=MAIN_SCHEMA, 
+                    table_name=table, 
+                    load_control_table=METADATA_TABLE, 
+                    exist_type="append" 
+                )
+
             else:
-                raise RuntimeError(f"Post load validation check failed for table '{target_table}' in '{schema}' schema")
-        
-   
+                raise RuntimeError(f"Post load validation check failed for {table} in '{MAIN_SCHEMA}' schema")
+
+    def archive_to_s3(
+            self,
+            df: pd.DataFrame,
+            bucket_name: str,
+            dataset: str
+    )->None:
+        """
+        Load dataset to s3
+        params:
+            df: dataset to store
+            bucket_name: s3 bucket name
+            dataset: dataset name
+        return:
+            None
+        """
+        logger.info("Load a copy to S3 for archival")
+        filename = f"processed/SCORECARD/{dataset.upper()}"
+        rw_util.load_to_s3(bucket_name, df, filename, "PARQUET") 
+
+        # # **Uncomment the following to save as CSV for testing**
+        # filename = f"test/raw/SCORECARD/{dataset.upper()}"
+        # rw_util.load_to_s3(bucket_name ,df, filename, "CSV")
+        # ## 
+
+    def refresh_materialized_views(
+        self,
+        engine: Engine,
+        views: list        
+    )-> None:
+        """
+        Refreshes materialized views
+
+        Parameters:
+            engine (Engine): Database engine for data access.
+            views (list): list of the views
+        """
+
+        for view in views:
+            logger.info(f"Refreshing materialized view: {view}")
+            sql = f"REFRESH MATERIALIZED VIEW {MAIN_SCHEMA}.{view}"
+            rw_util.execute_ddl_dml(
+                engine=engine,
+                sql=sql
+            )
+
+        ##Parallel loading##
+        logger.info("Refresh view in 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+        engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+        for view in views:
+            logger.info(f"Refreshing materialized view: {view}")
+            sql = f"REFRESH MATERIALIZED VIEW {MAIN_SCHEMA}.{view}"
+            rw_util.execute_ddl_dml(
+                engine=engine2,
+                sql=sql
+            )

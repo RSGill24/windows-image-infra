@@ -1,101 +1,77 @@
-import logging
-import json
-from urllib.parse import urlparse
-import boto3
-from botocore.exceptions import ClientError
-from botocore.config import Config
-from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine, make_url
+resource "aws_glue_workflow" "crma_hive_snow_workflow" {
+    name        = "crma_hive_snow_workflow"
+    description = "Glue workflow for CRMA HIVE to contain SNOW jobs"
+}
 
+resource "aws_glue_workflow" "crma_hive_mobius_workflow" {
+    name        = "crma_hive_mobius_workflow"
+    description = "Glue workflow for CRMA HIVE to contain MOBIUS jobs"
+}
 
-# Logging setup
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+resource "aws_glue_workflow" "crma_hive_csam_workflow" {
+    name        = "crma_hive_csam_workflow"
+    description = "Glue workflow for CRMA HIVE to contain CSAM jobs"
+}
 
+resource "aws_glue_workflow" "crma_hive_audit_controls_workflow" {
+    name        = "crma_hive_audit_controls_workflow"
+    description = "Glue workflow for CRMA HIVE to contain Audit Controlds trend dashbaord data prep jobs"
+}
 
-class Connection:
-    def get_secret(self, secret_name: str, region_name: str = "us-gov-west-1") -> dict:
-        """
-        Retrieve a secret from AWS Secrets Manager.
+resource "aws_glue_workflow" "crma_hive_axonius_workflow" {
+    name        = "crma_hive_axonius_workflow"
+    description = "Glue workflow for CRMA HIVE to contain AXONIUS jobs"
+}
 
-        Args:
-            secret_name (str): The name of the secret to retrieve.
-            region_name (str, optional): AWS region name. Defaults to "us-gov-west-1".
+resource "aws_glue_workflow" "crma_hive_tvm_light_workflow" {
+    name        = "crma_hive_tvm_light_workflow"
+    description = "Glue workflow for CRMA HIVE to contain TVM jobs for cisco vulns jobs"
+}
 
-        Returns:
-            dict: The parsed secret data as a dictionary.
+resource "aws_glue_workflow" "crma_hive_fisma_scorecard_workflow" {
+    name        = "crma_hive_fisma_scorecard_workflow"
+    description = "Glue workflow for CRMA HIVE to compute FISMA Scorecard Metrics"
+    max_concurrent_runs = 1
+}
 
-        Raises:
-            ValueError: If the secret response does not contain a SecretString.
-            RuntimeError: If AWS Secrets Manager returns an error.
-        """
-        logger.info("Fetching secret from AWS Secrets Manager.")
-        session = boto3.session.Session()
-        client = session.client(
-            service_name="secretsmanager", 
-            region_name=region_name,
-            config = Config(retries={'max_attempts': 10, 'mode': 'standard'})
-            )
+resource "aws_glue_workflow" "crma_hive_nvd_and_cisa_workflow" {
+    name        = "crma_hive_nvd_and_cisa_workflow"
+    description = "Glue workflow for CRMA HIVE to fetch, process and load NVD and CISA data to HIVE"
+    max_concurrent_runs = 1
+}
 
-        try:
-            response = client.get_secret_value(SecretId=secret_name)
-            secret_string = response.get("SecretString")
-            if not secret_string:
-                raise ValueError("SecretString not found in response.")
-            logger.info(f"Successfully retrieved secret: {secret_name}.")
-            return json.loads(secret_string)
-        except ClientError as e:
-            logger.error(f"Error retrieving secret: {e}")
-            raise RuntimeError(f"Error retrieving secret: {e}")
+resource "aws_glue_workflow" "crma_hive_references_workflow" {
+    name        = "crma_hive_references_workflow"
+    description = "Glue workflow for CRMA HIVE to process and load SSCG data to HIVE"
+    max_concurrent_runs = 1
+}
 
+resource "aws_glue_workflow" "crma_hive_tvm_vulns_workflow" {
+    name        = "crma_hive_tvm_vulns_workflow"
+    description = "Glue workflow for CRMA HIVE to process and load SSCG data to HIVE"
+    max_concurrent_runs = 1
+}
 
-    def postgres_engine(self, secret_name: str, conn_string: str = "postgres_engine_string") -> Engine:
-        """
-        Create a SQLAlchemy engine using credentials from AWS Secrets Manager.
+resource "aws_glue_workflow" "crma_hive_tvm_compliance_workflow" {
+    name        = "crma_hive_tvm_compliance_workflow"
+    description = "Glue workflow for CRMA HIVE to fetch, process, and load tvm compliance data to HIVE"
+    max_concurrent_runs = 1
+}
 
-        Args:
-            secret_name (str): The name of the secret containing database credentials.
-            database (str): The name of the PostgreSQL database to connect to.
+resource "aws_glue_workflow" "crma_hive_cmdb_workflow" {
+    name        = "crma_hive_cmdb_workflow"
+    description = "Glue workflow for CRMA HIVE to fetch, process, and CMDB tables datasets to HIVE"
+    max_concurrent_runs = 1
+}
 
-        Returns:
-            Engine: A SQLAlchemy Engine object for the target PostgreSQL database.
+resource "aws_glue_workflow" "crma_hive_audit_report_workflow" {
+    name    = "crma_hive_audit_report_workflow"
+    description = "Glue workflow for CRMA HIVE to maintain software and os entity resolution refrence map/tables"
+}
 
-        Raises:
-            Exception: If the engine creation fails.
-        """
-        logger.info("Creating database engine.")
-        try:
-            secret = self.get_secret(secret_name)
-            engine = create_engine(url=secret[conn_string])
-            logger.info("Successfully created the database engine.")
-            return engine
-        except Exception as e:
-            logger.error(f"Error creating database engine: {e}")
-            raise
-
-    def parse_pg_uri_to_jdbc(self, secret_name: str, conn_string: str ="postgres_engine_string" ):
-            """
-            Convert a PostgreSQL URI of the form:
-                postgresql://user:password@host:port/dbname
-            into:
-                jdbc_url, user, password
-            for use with Spark JDBC.
-            """
-            try: 
-                secret = self.get_secret(secret_name)
-            except Exception as e:
-                logger.error(f"Error retrieving database connection string: {e}")
-                raise
-
-            parsed = make_url(secret[conn_string])
-            if parsed.drivername != "postgresql":
-                raise ValueError(f"Unsupported scheme in URI: {parsed.drivername}")
-
-            user = parsed.username
-            password = parsed.password
-            host = parsed.host
-            port = parsed.port or 5432
-            dbname = parsed.database
-            jdbc_url = f"jdbc:postgresql://{host}:{port}/{dbname}"
-
-            return jdbc_url, user, password
+################## Roll Back Fill Workflow
+resource "aws_glue_workflow" "crma_hive_rollback_backfill_workflow" {
+    name        = "crma_hive_rollback_backfill_workflow"
+    description = "Glue workflow for CRMA HIVE to reprocess historical tables"
+    max_concurrent_runs = 1
+}

@@ -1,427 +1,763 @@
-from datetime import datetime
-from functools import reduce
+import io
 import logging
+import json
+import os
+import math
+import uuid
+import boto3
+import psycopg2
+import pyarrow as pa
+import pyarrow.parquet as pq
+import psutil
+import sys
+from datetime import datetime, date
+from botocore.exceptions import ClientError
+from datetime import datetime, timezone
 import re
-from typing import Iterable, List, Sequence, Tuple
+from io import BytesIO, StringIO
+from sqlalchemy import text, inspect, create_engine, func, select, MetaData, Table
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame as SparkDataFrame
+from typing import List, Optional, Tuple 
+from psycopg2.extras import execute_values
 
-from pyspark.sql import DataFrame as SparkDataFrame, Window
-from pyspark.sql import functions as F, types as T
+from pyspark.sql import functions as F
 
-logger = logging.getLogger()
+
+from crma_hive_utilities import Read_Write_Utility
+
+
+# Logging setup
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-class SparkDfDataQualityUtilities:
-    
-    def select_fields(self, df: SparkDataFrame, cols: Sequence[str]) -> SparkDataFrame:
-        """
-        Select a subset of columns from a Spark DataFrame.
 
+            
+class Spark_Read_Write_Utility:
+    MAIN_SCHEMA = "crma_hive"
+    BACKFILL_SCHEMA = "crma_hive_backfill"
+
+    def __init__(self, min_part_size=5 * 1024 * 1024):
+        self.min_part_size = min_part_size  #5MB minimum batch size for multipart streaming to s3
+        self.rw_util = Read_Write_Utility()
+
+    def fetch_spark_df_from_s3(
+        self,
+        bucket_name,
+        base_folder,
+        spark,
+    )  :
+        """
+        Finds the latest timestamped folder under base_folder in S3 and returns a Spark DataFrame
+        of all Parquet files in that folder.
+        
         Args:
-            df : pyspark.sql.DataFrame
-            cols : Sequence[str]: Column names to keep.
-
-        Returns: 
-            pyspark.sql.DataFrame
-                DataFrame with only the selected columns, in the order provided.
+            bucket_name (str): S3 bucket name.
+            base_folder (str): Base folder path (e.g., 'raw/tvm/abc').
+            spark (SparkSession): Active Spark session.
+            logger (optional): Logger for info/error messages.
+            
+        Returns:
+            pyspark.sql.DataFrame or None: DataFrame of all Parquet files in the latest folder, or None if not found.
         """
-        if not isinstance(df, SparkDataFrame):
-            logger.error(
-                "select_fields_spark expected a Spark DataFrame, "
-                f"got {type(df).__name__!r} instead."
-            )
-            raise 
+  
+        def _extract_datetime(folder_name):
+            """Private helper function to extract datetime from crma_hive folders in s3 storage."""
+            pattern = r'_(\d{6})_(\d{6})$'
+            match = re.search(pattern, folder_name)
+            if match:
+                date_str, time_str = match.groups()
+                try:
+                    return datetime.strptime(date_str + time_str, "%m%d%y%H%M%S")
+                except Exception:
+                    return None
+            return None
 
-        cols = list(cols)  
+        logger.info(f"Collecting latest {base_folder} from {bucket_name}.")
+        s3_client = boto3.client("s3")
+        paginator = s3_client.get_paginator("list_objects_v2")
+        folder_pattern = re.compile(rf"^{re.escape(base_folder)}_(\d{{6}}_\d{{6}})/")
+        folders = set()      
+  
+        
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=base_folder):
+            for obj in page.get("Contents", []):
+                # Creating the object key
+                key = obj["Key"]
+                match = folder_pattern.match(key)
+                if match:
+                    folders.add(f"{base_folder}_{match.group(1)}")
 
-        if not cols:
-            logger.error("select_fields_spark called with an empty list of columns.")
-            raise ValueError("cols cannot be empty.")
+        if not folders:
+            logger.error(f"No folder with basename, {base_folder} found in bucket {bucket_name}.")
+            return None
+        
+        logger.info(f"Matching folders: {folders}")
 
-        df_cols = set(df.columns)
-        missing = set(cols) - df_cols
-        if missing:
-            logger.error(f"Missing columns in DataFrame: {missing}")
-            raise KeyError(f"Required columns missing from DataFrame: {missing}")
+        # logger.info("Extract valid folders - Folderst with valid timestamp format as suffix.")
+        valid_folders = [f for f in folders if _extract_datetime(f) is not None]
+        if valid_folders:
+            latest_folder = max(valid_folders, key=lambda f: _extract_datetime(f))
+            logger.info(f"Latest folder:{latest_folder}")
+        else:
+            logger.error(f"No valid timestamped folders found for base name:{base_folder}.")
+            return None
 
-        return df.select(*cols)
-   
-    def clean_timestamp_fields(self, df: SparkDataFrame, cols: list[str]) -> SparkDataFrame:
-        """
-        Clean and convert timestamp columns to TimestampType.
-        """
-        logger.info("Applying DQ6: Cleaning and converting to timestamp (PySpark)")
+        logger.info(f"Reading Parquet files from latest folder")
+        path =f"s3://{bucket_name}/{latest_folder}/"
+        df = spark.read.parquet(path)
 
-        missing = set(cols) - set(df.columns)
-        if missing:
-            logger.error(f"Missing columns: {missing}")
-            raise KeyError(f"Required columns missing: {missing}")
-
-        for col in cols:
-            df = df.withColumn(
-                col,
-                F.to_timestamp(F.trim(F.col(col)))  
-            )
+          
+        if df is not None:
+            logger.info(f"Created Spark dataframe from contents of the folder: {latest_folder}")
 
         return df
-    
-    def clean_int_fields(self, df: SparkDataFrame, cols: list[str]) -> SparkDataFrame:
+ 
+    def fetch_spark_df_from_s3_by_date(
+            self,
+            bucket_name: str,
+            base_folder: str,
+            spark,
+            backfill_date: str,  
+        ):
         """
-        Clean numeric columns to nullable Integer (BIGINT) in PySpark.
+        Finds the latest timestamped folder under base_folder in S3 for the given backfill_date
+        (MMDDYY) and returns a Spark DataFrame of all Parquet files in that folder.
+
+        Folder naming pattern (required):
+            {base_folder}_{MMDDYY}_{HHMMSS}/
+
+        Args:
+            bucket_name (str): S3 bucket name.
+            base_folder (str): Base folder path (e.g., 'raw/tvm/abc').
+            spark (SparkSession): Active Spark session.
+            backfill_date (str): Date string in 'MMDDYY' format. Already validated by caller.
+
+        Returns:
+            pyspark.sql.DataFrame or None: DataFrame of all Parquet files in the latest folder
+            for that date, or None if no matching folder is found.
+        """
+
+        logger.info(
+            f"Collecting latest {base_folder} from {bucket_name} for backfill_date={backfill_date}."
+        )
+
+        s3_client = boto3.client("s3")
+        paginator = s3_client.get_paginator("list_objects_v2")
+
+        # Folder keys are expected like: {base_folder}_{MMDDYY}_{HHMMSS}/...
+        folder_pattern = re.compile(
+            rf"^{re.escape(base_folder)}_(\d{{6}})_(\d{{6}})/"
+        )
+
+        latest_folder = None
+        latest_time = None  # HHMMSS as string; lexicographic compare works
+
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=base_folder):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                match = folder_pattern.match(key)
+                if not match:
+                    continue
+
+                date_part, time_part = match.groups()
+
+                # Only consider folders for the requested backfill_date (MMDDYY)
+                if date_part != backfill_date:
+                    continue
+
+                folder_name = f"{base_folder}_{date_part}_{time_part}"
+
+                # Track the folder with the latest time for this date
+                if latest_time is None or time_part > latest_time:
+                    latest_time = time_part
+                    latest_folder = folder_name
+
+        if latest_folder is None:
+            logger.error(
+                f"No folders found for base name {base_folder} on backfill_date {backfill_date} "
+                f"in bucket {bucket_name}."
+            )
+            return None
+
+        logger.info(
+            f"Latest folder for {base_folder} on {backfill_date}: {latest_folder} "
+            f"(time suffix: {latest_time})."
+        )
+
+        path = f"s3://{bucket_name}/{latest_folder}/"
+        logger.info(f"Reading Parquet files from folder: {latest_folder}")
+        df = spark.read.parquet(path)
+
+        logger.info(f"Created Spark DataFrame from contents of the folder: {latest_folder}")
+        return df
+
+    def load_processed_spark_df_to_s3(
+            self,
+            bucket_name: str, 
+            spark: SparkSession,
+            prefix: str,
+            dataset: str, 
+            clean_df: SparkDataFrame, 
+            quarantine_df: Optional[SparkDataFrame] = None,
+            warning_df: Optional[SparkDataFrame] = None,
+            backfill_date: Optional[str] = None 
+            )-> None:
+        """
+        Prepares input params and load to S3 destination folder
         
         Parameters:
-            df (DataFrame): Input PySpark dataframe
-            cols (list[str]): List of integer columns
-            
-        Rules:
-            - Convert valid values to 64-bit integer (BIGINT)
-            - Replace invalid or missing values with null
-            
-        Returns:
-            DataFrame: Cleaned dataframe
+            bucket_name (str): Name of the S3 bucket
+            spark(SparkSession): pyspark.sql session
+            prefix(str): prefix of the destination s3 folder
+            dataset(str): name of the dataset to store
+            clean_df(SparkDataFrame): The clean dataframe
+            quarantine_df(SparkDataFrame): The dataframe with erronous data
+            warnning_df(SparkDataFrame): Dataframe with rows containing warning flangs 
+            backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525)
+        Return:
+            None
         """
-        logger.info("Applying DQ4: Converting numeric(int) columns to Integer (BIGINT) dtype in PySpark")
+        if backfill_date:
+            base_folder = f"processed/TVM/CLEAN/{dataset.count.upper()}_CLEAN"
+            target_foldername = self.rw_util.find_or_generate_foldername(
+                bucket_name=bucket_name, 
+                base_folder=base_folder, 
+                backfill_date=backfill_date
+                ) 
+            path =f"s3://{bucket_name}/{target_foldername}"
+            clean_df.write.mode("overwrite").parquet(path)
+        
+            if quarantine_df is not None:
+                base_folder = f"processed/TVM/QUARANTINE/{dataset.count.upper()}_QUARANTINE"
+                target_foldername = self.rw_util.find_or_generate_foldername(
+                bucket_name=bucket_name, 
+                base_folder=base_folder, 
+                backfill_date=backfill_date
+                ) 
+                path =f"s3://{bucket_name}/{target_foldername}"
+                quarantine_df.write.mode("overwrite").parquet(path)
 
-        # Column existence check
-        missing = set(cols) - set(df.columns)
-        if missing:
-            logger.error(f"Missing columns: {missing}")
-            raise KeyError(f"Required columns missing: {missing}")
+            if warning_df is not None:
+                base_folder = f"processed/TVM/WARNING/{dataset.count.upper()}_WARNING"
+                target_foldername = self.rw_util.find_or_generate_foldername(
+                bucket_name=bucket_name, 
+                base_folder=base_folder, 
+                backfill_date=backfill_date
+                ) 
+                path =f"s3://{bucket_name}/{target_foldername}"
+                warning_df.write.mode("overwrite").parquet(path)  
+        else:
+            path =f"s3://{bucket_name}/{prefix}/CLEAN/{dataset.upper()}_CLEAN_{datetime.now(timezone.utc).strftime('%m%d%y_%H%M%S')}"
+            clean_df.write.mode("overwrite").parquet(path) 
 
-        for col in cols:
-            # Trim whitespace, then cast to BIGINT.
-            # Any invalid value (non-numeric, empty string, etc.) will become null.
-            df = df.withColumn(
-                col,
-                F.trim(F.col(col)).cast("bigint")
-            )
+            if quarantine_df is not None:
+                path =f"s3://{bucket_name}/{prefix}/QUARANTINE/{dataset.upper()}_QUARANTINE_{datetime.now(timezone.utc).strftime('%m%d%y_%H%M%S')}"
+                quarantine_df.write.mode("overwrite").parquet(path) 
+   
+            if warning_df is not None:
+                path =f"s3://{bucket_name}/{prefix}/WARNING/{dataset.upper()}_WARNING{datetime.now(timezone.utc).strftime('%m%d%y_%H%M%S')}"
+                warning_df.write.mode("overwrite").parquet(path) 
+ 
 
-        return df
-    
-    def clean_float_fields(self, df: SparkDataFrame, cols: list[str]) -> SparkDataFrame:
+    def bulk_spark_df_upsert_with_jdbc_staging(
+        self,
+        engine: Engine,
+        spark_df,
+        schema: str,
+        jdbc_url: str,
+        user: str,
+        password: str,
+        target_table: str,
+        pk_columns: List[str],
+        batch_size: int = 10_000,
+        num_partitions: int = None,
+    ):
         """
-        Clean numeric columns to FloatType in Spark DataFrame
-
-        Parameters:
-            df (DataFrame): Input Spark DataFrame
-            cols (list[str]): List of float columns
-
-        Rules:
-            Convert valid values to Float
-            Replace invalid or missing values with null
-
-        Returns:
-            DataFrame: Cleaned DataFrame
-        """
-        logger.info("Applying DQ9: Converting numeric(decimal) columns to FloatType")
-
-        missing = set(cols) - set(df.columns)
-        if missing:
-            logger.error(f"Missing columns: {missing}")
-            raise KeyError(f"Required columns missing: {missing}")
-
-        for col_name in cols:
-            # Convert column to float, invalid values become null
-            df = df.withColumn(col_name, F.col(col_name).cast(T.FloatType()))
-
-        return df
-
-    def normalize_boolean_fields(self, df: SparkDataFrame, cols: list[str]) -> SparkDataFrame:
-        """
-        Normalize boolean columns and make dtype BooleanType
-
-        Parameters:
-            df (DataFrame): Input Spark DataFrame
-            cols (list[str]): List of boolean columns
-
-        Rules:
-            Convert valid values to True/False, make dtype BooleanType
-            Replace invalid or missing values with null
-
-        Returns:
-            DataFrame: Cleaned DataFrame
-        """
-        logger.info("Applying DQ3: Normalizing boolean columns")
-
-        missing = set(cols) - set(df.columns)
-        if missing:
-            logger.error(f"Missing columns: {missing}")
-            raise KeyError(f"Required columns missing: {missing}")
-
-        for col_name in cols:
-            # Normalize values to True/False, invalid/missing become null
-            df = df.withColumn(
-                col_name,
-                F.when(
-                    F.lower(F.trim(F.col(col_name))) == "true", True
-                ).when(
-                    F.lower(F.trim(F.col(col_name))) == "false", False
-                ).otherwise(None).cast(T.BooleanType())
-            )
-
-        return df
-
-    def apply_not_nullable_q_constraint(self, df: SparkDataFrame, cols: list[str]) -> Tuple[SparkDataFrame, SparkDataFrame]:
-        """
-        Enforce not-null constraint on the given columns in a PySpark DataFrame.
-
-        Parameters:
-            df (DataFrame): Input PySpark dataframe
-            cols (list[str]): List of not-nullable columns
-
-        Rules:
-            - Rows with null values in any of the given columns are removed 
-            from the cleaned df and sent to quarantine_df.
-            - quarantine_df contains an 'errors' column describing which 
-            columns were null for that row.
-
-        Returns:
-            Tuple[DataFrame, DataFrame]: (cleaned_df, quarantine_df)
-        """
-        logger.info("Applying DQ1: Enforcing Not Nullable constraint (PySpark)")
-
-        missing = set(cols) - set(df.columns)
-        if missing:
-            logger.error(f"Missing columns: {missing}")
-            raise KeyError(f"Required columns missing: {missing}")
-
-        # Condition: any of the cols is null
-        any_null_cond = reduce(
-            lambda a, b: a | b,
-            [F.col(c).isNull() for c in cols]
-        )
-
-        def null_values_error_msg(*values):
-            null_columns = [col_name for col_name, v in zip(cols, values) if v is None]
-            if not null_columns:
-                return None
-            return "null values in " + ", ".join(null_columns)
-
-        errors_udf = F.udf(null_values_error_msg, T.StringType())
-
-        # Quarantine rows: any null in the specified cols
-        quarantine_df = (
-            df
-            .filter(any_null_cond)
-            .withColumn("errors", errors_udf(*[F.col(c) for c in cols]))
-        )
-
-        # Cleaned rows: all specified cols are non-null
-        all_not_null_cond = reduce(
-            lambda a, b: a & b,
-            [F.col(c).isNotNull() for c in cols]
-        )
-        cleaned_df = df.filter(all_not_null_cond)
-
-        return cleaned_df, quarantine_df
-    
-    def apply_no_duplicates_constraint(self, df: SparkDataFrame, cols: list[str]) -> Tuple[SparkDataFrame, SparkDataFrame]:
-        """
-        Enforce no duplicates constraint on the given columns in Spark DataFrame
-
-        Parameters:
-            df (DataFrame): Input Spark DataFrame
-            cols (list[str]): List of columns to check for duplicates
-
-        Rules:
-            Records with duplicate values in these columns will be removed from df and sent to quarantine_df
-
-        Returns:
-            Tuple[DataFrame, DataFrame]: (cleaned_df, quarantine_df)
-        """
-        logger.info("Applying DQ0: Enforcing no duplicates constraint")
-
-        missing = set(cols) - set(df.columns)
-        if missing:
-            logger.error(f"Missing columns: {missing}")
-            raise KeyError(f"Required columns missing: {missing}")
-
-        # Find duplicate rows based on the subset columns
-        window_cols = cols
-        dup_counts = df.groupBy(window_cols).count()
-        dup_rows = dup_counts.filter(F.col("count") > 1).select(*window_cols)
-
-        # Quarantine DataFrame: rows that are duplicates in any of the specified columns
-        quarantine_df = df.join(dup_rows, on=window_cols, how="inner")
-
-        # Cleaned DataFrame: rows that are not duplicates in the specified columns
-        cleaned_df = df.join(dup_rows, on=window_cols, how="left_anti")
-
-        # Add 'errors' column to quarantine_df
-        quarantine_df = quarantine_df.withColumn(
-            "errors",
-            F.lit("duplicates in " + ", ".join(cols))
-        )
-
-        return cleaned_df, quarantine_df
-    
-    def dedup_by_composite_key_with_timestamp(self,  df: SparkDataFrame,  cols: List[str],  if_dups_col: str,) -> Tuple[SparkDataFrame, SparkDataFrame]:
-        """
-        Deduplicate records in a Spark DataFrame based on a composite primary key and
-        a timestamp column.
-
-        Rules:
-        For each group of rows sharing the same values in `cols`:
-        - The row with the maximum `if_dups_col` value is kept in `clean_df`.
-        - All other rows in the group are placed in `quarantine_df`.
-
-        Records that have unique primary key combinations (no duplicates) are all
-        included in `clean_df`.
-
-        Parameters
-        ----------
-        input_df : pyspark.sql.DataFrame
-            The input Spark DataFrame containing the records to be deduplicated.
-        cols : list[str]
-            List of column names that together define the primary key (e.g., ['col1', 'col2']).
-        if_dups_col : str
-            Name of the timestamp (or time-like) column used to determine the most recent
-            record when duplicates exist for a given primary key.
-
-        Returns
-        -------
-        clean_df : pyspark.sql.DataFrame
-            DataFrame containing the deduplicated records (most recent per primary key).
-        quarantine_df : pyspark.sql.DataFrame
-            DataFrame containing all duplicate records that were not selected as the most recent.
-
-        """
-
-        logger.info(f"Starting PK-based deduplication with timestamp. PK cols {cols}, if dup timestamp col: {if_dups_col}")
-
-        if not cols:
-            raise ValueError("Parameter `cols` (primary key columns) must be a non-empty list.")
-
-        if len(cols) != len(set(cols)):
-            raise ValueError(f"Duplicate column names found in primary key list: {cols}")
-
-        required_cols = set(cols) | {if_dups_col}
-        missing = required_cols - set(df.columns)
-        if missing:
-            logger.error(f"Missing required columns: {missing}", )
-            raise KeyError(f"Required columns missing from input_df: {missing}")
-
-        # Window specification: partition by PK, order by timestamp (most recent first)
-        # Use desc_nulls_last so non-null timestamps are preferred over nulls.
-        w = Window.partitionBy(*[F.col(c) for c in cols]).orderBy(
-            F.col(if_dups_col).desc_nulls_last()
-        )
-
-        # Avoid clashing with an existing column name
-        aux_col = "__dq_row_number"
-        if aux_col in df.columns:
-            raise ValueError(
-                f"Auxiliary column name '{aux_col}' already exists in the input_df. "
-                "Please rename it or adjust the function to use a different internal column name."
-            )
-        # Assign a row number within each PK group
-        df_with_rank = df.withColumn(aux_col, F.row_number().over(w))
-
-        # Clean records: the most recent (row_number == 1) within each PK group        
-        clean_df = df_with_rank.filter(F.col(aux_col) == 1).drop(aux_col)
-
-        # Quarantine records: other rows in the group (row_number > 1)
-        quarantine_df = df_with_rank.filter(F.col(aux_col) > 1).drop(aux_col)
-
-        return clean_df, quarantine_df
-    
-    def parse_framework_values(
-            self,
-            spark_df: SparkDataFrame, 
-            reference_col: str, 
-            frameworks: List[str]
-        ) -> SparkDataFrame:
-        """
-        Extracts control values for specified frameworks from a column containing arrays of structs,
-        and adds them as new columns to the Spark DataFrame.
+        Efficiently bulk upsert a Spark DataFrame into a PostgreSQL table using:
+        1) Spark JDBC write to a staging table
+        2) INSERT ... ON CONFLICT upsert from staging into target
 
         Args:
-            spark_df (pyspark.sql.DataFrame): Input Spark DataFrame.
-            reference_col (str): Name of the column containing array of structs.
-            frameworks (list): List of framework values to extract.
-
-        Returns:
-            pyspark.sql.DataFrame: DataFrame with new columns for each framework.
-
-        Raises:
-            ValueError: If column_name does not exist in spark_df.
+            engine: SQLAlchemy Engine object (for DDL + upsert SQL).
+            spark_df: Spark DataFrame to upsert.
+            schema: PostgreSQL schema name (e.g. 'public').
+            target_table: Name of the target table (without schema).
+            pk_columns: Primary key column names (list of one or more columns).
+            jdbc_url: JDBC URL for PostgreSQL
+                    e.g. 'jdbc:postgresql://host:5432/dbname'
+            jdbc_user: DB user.
+            jdbc_password: DB password.
+            batch_size: JDBC batch size for Spark writes.
+            num_partitions: Optional number of partitions to use when writing.
         """
-        if reference_col not in spark_df.columns:
-            raise ValueError(f"Column '{reference_col}' does not exist in the DataFrame.")
 
-        def snake_case(s):
-            return re.sub(r'[^a-zA-Z0-9]', '_', s).lower()
+        # 1. Handle empty DataFrame early
+        if spark_df.rdd.isEmpty():
+            logger.info("Spark DataFrame is empty. Nothing to upsert.")
+            return
 
-        df = spark_df
-        for fw in frameworks:
-            col_name = snake_case(fw)
-            # Use filter and get control value for the matching framework
-            df = df.withColumn(
-                col_name,
-                F.expr(
-                    f"""
-                    filter({reference_col}, x -> x.framework = '{fw}')
-                    """
-                )[0].control
+        # 2. Generate a unique staging table name (non-temp, so all connections see it)
+        unique_suffix = uuid.uuid4().hex[:8]
+        staging_table = f"staging_{target_table}_temp_{unique_suffix}"
+
+        columns = spark_df.columns
+        if not columns:
+            logger.info("Spark DataFrame has no columns. Nothing to upsert.")
+            return
+
+        # Quoted column list for SQL
+        columns_quoted = [f'"{col}"' for col in columns]
+        columns_csv_quoted = ", ".join(columns_quoted)
+
+        conflict_cols = ", ".join(f'"{col}"' for col in pk_columns)
+        update_set = ", ".join(
+            f'"{col}" = EXCLUDED."{col}"'
+            for col in columns
+            if col not in pk_columns
+        )
+
+        # 3. Create staging table in PostgreSQL with same structure as target
+        create_staging_sql = text(
+            f'CREATE TABLE "{schema}"."{staging_table}" '
+            f' (LIKE "{schema}"."{target_table}" INCLUDING ALL);'
+        )
+
+        logger.info(f"Creating staging table {schema}.{staging_table}")
+        with engine.begin() as conn:
+            conn.execute(create_staging_sql)
+
+        # 4. Write Spark DataFrame to staging table via JDBC
+        logger.info(
+            f"Writing Spark DataFrame to staging table {schema}.{staging_table} via JDBC"
+        )
+
+        df_to_write = spark_df.select(*columns)  # ensure consistent column order
+        if num_partitions is not None:
+            df_to_write = df_to_write.repartition(num_partitions)
+
+        (
+            df_to_write.write
+            .format("jdbc")
+            .option("url", jdbc_url)
+            .option("dbtable", staging_table)  
+            .option("currentSchema", schema)   
+            .option("user", user)
+            .option("password", password)
+            .option("driver", "org.postgresql.Driver")
+            .option("batchsize", str(batch_size))
+            .mode("append")
+            .save()
+        )
+
+        # 5. Upsert from staging to target table
+        upsert_sql = text(
+            f'''
+            INSERT INTO "{schema}"."{target_table}" ({columns_csv_quoted})
+            SELECT {columns_csv_quoted}
+            FROM "{schema}"."{staging_table}"
+            ON CONFLICT ({conflict_cols})
+            DO UPDATE SET {update_set};
+            '''
+        )
+
+        drop_staging_sql = text(
+            f'DROP TABLE IF EXISTS "{schema}"."{staging_table}";'
+        )
+
+        try:
+            logger.info(
+                f"Running upsert from {schema}.{staging_table} to {schema}.{target_table}"
             )
-        return df
-    
-    def normalize_for_postgres_jdbc(self, df: SparkDataFrame) -> SparkDataFrame:
-        """
-        Make a Spark DataFrame JDBC-friendly for PostgreSQL:
-        - StructType                -> JSON string
-        - ArrayType(StructType)     -> ArrayType(StringType) using JSON per element
-        - Primitive arrays          -> left as ArrayType (for text[] / int[] etc.)
-        - Other primitive types     -> unchanged
-        """
-        result = df
-        for field in df.schema.fields:
-            name = field.name
-            dtype = field.dataType
-
-            # Top-level struct -> JSON
-            if isinstance(dtype, T.StructType):
-                result = result.withColumn(name, F.to_json(F.col(name)))
-
-            # Array of struct -> array<string> (each element JSON)
-            elif isinstance(dtype, T.ArrayType) and isinstance(dtype.elementType, T.StructType):
-                result = result.withColumn(
-                    name,
-                    F.transform(F.col(name), lambda x: F.to_json(x))
+            with engine.begin() as conn:
+                conn.execute(upsert_sql)
+        except Exception as e:
+            logger.error(f"Upsert from staging table failed: {e}")
+            # Let the exception propagate after attempting to drop staging table
+            raise
+        finally:
+            # 6. Drop staging table
+            logger.info(f"Dropping staging table {schema}.{staging_table}")
+            try:
+                with engine.begin() as conn:
+                    conn.execute(drop_staging_sql)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to drop staging table {schema}.{staging_table}: {e}"
                 )
 
-        return result
-    
-    def convert_array_fields_to_json(self, df: SparkDataFrame) -> SparkDataFrame:
+    def bulk_spark_df_load_with_jdbc(
+        self,
+        spark_df,
+        schema: str,
+        jdbc_url: str,
+        user: str,
+        password: str,
+        target_table: str,
+        batch_size: int = 10_000,
+        num_partitions: int = None,
+    ):
         """
-        Convert columns containing array-like data (Spark ArrayType) to JSON strings.
-        Notes
-        -----
-         In Spark, Python lists / NumPy arrays in the input are represented as `ArrayType` 
-         columns in the DataFrame schema.  
+        Efficiently bulk loads a Spark DataFrame into a PostgreSQL table using Spark JDBC write
+    
+        Args:
+            spark_df: Spark DataFrame to load.
+            schema: PostgreSQL schema name (e.g. 'public').
+            target_table: Name of the target table (without schema).
+            jdbc_url: JDBC URL for PostgreSQL
+                    e.g. 'jdbc:postgresql://host:5432/dbname'
+            user: DB user.
+            password: DB password.
+            batch_size: JDBC batch size for Spark writes.
+            num_partitions: Optional number of partitions to use when writing.
+        """
+
+        if spark_df.rdd.isEmpty():
+            logger.info("Spark DataFrame is empty. Nothing to load.")
+            return
+
+        columns = spark_df.columns
+        if not columns:
+            logger.info("Spark DataFrame has no columns. Nothing to load.")
+            return
         
-        Args:   
-        df : pyspark.sql.DataFrame. Input dataframe
+        df_to_write = spark_df.select(*columns)  # ensure consistent column order
+
+        if num_partitions is not None:
+            df_to_write = df_to_write.repartition(num_partitions)
+        
+        try: 
+
+            (
+                df_to_write.write
+                .format("jdbc")
+                .option("url", jdbc_url)
+                .option("dbtable", f"{schema}.{target_table}")  
+                .option("user", user)
+                .option("password", password)
+                .option("driver", "org.postgresql.Driver")
+                .option("batchsize", str(batch_size))
+                .mode("overwrite")
+                .save()
+            )
+        except Exception as e:
+            logger.error(f"Error loading spark df to db: {e}")
+            raise
+
+
+    def bulk_spark_df_load_to_staging_with_jdbc(
+        self,
+        spark_df,
+        schema: str,
+        jdbc_url: str,
+        user: str,
+        password: str,
+        target_table: str,
+        batch_size: int = 10_000,
+        num_partitions: int = None,
+    ):
+        """
+        Efficiently bulk loads a Spark DataFrame into a staging PostgreSQL table using Spark JDBC write
+    
+        Args:
+            spark_df: Spark DataFrame to load.
+            schema: PostgreSQL schema name (e.g. 'public').
+            target_table: Name of the target table (without schema).
+            jdbc_url: JDBC URL for PostgreSQL
+                    e.g. 'jdbc:postgresql://host:5432/dbname'
+            user: DB user.
+            password: DB password.
+            batch_size: JDBC batch size for Spark writes.
+            num_partitions: Optional number of partitions to use when writing.
+        """
+
+        if spark_df.rdd.isEmpty():
+            logger.info("Spark DataFrame is empty. Nothing to load.")
+            return
+
+        columns = spark_df.columns
+        if not columns:
+            logger.info("Spark DataFrame has no columns. Nothing to load.")
+            return
+        
+        df_to_write = spark_df.select(*columns)  # ensure consistent column order
+
+        if num_partitions is not None:
+            df_to_write = df_to_write.repartition(num_partitions)
+        
+        try: 
+
+            (
+                df_to_write.write
+                .format("jdbc")
+                .option("url", jdbc_url)
+                .option("dbtable", target_table)  
+                .option("currentSchema", schema)   
+                .option("user", user)
+                .option("password", password)
+                .option("driver", "org.postgresql.Driver")
+                .option("batchsize", str(batch_size))
+                .mode("append")
+                .save()
+            )
+        except Exception as e:
+            logger.error(f"Error loading spark df to db: {e}")
+            raise
+
+    def bulk_spark_df_load_to_hist_tables_with_jdbc_daily_idempotent(
+        self,
+        etl_date: date,
+        spark_df,
+        schema: str,
+        engine: Engine,
+        jdbc_url: str,
+        user: str,
+        password: str,
+        target_table: str,
+        load_control_table: str,
+        batch_size: int = 10_000,
+        num_partitions: int = None,
+    ):
+        """
+        Efficiently bulk loads a Spark DataFrame into a staging PostgreSQL table using Spark JDBC write
+    
+        Args:
+            spark_df: Spark DataFrame to load.
+            schema: PostgreSQL schema name (e.g. 'public').
+            target_table: Name of the target table (without schema).
+            jdbc_url: JDBC URL for PostgreSQL
+                    e.g. 'jdbc:postgresql://host:5432/dbname'
+            user: DB user.
+            password: DB password.
+            batch_size: JDBC batch size for Spark writes.
+            num_partitions: Optional number of partitions to use when writing.
+        """
+
+        if spark_df.rdd.isEmpty():
+            logger.info("Spark DataFrame is empty. Nothing to load.")
+            return
+
+        columns = spark_df.columns
+        if not columns:
+            logger.info("Spark DataFrame has no columns. Nothing to load.")
+            return
+
+        #initialize
+        db_load_flag =True
+       
+        conn = engine.raw_connection()
+        cur = None
+        try:
+             #1: register today's load
+            cur = conn.cursor()
+            if schema == self.MAIN_SCHEMA:
+                cur.execute(
+                    f"""
+                        INSERT INTO {schema}.{load_control_table} (table_name, etl_date)
+                        VALUES (%s, %s)
+                        """,
+                       (target_table, etl_date)                        
+                    )
+                conn.commit() 
+
+            #2: load
+            df_to_write = spark_df.select(*columns)  # ensure consistent column order
+            if num_partitions is not None:
+                df_to_write = df_to_write.repartition(num_partitions)      
+       
+            (
+                df_to_write.write
+                .format("jdbc")
+                .option("url", jdbc_url)
+                .option("dbtable", f"{schema}.{target_table}")  
+                .option("user", user)
+                .option("password", password)
+                .option("driver", "org.postgresql.Driver")
+                .option("batchsize", str(batch_size))
+                .mode("append")
+                .save()
+            )
+        except psycopg2.errors.UniqueViolation as e:
+            logger.info(f"Table, {target_table}, already loaded for {etl_date}. Skipping loading.")
+            db_load_flag = False
+        except Exception as e:
+            logger.error(f"Error loading spark df to db: {e}")
+            raise
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            conn.close()
+        
+        return  db_load_flag 
+
+
+
+    def post_load_validation_spark_df(
+        self,
+        engine: Engine,
+        spark_df: SparkDataFrame,
+        schema_name: str,
+        table_name: str,
+    ) -> bool:
+        """
+        Perform post-load validation to verify the number of records in the Spark DataFrame
+        matches the number of records in the PostgreSQL table.
+
+        Parameters:
+            engine: SQLAlchemy engine to connect to Postgres.
+            spark_df: The Spark DataFrame that was loaded into the database.
+            schema_name: Schema where the table resides in Postgres.
+            table_name: Table name in Postgres.
 
         Returns:
-        pyspark.sql.DataFrame
-            DataFrame where all ArrayType columns are converted to JSON strings.
+            bool: True if the record counts match, False otherwise.
         """
-        if not isinstance(df, SparkDataFrame):
-            raise TypeError(
-                f"convert_array_like_cols_to_json expected a Spark DataFrame, "
-                f"got {type(df).__name__!r} instead."
+        try:
+            # This triggers a Spark job to count the DF rows
+            df_record_count = spark_df.count()
+
+            with engine.connect() as connection:
+                query = text(f'SELECT COUNT(*) FROM "{schema_name}"."{table_name}";')
+                result = connection.execute(query)
+                table_record_count = result.scalar()
+
+            if df_record_count == table_record_count:
+                logger.info(
+                    f"Post-load validation passed for {schema_name}.{table_name}: "
+                    f"{df_record_count} records in Spark DF and table."
+                )
+                return True
+            else:
+                logger.error(
+                    f"Post-load validation check failed for {schema_name}.{table_name}! "
+                    f"Spark DataFrame contains {df_record_count} records but "
+                    f"{table_record_count} records are present in the table!"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"Error during post-load validation for {schema_name}.{table_name}: {e}",
+                exc_info=True,
+            )
+            raise
+   
+    def post_load_validation_hist_tables_spark_df(
+        self,
+        engine: Engine,
+        spark_df: SparkDataFrame,
+        schema_name: str,
+        table_name: str,
+        backfill_date: Optional[str] = None,
+    ) -> bool:
+        """
+        Perform post-load validation to verify the number of records in the Spark DataFrame
+        matches the number of records in the PostgreSQL table.
+
+        Parameters:
+            engine: SQLAlchemy engine to connect to Postgres.
+            spark_df: The Spark DataFrame that was loaded into the database.
+            schema_name: Schema where the table resides in Postgres.
+            table_name: Table name in Postgres.
+
+        Returns:
+            bool: True if the record counts match, False otherwise.
+        """
+        #set date
+        if backfill_date:
+            today = datetime.strptime(backfill_date, "%m%d%y").strftime("%Y-%m-%d")
+        else:
+            today = datetime.now().date()
+
+        try:
+            # This triggers a Spark job to count the DF rows
+            df_record_count = spark_df.count()            
+
+            with engine.connect() as connection:
+                query = f"SELECT COUNT(*) FROM {schema_name}.{table_name} WHERE etl_date = '{today}' ;"
+                result = connection.execute(text(query))
+                table_record_count = result.scalar()
+
+            if df_record_count == table_record_count:
+                logger.info(
+                    f"Post-load validation passed for {schema_name}.{table_name}: "
+                    f"{df_record_count} records in Spark DF and table."
+                )
+                return True
+            else:
+                logger.error(
+                    f"Post-load validation check failed for {schema_name}.{table_name}! "
+                    f"Spark DataFrame contains {df_record_count} records but "
+                    f"{table_record_count} records are present in the table!"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"Error during post-load validation for {schema_name}.{table_name}: {e}",
+                exc_info=True,
+            )
+            raise
+
+    def get_cve_lookup(
+        self,
+        spark,
+        cve_table: str,
+        jdbc_url: str,
+        user: str,
+        password: str,
+        fetchsize: int = 10_000,
+        driver: str = "org.postgresql.Driver",
+    ): 
+        """
+         Load distinct, normalized CVE IDs from a PostgreSQL CVE table.
+        Args:
+            spark: Active SparkSession.
+            cve_table: Table name, for example "cve" or "public.cve".
+            jdbc_url: PostgreSQL JDBC URL.
+            user: PostgreSQL username.
+            password: PostgreSQL password.
+            fetchsize: JDBC fetch size.
+            driver: JDBC driver class.
+
+        Returns:
+            DparkDataFrame with one column: cve_id.
+        """
+
+        if not cve_table:
+            raise ValueError("cve_table is required.")
+
+        query = f"""
+            (
+                SELECT cve_id
+                FROM {cve_table}
+                WHERE cve_id IS NOT NULL
+            ) AS cve_lookup
+        """
+        try:
+
+          return (
+                spark.read.format("jdbc")
+                .option("url", jdbc_url)
+                .option("dbtable", query)
+                .option("user", user)
+                .option("password", password)
+                .option("driver", driver)
+                .option("fetchsize", fetchsize)
+                .load()
+                .select(F.upper(F.trim(F.col("cve_id"))).alias("cve_id"))
+                .dropDuplicates(["cve_id"])
             )
 
-        array_cols: Iterable[str] = [
-            field.name
-            for field in df.schema.fields
-            if isinstance(field.dataType, T.ArrayType)
-        ]
-
-        if array_cols:
-            logger.info(f"Converting ArrayType columns to JSON strings: {array_cols}")      
-            for col_name in array_cols:
-                df = df.withColumn(col_name, F.to_json(F.col(col_name)))
-
-        return df
-    
+        except Exception as exc:
+           raise RuntimeError(
+             f"Failed to load CVE lookup data from table '{cve_table}'."              
+           ) from exc
+            
+                 

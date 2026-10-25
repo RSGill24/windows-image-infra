@@ -1,77 +1,1107 @@
-resource "aws_glue_workflow" "crma_hive_snow_workflow" {
-    name        = "crma_hive_snow_workflow"
-    description = "Glue workflow for CRMA HIVE to contain SNOW jobs"
+#### SNOW Workflow Triggers ###
+resource "aws_glue_trigger" "crma_hive_fetch_snow_tables_trigger" {
+  name     = "crma_hive_fetch_snow_tables_trigger"
+  schedule = "cron(0 6 ? * SAT *)" # At 6:00AM UTC Every Saturday 
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_snow_tables.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_mobius_workflow" {
-    name        = "crma_hive_mobius_workflow"
-    description = "Glue workflow for CRMA HIVE to contain MOBIUS jobs"
+resource "aws_glue_trigger" "crma_hive_snow_process_data_trigger" {
+  name     = "crma_hive_snow_process_data_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_fetch_snow_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_snow_process_data.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_csam_workflow" {
-    name        = "crma_hive_csam_workflow"
-    description = "Glue workflow for CRMA HIVE to contain CSAM jobs"
+resource "aws_glue_trigger" "crma_hive_snow_data_to_target_trigger" {
+  name     = "crma_hive_snow_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_snow_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_snow_data_to_target.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_audit_controls_workflow" {
-    name        = "crma_hive_audit_controls_workflow"
-    description = "Glue workflow for CRMA HIVE to contain Audit Controlds trend dashbaord data prep jobs"
+resource "aws_glue_trigger" "crma_hive_snow_downstream_jobs_trigger" {
+  name     = "crma_hive_snow_downstream_jobs_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_snow_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_snow_create_derived_tables.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_ucmm_integration.name
+  }
+}
+###
+
+### Mobius Workflow Triggers ############
+resource "aws_glue_trigger" "crma_hive_fetch_mobius_tables_trigger" {
+  name     = "crma_hive_fetch_mobius_tables_trigger"
+  schedule = "cron(0 6 * * ? *)" #Daily at 6am UTC
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_mobius_tables.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_axonius_workflow" {
-    name        = "crma_hive_axonius_workflow"
-    description = "Glue workflow for CRMA HIVE to contain AXONIUS jobs"
+
+resource "aws_glue_trigger" "crma_hive_mobius_process_data_trigger" {
+  name     = "crma_hive_mobius_process_data_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_fetch_mobius_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_mobius_process_data.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_tvm_light_workflow" {
-    name        = "crma_hive_tvm_light_workflow"
-    description = "Glue workflow for CRMA HIVE to contain TVM jobs for cisco vulns jobs"
+resource "aws_glue_trigger" "crma_hive_mobius_data_to_target_trigger" {
+  name     = "crma_hive_mobius_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_mobius_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_fisma_scorecard_workflow" {
-    name        = "crma_hive_fisma_scorecard_workflow"
-    description = "Glue workflow for CRMA HIVE to compute FISMA Scorecard Metrics"
-    max_concurrent_runs = 1
+resource "aws_glue_trigger" "crma_hive_normalize_mobius_softwares_trigger" {
+  name     = "crma_hive_normalize_mobius_softwares_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_normalize_mobius_softwares.name
+  }
+}
+####
+
+#### CSAM Workflow Triggers #####
+resource "aws_glue_trigger" "crma_hive_fetch_csam_tables_trigger" {
+  name     = "crma_hive_fetch_csam_tables_trigger"
+  schedule = "cron(0 8 * * ? *)" #Daily at 8am UTC
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_csam_tables.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_nvd_and_cisa_workflow" {
-    name        = "crma_hive_nvd_and_cisa_workflow"
-    description = "Glue workflow for CRMA HIVE to fetch, process and load NVD and CISA data to HIVE"
-    max_concurrent_runs = 1
+resource "aws_glue_trigger" "crma_hive_csam_process_data_trigger" {
+  name     = "crma_hive_csam_process_data_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_fetch_csam_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_csam_process_data.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_references_workflow" {
-    name        = "crma_hive_references_workflow"
-    description = "Glue workflow for CRMA HIVE to process and load SSCG data to HIVE"
-    max_concurrent_runs = 1
+resource "aws_glue_trigger" "crma_hive_csam_data_to_target_trigger" {
+  name     = "crma_hive_csam_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_csam_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_csam_data_to_target.name
+  }
+}
+####
+
+####  Audit Controls Workflow Triggers #####
+resource "aws_glue_trigger" "crma_hive_load_audit_controls_trigger" {
+  name     = "crma_hive_load_audit_controls_trigger"
+  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_audit_controls_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_load_audit_controls.name
+  }
+}
+##############
+
+
+####   AXONIUS Workflow Triggers
+
+resource "aws_glue_trigger" "crma_hive_fetch_axonius_tables_trigger" {
+  name     = "crma_hive_fetch_axonius_tables_trigger"
+  schedule = "cron(0 10 * * ? *)" #Daily at 10am UTC
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_axonius_tables.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_tvm_vulns_workflow" {
-    name        = "crma_hive_tvm_vulns_workflow"
-    description = "Glue workflow for CRMA HIVE to process and load SSCG data to HIVE"
-    max_concurrent_runs = 1
+resource "aws_glue_trigger" "crma_hive_axonius_process_data_trigger" {
+  name     = "crma_hive_axonius_process_data_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_fetch_axonius_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_axonius_process_data.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_tvm_compliance_workflow" {
-    name        = "crma_hive_tvm_compliance_workflow"
-    description = "Glue workflow for CRMA HIVE to fetch, process, and load tvm compliance data to HIVE"
-    max_concurrent_runs = 1
+resource "aws_glue_trigger" "crma_hive_axonius_data_to_target_trigger" {
+  name     = "crma_hive_axonius_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_axonius_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_cmdb_workflow" {
-    name        = "crma_hive_cmdb_workflow"
-    description = "Glue workflow for CRMA HIVE to fetch, process, and CMDB tables datasets to HIVE"
-    max_concurrent_runs = 1
+##############
+
+
+########  TVM Light Workflow Triggers ########
+
+resource "aws_glue_trigger" "crma_hive_fetch_tvm_light_tables_trigger" {
+  name     = "crma_hive_fetch_tvm_light_tables_trigger"
+  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_tvm_light_tables.name
+  }
 }
 
-resource "aws_glue_workflow" "crma_hive_audit_report_workflow" {
-    name    = "crma_hive_audit_report_workflow"
-    description = "Glue workflow for CRMA HIVE to maintain software and os entity resolution refrence map/tables"
+resource "aws_glue_trigger" "crma_hive_tvm_light_process_data_trigger" {
+  name     = "crma_hive_tvm_light_process_data_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_fetch_tvm_light_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
+  }
 }
 
-################## Roll Back Fill Workflow
-resource "aws_glue_workflow" "crma_hive_rollback_backfill_workflow" {
-    name        = "crma_hive_rollback_backfill_workflow"
-    description = "Glue workflow for CRMA HIVE to reprocess historical tables"
-    max_concurrent_runs = 1
+
+resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_target_trigger" {
+  name     = "crma_hive_tvm_light_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_tables_trigger" {
+  name     = "crma_hive_tvm_light_data_to_hist_tables_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_agg_table_trigger" {
+  name     = "crma_hive_tvm_light_data_to_hist_agg_table_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_normalize_tvm_softwares_trigger" {
+  name     = "crma_hive_normalize_tvm_softwares_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_normalize_tvm_softwares.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_normalize_tvm_os_trigger" {
+  name     = "crma_hive_normalize_tvm_os_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_normalize_tvm_os.name
+  }
+}
+#################
+
+##### TVM Vunls Workflow Jobs Triggers ####
+resource "aws_glue_trigger" "crma_hive_fetch_tvm_vulns_tables_tables_trigger" {
+  name     = "crma_hive_fetch_tvm_vulns_tables_tables_trigger"
+  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
+
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_tvm_vulns_tables.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_vulns_process_data_data_trigger" {
+  name     = "crma_hive_tvm_vulns_process_data_data_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_fetch_tvm_vulns_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_target_trigger" {
+  name     = "crma_hive_tvm_vulns_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_tables_trigger" {
+  name     = "crma_hive_tvm_vulns_data_to_hist_tables_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
+  }
+}
+
+# resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_agg_table_trigger" {
+#   name     = "crma_hive_tvm_vulns_data_to_hist_agg_table_trigger"
+#   type     = "CONDITIONAL"
+
+#   workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
+
+#   predicate {
+#       conditions {
+#         job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
+#         state    = "SUCCEEDED"
+#       }
+#   }
+
+#   actions {
+#     job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_agg_table.name
+#   }
+# }
+
+############
+
+##### TVM Compliance Workflow Jobs Triggers ####
+resource "aws_glue_trigger" "crma_hive_fetch_tvm_compliance_tables_trigger" {
+  name     = "crma_hive_fetch_tvm_compliance_tables_trigger"
+  schedule = "cron(0 3 * * ? *)" #Daily at 3am UTC
+
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_tvm_compliance_tables.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_compliance_process_data_trigger" {
+  name     = "crma_hive_tvm_compliance_process_data_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_fetch_tvm_compliance_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_compliance_data_to_target_trigger" {
+  name     = "crma_hive_tvm_compliance_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
+  }
+}
+
+#####
+
+
+####  FISMA Scorecard Workflow Jobs Triggers ######
+resource "aws_glue_trigger" "crma_hive_scorecard_input_devices_trigger" {
+  name     = "crma_hive_scorecard_input_devices_trigger"
+  schedule      = "cron(0 11 * * ? *)" # Daily at 11am UTC
+  type          = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_input_devices.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_scorecard_scoring_jobs_trigger" {
+  name     = "crma_hive_scorecard_scoring_jobs_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_input_devices.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_compute_vmscore.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_compute_cmscore.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_compute_swamscore.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_compute_hwamscore.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_compute_hbdscore.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_compute_prohibited_osscore.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_compute_security_authz_score.name
+  }  
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_compute_sc_score.name
+  } 
+}
+
+resource "aws_glue_trigger" "crma_hive_scorecard_aggregate_score_and_impact_computation_trigger" {
+  name     = "crma_hive_scorecard_aggregate_score_and_impact_computation_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_compute_vmscore.name
+        state    = "SUCCEEDED"
+      }
+
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_compute_cmscore.name
+        state    = "SUCCEEDED"
+      }
+
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_compute_swamscore.name
+        state    = "SUCCEEDED"
+      }
+
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_compute_hwamscore.name
+        state    = "SUCCEEDED"
+      }
+
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_compute_hbdscore.name
+        state    = "SUCCEEDED"
+      }
+
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_compute_prohibited_osscore.name
+        state    = "SUCCEEDED"
+      }
+
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_compute_security_authz_score.name
+        state    = "SUCCEEDED"
+      }
+
+      conditions {
+        job_name = aws_glue_job.crma_hive_scorecard_compute_sc_score.name
+        state    = "SUCCEEDED"
+      }
+
+      logical = "AND"
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_aggregate_scores.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_scorecard_impact_computation.name
+  }
+
+}
+#############
+
+#######  NVD/CISA Workflow Jobs Triggers #####
+resource "aws_glue_trigger" "crma_hive_fetch_process_load_nvd_and_cisa_trigger" {
+  name     = "crma_hive_fetch_process_load_nvd_and_cisa_trigger"
+  schedule = "cron(0 6 * * ? *)" #Daily at 6am UTC
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_nvd_and_cisa_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_process_load_nvd_and_cisa.name
+  }
+}
+##############
+
+
+######## Reference Workflow Jobs Triggers ######
+resource "aws_glue_trigger" "crma_hive_references_workflow_trigger" {
+  name     = "crma_hive_references_workflow_trigger"
+  schedule = "cron(0 6 ? * MON *)" # Every Monday at at 6am UTC (2am EDT)
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_references_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_sscg_process_data.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_to_mobius_software_map.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_device_to_mobius_os_map.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_known_mobius_tables.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_sscg_data_to_target_trigger" {
+  name     = "crma_hive_sscg_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_references_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_sscg_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_sscg_data_to_target.name
+  }
+}
+#####
+
+#### CMDB Workflow Triggers ###
+resource "aws_glue_trigger" "crma_hive_fetch_cmdb_tables_trigger" {
+  name     = "crma_hive_fetch_cmdb_tables_trigger"
+  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_fetch_cmdb_tables.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_cmdb_process_data_trigger" {
+  name     = "crma_hive_cmdb_process_data_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_fetch_cmdb_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_cmdb_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_cmdb_data_to_target_trigger" {
+  name     = "crma_hive_cmdb_data_to_target_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_cmdb_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_cmdb_data_to_target.name
+  }
+}
+
+#### Entity Resolution Audit Report Workflow Triggers ###
+resource "aws_glue_trigger" "crma_hive_audit_report_trigger" {
+  name     = "crma_hive_audit_report_workflow_trigger"
+  schedule = "cron(0 12 ? * MON *)" # Every Monday at at 12pm UTC (8am EDT)
+  type     = "SCHEDULED"
+
+  workflow_name = aws_glue_workflow.crma_hive_audit_report_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_audit_report_software_map.name
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_audit_report_os_map.name
+  }
+}
+
+####
+
+### Triggers for Rollback/Backfill Workflows ####
+resource "aws_glue_trigger" "crma_hive_snow_process_data_backfill_trigger" {
+  name     = "crma_hive_snow_process_data_backfill_trigger"
+  type     = "ON_DEMAND"
+  enabled  = false    // blocks auto trigger during jenkins deployment
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  actions {
+    job_name = aws_glue_job.crma_hive_snow_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_csam_process_data_backfill_trigger" {
+  name     = "crma_hive_csam_process_data_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_snow_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_csam_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_mobius_process_data_backfill_trigger" {
+  name     = "crma_hive_mobius_process_data_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_csam_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_mobius_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_axonius_process_data_backfill_trigger" {
+  name     = "crma_hive_axonius_process_data_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_mobius_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_axonius_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_light_process_data_backfill_trigger" {
+  name     = "crma_hive_tvm_light_process_data_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_axonius_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_vulns_process_data_backfill_trigger" {
+  name     = "crma_hive_tvm_vulns_process_data_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_compliance_process_data_backfill_trigger" {
+  name     = "crma_hive_tvm_compliance_process_data_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_snow_data_to_target_backfill_trigger" {
+  name     = "crma_hive_snow_data_to_target_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_snow_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_csam_data_to_target_backfill_trigger" {
+  name     = "crma_hive_csam_data_to_target_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_snow_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_csam_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_mobius_data_to_target_backfill_trigger" {
+  name     = "crma_hive_mobius_data_to_target_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_csam_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_axonius_data_to_target_backfill_trigger" {
+  name     = "crma_hive_axonius_data_to_target_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_target_backfill_trigger" {
+  name     = "crma_hive_tvm_light_data_to_target_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_target_backfill_trigger" {
+  name     = "crma_hive_tvm_vulns_data_to_target_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_compliance_data_to_target_backfill_trigger" {
+  name     = "crma_hive_tvm_compliance_data_to_target_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_audit_controls_backfill_trigger" {
+  name     = "crma_hive_audit_controls_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_load_audit_controls.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_tables_backfill_trigger" {
+  name     = "crma_hive_tvm_light_data_to_hist_tables_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_load_audit_controls.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_tables_backfill_trigger" {
+  name     = "crma_hive_tvm_vulns_data_to_hist_tables_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_agg_table_backfill_trigger" {
+  name     = "crma_hive_tvm_light_data_to_hist_agg_table_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
+  }
+}
+
+resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_agg_table_backfill_trigger" {
+  name     = "crma_hive_tvm_vulns_data_to_hist_agg_table_backfill_trigger"
+  type     = "CONDITIONAL"
+
+  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+
+  predicate {
+      conditions {
+        job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
+        state    = "SUCCEEDED"
+      }
+  }
+
+  actions {
+    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_agg_table.name
+  }
 }

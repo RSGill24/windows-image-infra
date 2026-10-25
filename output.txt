@@ -2,7 +2,8 @@ import logging
 
 import pandas as pd
 import time
-from datetime import  date
+from datetime import datetime, date
+import os
 
 import urllib3
 
@@ -25,30 +26,72 @@ connection = Connection()
 rw_util = Read_Write_Utility()
 fismaScorecardUtility = FismaScorecardUtility()
 
-def build_device_vm_score_sql() -> str:
+def build_device_cm_score_sql() -> str:
     """
-    Build the VM Score per device data preparation SQL Command using CTEs.
+    Build the CM Score per device data preparation SQL Command using CTEs.
     """
 
     sql = f"""
-        WITH 
-        -- Step 1: Select Eligible devices
-        eligible_devices AS (
-            SELECT 
-                device_id,
-                fisma_id,
-                preferred_hostname AS hostname, 
-                preferred_ipv4  AS ip,
-                devicerole,
-                device_last_seen,
+        WITH          
+        current_month_compliance_scans AS (
+            -- Step 1.1 Filter compliance scans for current month
+            SELECT
                 asset_id,
-                is_credentialed,
-                last_authenticated_scan_date
-            FROM  crma_hive.crma_hive_fismascorecard_input_devices 
-            WHERE devicerole IN ('ENDPOINT','NETWORKING DEVICE')
-                AND fisma_id iLIKE 'ICE-%%'
+                last_seen AS asset_last_seen,
+                audit_file,
+                rule_id,
+                status,
+                reference
+            FROM crma_hive.crma_hive_tvm_compliance
+         	WHERE last_seen >= %(lookback_date)s
+        ),        
+        audit_files AS (
+            -- Step 1.2: Identify latest and most complete audit file per asset
+            SELECT asset_id, asset_last_seen, audit_file, COUNT(*) AS audit_file_count
+            FROM current_month_compliance_scans
+            GROUP BY asset_id, asset_last_seen, audit_file
         ),
-        -- Step 2: Dedup asset_id 
+        selected_audit_file AS (
+            -- Step 1.3: Select top audit file per asset based on recency and completeness
+            SELECT 
+                asset_id,
+                asset_last_seen,
+                audit_file
+            FROM (
+                SELECT
+                    asset_id,
+                    audit_file,
+                    asset_last_seen,        
+                    audit_file_count,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id
+                        ORDER BY asset_last_seen DESC, audit_file_count DESC, audit_file
+                    ) AS rn
+                FROM audit_files
+            ) af
+            WHERE rn = 1
+        ),
+        -- Step 2: Identify eligible devices 
+        eligible_devices AS (
+            SELECT
+                dev.device_id,
+                dev.preferred_hostname AS hostname, 
+                dev.preferred_ipv4  AS ip,
+                dev.fisma_id,
+                dev.devicerole,
+                dev.device_last_seen,
+                dev.asset_id,
+                dev.is_credentialed,
+                dev.last_authenticated_scan_date,
+                scan.audit_file,
+                scan.asset_last_seen
+            FROM crma_hive.crma_hive_fismascorecard_input_devices dev
+            INNER JOIN selected_audit_file scan  
+                ON dev.asset_id = scan.asset_id
+            WHERE dev.devicerole = 'ENDPOINT'
+                AND dev.fisma_id iLIKE 'ICE-%%'
+        ),
+        -- Step 3: Dedup asset_id 
                 -- group by asset_id -> rank by device_last_seen, keep top ranked
         deduped_eligible_devices AS(	
             SELECT *
@@ -67,173 +110,163 @@ def build_device_vm_score_sql() -> str:
                 NULL AS asset_rn
             FROM eligible_devices
             WHERE asset_id IS NULL
-        ),
-        -- Step 3: Get eligibile scans
-        flattened_vulns AS (
-            -- 3.1: Flatten
-            SELECT
-                v.finding_id,
-                v.asset_uuid AS asset_id,
-                v.last_found,
-                v.state,
-                TRIM(cve) AS cve_id
-            FROM crma_hive.crma_hive_tvm_vulns v
-            CROSS JOIN LATERAL UNNEST(v.plugin_cve) AS cve
-            WHERE
-                v.plugin_cve IS NOT NULL
-                AND array_length(v.plugin_cve, 1) > 0
-                AND v.state IN ('OPEN', 'REOPENED')
-        ),
-        ranked_vulns AS (
-            -- 3.2: Flatten	
-            SELECT
-                finding_id,
-                asset_id,
-                last_found,
-                state,
-                cve_id,
-                ROW_NUMBER() OVER (
-                    PARTITION BY asset_id, cve_id
-                    ORDER BY last_found DESC
-                ) AS rn
-            FROM flattened_vulns
-        ),
-        latest_vulns AS (
-            -- 3.3: Dedup: Keep latest in case of duplicate asset_uuid&cve combination
-            SELECT
-                finding_id,
-                asset_id,
-                last_found,
-                state,
-                cve_id
-            FROM ranked_vulns
-            WHERE rn = 1
-        ),
-        -- Step 4: Enrich vulns with CVE NVD/KEV data
-                -- Where cve published date is on/before 15th of last calander month
-        enriched_vulns AS (
-            SELECT
-                lv.finding_id,
-                lv.asset_id,
-                lv.last_found,
-                lv.state,
-                lv.cve_id,
-                ck.cvss_v3_score,
-                ck.published     AS cve_published_date,
-                ck.last_modified AS cve_last_modified_date,
-                ck.is_kev,
-                ck.date_added AS kev_date_added,
-                ck.due_date AS kev_due_date
-            FROM latest_vulns lv
-            LEFT JOIN crma_hive.crma_hive_cve_score_kev_info_combined ck
-                ON lv.cve_id = ck.cve_id
-            WHERE ck.published  <= %(cve_kev_cutoff_date)s
-        ),
-        -- Step 5: Left Join eligibile_devices and enriched_vulns  on asset_uuid 
-        eligible_devices_cves AS (
+        ),        
+        -- Step 4: Map eligible device scans to reference audit files
+        scan_audit_mapping AS (
             SELECT
                 ed.device_id,
-                ed.fisma_id,
                 ed.hostname,
                 ed.ip,
-                ed.devicerole,
-                ed.asset_id,
+                ed.fisma_id,
                 ed.device_last_seen,
+                ed.asset_id,
+                ed.asset_last_seen,
                 ed.is_credentialed,
                 ed.last_authenticated_scan_date,
-                ev.finding_id,
-                ev.state                 AS finding_state,
-                ev.cve_id,
-                ev.cvss_v3_score,
-                ev.cve_published_date,
-                ev.cve_last_modified_date,
-                ev.is_kev,
-                ev.kev_date_added,
-                ev.kev_due_date
+                ed.audit_file AS compliance_audit_file,
+                map.sscg_os_version AS reference_audit_file
             FROM deduped_eligible_devices ed
-            LEFT JOIN enriched_vulns  ev
-                ON ed.asset_id = ev.asset_id
+            LEFT JOIN crma_hive.crma_hive_sscg_os_version_to_tvm_audit_file_map map
+            ON ed.audit_file = map.audit_file
+            WHERE map.sscg_os_version IS NOT NULL
         ),
-        -- Step 6: compute per device aggregates 
-        per_device_aggs AS (
+        -- Step 5: Join mapped scans to reference checklist
+        reference_checklist AS (
+            SELECT 
+                sam.device_id,
+                sam.hostname,
+                sam.ip,
+                sam.fisma_id,
+                sam.device_last_seen,
+                sam.asset_id,
+                sam.asset_last_seen,
+                sam.is_credentialed,
+                sam.last_authenticated_scan_date,
+                sam.compliance_audit_file,
+                sam.reference_audit_file,
+                chk.rule_id,
+                chk.stig_id,
+                chk.severity,
+                chk.scorecard
+            FROM scan_audit_mapping sam
+            LEFT JOIN crma_hive.crma_hive_sscg_disa_csm chk
+            ON sam.reference_audit_file = chk.os_version
+            WHERE chk.scorecard = 'Required for Scorecard'
+                AND chk.severity IN ('I', 'II', 'III')
+        ),
+        -- Step 6: Match actual scan outcomes to expected checks
+        checklist_scan_results AS (
+            SELECT
+                rc.device_id,
+                rc.hostname,
+                rc.ip,
+                rc.fisma_id,
+                rc.device_last_seen,
+                rc.asset_id,
+                rc.asset_last_seen,
+                rc.is_credentialed,
+                rc.last_authenticated_scan_date,
+                rc.compliance_audit_file,
+                rc.reference_audit_file,
+                rc.rule_id AS reference_rule_id,
+                scan.rule_id AS compliance_rule_id,
+                rc.stig_id,
+                rc.severity,
+                rc.scorecard,
+                scan.status,
+                scan.reference
+            FROM reference_checklist rc
+            LEFT JOIN current_month_compliance_scans scan
+            ON scan.asset_id   = rc.asset_id
+                AND scan.asset_last_seen  = rc.asset_last_seen
+                AND scan.audit_file = rc.compliance_audit_file
+                AND scan.rule_id    = rc.rule_id
+            WHERE scan.rule_id IS NOT NULL  
+        ),
+        -- Step 7: Add standardized status and pass flags
+        scan_status_flags AS (
+            SELECT
+                csr.device_id,
+                csr.hostname,
+                csr.ip,
+                csr.fisma_id,
+                csr.device_last_seen,
+                csr.asset_id,
+                csr.is_credentialed,
+                csr.last_authenticated_scan_date,
+                csr.compliance_audit_file,
+                csr.reference_audit_file,
+                csr.reference_rule_id,
+                csr.compliance_rule_id,
+                csr.stig_id,
+                csr.severity,
+                csr.scorecard,
+                CASE
+                    WHEN csr.status ILIKE 'pass%%' THEN 'Pass'
+                    WHEN csr.status ILIKE 'fail%%' THEN 'Fail'
+                    ELSE 'Not Evaluated'
+                END AS standardized_status,
+                CASE
+                    WHEN csr.status ILIKE 'pass%%' THEN 1 ELSE 0
+                END AS is_pass,
+                CASE
+                    WHEN csr.status ILIKE 'fail%%' THEN 1 ELSE 0
+                END AS is_fail,
+                CASE
+                    WHEN csr.status ILIKE 'Not Evaluated%%' THEN 1 ELSE 0
+                END AS not_evaluated
+            FROM checklist_scan_results csr
+        ),
+        -- Step 8: Aggregate device rule results
+        device_rule_summary AS (
             SELECT
                 device_id,
                 MAX(hostname) AS hostname,
                 MAX(ip)  As ip,
-                MAX(asset_id) AS asset_id,
                 MAX(fisma_id) AS fisma_id,
-                MAX(device_last_seen) AS device_last_seen,	
-                COALESCE(BOOL_OR(is_credentialed), FALSE) AS is_credentialed,
-                MAX(last_authenticated_scan_date) AS last_authenticated_scan_date,
-                COALESCE(
-                    BOOL_OR(is_kev AND kev_date_added <= %(cve_kev_cutoff_date)s),
-                    FALSE
-                ) AS has_eligible_kev,
-            
-                COUNT(*) FILTER (
-                    WHERE is_kev = TRUE AND kev_date_added <= %(cve_kev_cutoff_date)s
-                ) AS eligible_kev_cve_count,
-
-                SUM(
-                    CASE
-                        WHEN cvss_v3_score BETWEEN 7.0 AND 8.9 THEN 1
-                        ELSE 0
-                    END
-                ) AS high_cve_count,
-                SUM(
-                    CASE
-                        WHEN cvss_v3_score BETWEEN 9.0 AND 10.0 THEN 1
-                        ELSE 0
-                    END
-                ) AS critical_cve_count, 
-
-                ARRAY_AGG(cve_id) FILTER (WHERE cvss_v3_score BETWEEN 7.0 AND 8.9) AS high_cves,
-
-                ARRAY_AGG(cve_id) FILTER (WHERE cvss_v3_score BETWEEN 9.0 AND 10.0) AS critical_cves,
-
-                ARRAY_AGG(cve_id) FILTER (WHERE is_kev AND kev_date_added <= %(cve_kev_cutoff_date)s) AS eligible_kev_cves,
-
-
-                ARRAY_AGG(finding_id) FILTER (WHERE finding_id IS NOT NULL) AS finding_ids
-
-            FROM eligible_devices_cves
-            GROUP BY device_id
-        ),
-        -- Step 7: Compute Device VM Score
-        device_vm_scores AS (
-            SELECT 
-                device_id,
-                hostname,
-                ip,
                 asset_id,
-                fisma_id,
-                device_last_seen,
-                is_credentialed,
-                last_authenticated_scan_date,
-                has_eligible_kev,
-                high_cve_count,
-                eligible_kev_cve_count,
-                critical_cve_count,
-                high_cves,
-                critical_cves,
-                eligible_kev_cves,
-                finding_ids,
-                CASE
-                    WHEN NOT is_credentialed OR has_eligible_kev THEN 0
-                    ELSE GREATEST(
-                        100 - (LEAST(critical_cve_count * 10, 50) + LEAST(high_cve_count * 5, 50)),
-                        0
-                    )
-                END AS vm_score
-            FROM per_device_aggs
+                MAX(device_last_seen) AS device_last_seen,
+                MAX(compliance_audit_file) AS compliance_audit_file,
+                MAX(reference_audit_file) AS reference_audit_file,
+                BOOL_OR(is_credentialed) AS is_credentialed,
+                MAX(last_authenticated_scan_date) AS last_authenticated_scan_date,
+                COUNT(*) FILTER (WHERE severity ='I') AS expected_cat1,
+                COUNT(*) FILTER (WHERE severity= 'II') AS expected_cat2,
+                COUNT(*) FILTER (WHERE severity = 'III') AS expected_cat3,
+                COUNT(*) FILTER (WHERE severity = 'I' AND is_pass = 1) AS passed_cat1,
+                COUNT(*) FILTER (WHERE severity = 'II' AND is_pass = 1) AS passed_cat2,
+                COUNT(*) FILTER (WHERE severity = 'III' AND is_pass = 1) AS passed_cat3,
+                COUNT(*) FILTER (WHERE severity = 'I' AND is_fail = 1) AS failed_cat1,
+                COUNT(*) FILTER (WHERE severity = 'II' AND is_fail = 1) AS failed_cat2,
+                COUNT(*) FILTER (WHERE severity = 'III' AND is_fail = 1) AS failed_cat3,
+                COUNT(*) FILTER (WHERE severity = 'I' AND not_evaluated = 1) AS not_evaluated_cat1,
+                COUNT(*) FILTER (WHERE severity = 'II' AND not_evaluated = 1) AS not_evaluated_cat2,
+                COUNT(*) FILTER (WHERE severity = 'III' AND not_evaluated = 1) AS not_evaluated_cat3
+            FROM scan_status_flags
+            GROUP BY device_id, asset_id
         ),
-        -- Step 8: Enrich with FISMA system information
-        device_vm_scores_enriched AS (
+        -- Step 9: Calculate Configuration Management (CM) Score
+        device_cm_scores AS (
+            SELECT
+                *,
+                CASE
+                    WHEN is_credentialed = TRUE THEN
+                        (
+                            CASE WHEN expected_cat1 = 0 THEN 1 ELSE passed_cat1::numeric / expected_cat1::numeric END * 50
+                        + CASE WHEN expected_cat2 = 0 THEN 1 ELSE passed_cat2::numeric / expected_cat2::numeric END * 30
+                        + CASE WHEN expected_cat3 = 0 THEN 1 ELSE passed_cat3::numeric / expected_cat3::numeric END * 20
+                        )::int
+                    ELSE 0
+                END AS cm_score
+            FROM device_rule_summary
+        ),
+        -- Step 10: Enrich with FISMA system information
+        device_cm_scores_enriched AS (
             SELECT 
-                dvs.device_id,
-                dvs.hostname,
-                dvs.ip,
-                dvs.fisma_id,
+                dcs.device_id,
+                dcs.hostname,
+                dcs.ip,
+                dcs.fisma_id,
                 fd.fisma_name,
                 fd.security_support_portfolio AS portfolio,
                 fd.dhs_hva,
@@ -245,22 +278,28 @@ def build_device_vm_score_sql() -> str:
                 fd.fisma_reportable,
                 fd.fisma_inventory_selc_status,
                 fd.fisma_category,
-                dvs.device_last_seen,
-                dvs.asset_id,
-                dvs.is_credentialed,
-                dvs.last_authenticated_scan_date,
-                dvs.has_eligible_kev,
-                dvs.eligible_kev_cve_count,
-                dvs.eligible_kev_cves,
-                dvs.high_cves,
-                dvs.high_cve_count,
-                dvs.critical_cves,
-                dvs.critical_cve_count, 
-                dvs.finding_ids,
-                dvs.vm_score     
-            FROM device_vm_scores dvs
+                dcs.asset_id,
+                dcs.device_last_seen,
+                dcs.compliance_audit_file,
+                dcs.reference_audit_file,
+                dcs.is_credentialed,
+                dcs.last_authenticated_scan_date,
+                dcs.expected_cat1,
+                dcs.expected_cat2,
+                dcs.expected_cat3,
+                dcs.passed_cat1,
+                dcs.passed_cat2,
+                dcs.passed_cat3,
+                dcs.failed_cat1,
+                dcs.failed_cat2,
+                dcs.failed_cat3,
+                dcs.not_evaluated_cat1,
+                dcs.not_evaluated_cat2,
+                dcs.not_evaluated_cat3,
+                dcs.cm_score     
+            FROM device_cm_scores dcs
             LEFT JOIN crma_hive.crma_hive_snow_fismadetails fd
-                ON dvs.fisma_id = fd.fisma_id
+                ON dcs.fisma_id = fd.fisma_id
         )
 
         SELECT 
@@ -281,33 +320,39 @@ def build_device_vm_score_sql() -> str:
             fisma_category,
             device_last_seen,
             asset_id,
+            compliance_audit_file,
+            reference_audit_file,
             is_credentialed,
             last_authenticated_scan_date,
-            has_eligible_kev,
-            eligible_kev_cve_count,
-            eligible_kev_cves,
-            high_cves,
-            high_cve_count,
-            critical_cves,
-            critical_cve_count, 
-            finding_ids,
-            vm_score 
-        FROM device_vm_scores_enriched
-
+            expected_cat1,
+            expected_cat2,
+            expected_cat3,
+            passed_cat1,
+            passed_cat2,
+            passed_cat3,
+            failed_cat1,
+            failed_cat2,
+            failed_cat3,
+            not_evaluated_cat1,
+            not_evaluated_cat2,
+            not_evaluated_cat3,
+            cm_score 
+        FROM device_cm_scores_enriched
     """
+
     return sql
 
-def build_fisma_vm_score_sql() -> str:
+def build_fisma_cm_score_sql() -> str:
     """
-    Build the VM Score per FISMA System data preparation SQL Command using CTEs.
+    Build the CM Score per FISMA System data preparation SQL Command using CTEs.
     """
     sql = f"""
-        WITH
-        fisma_vm_score AS (
-            SELECT 
+        WITH 
+        fisma_cm_score AS (
+            SELECT
                 fisma_id,
-                ROUND(AVG(vm_score))::integer AS vm_score
-            FROM crma_hive.crma_hive_fismascorecard_device_vm_score  
+                ROUND(AVG(cm_score))::integer AS  cm_score
+            FROM crma_hive.crma_hive_fismascorecard_device_cm_score
             WHERE etl_date = %(etl_date)s
             GROUP BY fisma_id
         )
@@ -324,23 +369,22 @@ def build_fisma_vm_score_sql() -> str:
             a.fisma_reportable,
             a.fisma_inventory_selc_status,
             a.fisma_category,
-            b.vm_score
+            b.cm_score
         FROM crma_hive.crma_hive_snow_fismadetails a
-        LEFT JOIN fisma_vm_score b
+        LEFT JOIN fisma_cm_score b
             ON a.fisma_id = b.fisma_id
 
     """
 
     return sql
 
-
-def run_vm_score_workflow(
+def run_cm_score_workflow(
         engine: Engine,
         bucket_name: str
     )->None:
     """
-    Execute the vulnerability management score workflow, including building query to fetch input data, 
-    param preparation, execute query, score, store output.
+    Execute the Configration Management score workflow, including building query, 
+    param preparation, execute query, store output.
 
     Parameters:
         engine (Engine): Database engine for data access.
@@ -350,28 +394,26 @@ def run_vm_score_workflow(
         None
     """
     etl_date= date.today()
-    logger.info(f"Computing Scorecard VM Score for : {etl_date}") 
-
+    logger.info(f"Computing Scorecard CM Score for : {etl_date}") 
     params = fismaScorecardUtility.compute_date_params(etl_date)
-    params.pop("lookback_date", None)
+    logger.info("Lookback date: %s", params["lookback_date"])
     logger.info("CVE/KEV cutoff date: %s", params["cve_kev_cutoff_date"])
 
-    logger.info("Build query to fetch Device VM score input data.")
-    sql = build_device_vm_score_sql()
+    logger.info("Build Device CM score query.")
+    sql = build_device_cm_score_sql()
 
-
-    logger.info("Excecute query to fetch Device VM score input data.")
+    logger.info("Excecute Device CM score query.")
     df = rw_util.query_postgres_to_dataframe(
         engine=engine,
         sql_query=sql,
         params=params
     )
-
+    
     if df is not None:
-        logger.info(f"Per device Vm score received. Total number of devices: {len(df)}")         
+        logger.info(f"Per device cm score received. Total number of devices: {len(df)}")         
         logger.info(f"Load device score dataset to target table.")
         df["etl_date"] = etl_date
-        dataset = "crma_hive_fismascorecard_device_vm_score"
+        dataset = "crma_hive_fismascorecard_device_cm_score"
         fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
             engine=engine,
             df=df,
@@ -389,10 +431,10 @@ def run_vm_score_workflow(
         logger.warning("Query returned no data")   
         return 
 
-    logger.info("Build query to fetch FISMA System VM score data.")
-    sql = build_fisma_vm_score_sql()
+    logger.info("Build FISMA System CM score query.")
+    sql = build_fisma_cm_score_sql()
 
-    logger.info("Excecute query to fetch FISMA System VM score data.")
+    logger.info("Excecute FISMA System CM score query.")
     df = rw_util.query_postgres_to_dataframe(
         engine=engine,
         sql_query=sql,
@@ -400,9 +442,9 @@ def run_vm_score_workflow(
     )
 
     if df is not None:       
-        logger.info(f"Load FISMA System VM score dataset to target table and save a copy to S3 for archival.")
+        logger.info(f"Load FISMA System CM score dataset to target table and save a copy to S3 for archival.")
         df["etl_date"] = etl_date 
-        dataset='crma_hive_fismascorecard_fisma_system_vm_score'
+        dataset='crma_hive_fismascorecard_fisma_system_cm_score'
         fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
             engine=engine,
             df=df,
@@ -429,7 +471,1403 @@ def main():
     engine = connection.postgres_engine("edae-crma-hive") 
 
 
-    run_vm_score_workflow(engine=engine, bucket_name=bucket_name)       
+    run_cm_score_workflow(engine=engine, bucket_name=bucket_name)       
+      
+    utility.log_memory_usage() 
+    elapsed_minutes = (time.time() - start_time) / 60 
+    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+
+
+if __name__ == "__main__":
+    main()
+
+import logging
+
+import pandas as pd
+import time
+from datetime import datetime, date
+import os
+
+import urllib3
+
+from crma_hive_connections import Connection
+from crma_hive_utilities import Utility, Read_Write_Utility
+from crma_hive_scorecard_utilities import FismaScorecardUtility
+
+
+from sqlalchemy.engine import Engine
+
+# Turning off warnings
+urllib3.disable_warnings()
+
+# Setting up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+utility = Utility()
+connection = Connection()
+rw_util = Read_Write_Utility()
+fismaScorecardUtility = FismaScorecardUtility()
+
+
+def build_fisma_all_metrics_aggregate_scores_sql() -> str:
+    """
+    Build FISMA level aggregates 
+    """
+    sql = f""" 
+        SELECT 
+            fs.fisma_id,
+            fs.fisma_name,
+            fs.acronym,
+            fs.security_support_portfolio AS portfolio,
+            fs.active,
+            fs.fisma_reportable,
+            fs.iscm_waiver,
+            fs.fisma_category,
+            fs.fisma_inventory_selc_status,
+            fs.dhs_hva,
+            fs.public_facing,
+            fs.cfo_designated,
+            fs.fips_199_security_categorization_overall,
+            vm.vm_score,
+            cm.cm_score,
+            sw.swam_score,
+            hw.hwam_score,
+            hb.hbd_score,
+            po.prohibited_os_score,
+            so.security_authz_score,
+            sc.scan_compliance_score
+        FROM crma_hive.crma_hive_snow_fismadetails fs
+        LEFT JOIN crma_hive.crma_hive_fismascorecard_fisma_system_vm_score vm
+                ON fs.fisma_id=vm.fisma_id AND vm.etl_date=	%(etl_date)s
+        LEFT JOIN crma_hive.crma_hive_fismascorecard_fisma_system_cm_score cm
+                ON fs.fisma_id=cm.fisma_id AND cm.etl_date=	%(etl_date)s		
+        LEFT JOIN crma_hive.crma_hive_fismascorecard_fisma_system_swam_score sw
+                ON fs.fisma_id=sw.fisma_id AND sw.etl_date=	%(etl_date)s
+        LEFT JOIN crma_hive.crma_hive_fismascorecard_fisma_system_hwam_score hw
+                ON fs.fisma_id=hw.fisma_id AND hw.etl_date=	%(etl_date)s
+        LEFT JOIN crma_hive.crma_hive_fismascorecard_fisma_system_hbd_score hb
+                ON fs.fisma_id=hb.fisma_id AND hb.etl_date=	%(etl_date)s
+        LEFT JOIN crma_hive.crma_hive_fismascorecard_fisma_system_prohibited_os_score po
+                ON fs.fisma_id=po.fisma_id AND po.etl_date=	%(etl_date)s
+        LEFT JOIN crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score so
+                ON fs.fisma_id=so.fisma_id AND so.etl_date=	%(etl_date)s
+        LEFT JOIN crma_hive.crma_hive_fismascorecard_fisma_system_scan_compliance_score sc
+                ON fs.fisma_id=sc.fisma_id AND sc.etl_date=	%(etl_date)s
+    """
+    return sql
+
+def build_component_scores_sql() -> str:
+    """
+    Build component level scores SQL Command using CTEs.
+    """
+
+    sql = f""" 
+        WITH 
+        component_scores AS (
+            SELECT
+                'ICE' AS component,
+                CAST((
+                    SELECT AVG(vm_score) 
+                    FROM crma_hive.crma_hive_fismascorecard_device_vm_score 
+                    WHERE fisma_reportable iLike 'yes'
+                        AND fisma_category in ('MAJ', 'GSS')
+                        AND fisma_inventory_selc_status iLike 'Operational'
+                        AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+                 		AND etl_date = %(etl_date)s
+                ) AS INTEGER) AS vm_score,
+            
+                CAST((
+                    SELECT AVG(cm_score) 
+                    FROM crma_hive.crma_hive_fismascorecard_device_cm_score 
+                    WHERE fisma_reportable iLike 'yes'
+                        AND fisma_category in ('MAJ', 'GSS')
+                        AND fisma_inventory_selc_status iLike 'Operational'
+                        AND COALESCE(iscm_waiver, '') not ILIKE 'yes'
+                        AND dhs_hva iLike 'yes'
+                 		AND etl_date = %(etl_date)s
+                ) AS INTEGER) AS cm_score_hva,
+            
+                CAST((
+                        SELECT AVG(cm_score) 
+                        FROM crma_hive.crma_hive_fismascorecard_device_cm_score 
+                        WHERE fisma_reportable iLike 'yes'
+                            AND fisma_category in ('MAJ', 'GSS')
+                            AND fisma_inventory_selc_status iLike 'Operational'
+                            AND COALESCE(iscm_waiver, '') not ILIKE 'yes'
+                            AND (dhs_hva iLike 'no' OR dhs_hva IS NULL)
+                     		AND etl_date = %(etl_date)s
+                ) AS INTEGER) AS cm_score_other,
+
+                CAST((
+                        SELECT AVG(swam_score)*100 
+                        FROM crma_hive.crma_hive_fismascorecard_device_swam_score 
+                        WHERE fisma_reportable iLike 'yes'
+                            AND fisma_category in ('MAJ', 'GSS')
+                            AND fisma_inventory_selc_status iLike 'Operational'
+                            AND COALESCE(iscm_waiver, '') not ILIKE 'yes'
+                     		AND etl_date = %(etl_date)s
+                ) AS INTEGER) AS swam_score,
+            
+                CAST((
+                        SELECT AVG(hbd_score)
+                        FROM crma_hive.crma_hive_fismascorecard_device_hbd_score 
+                        WHERE fisma_reportable iLike 'yes'
+                            AND fisma_category in ('MAJ', 'GSS')
+                            AND fisma_inventory_selc_status iLike 'Operational'
+                            AND COALESCE(iscm_waiver, '') not ILIKE 'yes'
+                     		AND etl_date = %(etl_date)s
+                ) AS INTEGER) AS hbd_score,	
+
+                (
+                    SELECT SUM(prohibited_os_score)
+                    FROM  crma_hive.crma_hive_fismascorecard_device_prohibited_os_score
+                    WHERE fisma_reportable iLike 'yes'
+                        AND fisma_category in ('MAJ', 'GSS')
+                        AND fisma_inventory_selc_status iLike 'Operational'
+                        AND COALESCE(iscm_waiver, '') not ILIKE 'yes'
+                        AND devicerole iLike 'ENDPOINT'
+                 		AND etl_date = %(etl_date)s
+                )  AS prohibited_os,	
+
+                (SELECT hwam_score
+                    FROM crma_hive.crma_hive_fismascorecard_component_hwam_score
+         			WHERE etl_date = %(etl_date)s
+                ) AS hwam_score,	
+
+                CAST((
+                    SELECT AVG(security_authz_score) * 100
+                    FROM crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score
+                    WHERE fisma_reportable iLike 'yes'
+                        AND fisma_category in ('MAJ', 'GSS')
+                        AND fisma_inventory_selc_status iLike 'Operational'
+                        AND dhs_hva iLike 'yes'
+                 		AND etl_date = %(etl_date)s 
+                ) AS INTEGER) AS security_authz_score_hva,
+            
+                CAST((
+                    SELECT AVG(security_authz_score) * 100
+                    FROM crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score
+                    WHERE fisma_reportable iLike 'yes'
+                        AND fisma_category in ('MAJ', 'GSS')
+                        AND fisma_inventory_selc_status iLike 'Operational'
+                        AND (dhs_hva iLike 'no' OR  dhs_hva IS NULL )
+                 		AND etl_date = %(etl_date)s 
+                ) AS INTEGER) AS security_authz_score_other,
+                
+                (
+                    SELECT scan_compliance_score
+                    FROM crma_hive.crma_hive_fismascorecard_component_scan_compliance_score 
+         			WHERE etl_date = %(etl_date)s   
+                ) AS scan_compliance_score  
+
+        )
+        SELECT 
+            component,
+            vm_score,
+            cm_score_hva,
+            cm_score_other,
+            swam_score,
+            hwam_score,
+            hbd_score,
+            prohibited_os,
+            security_authz_score_hva,
+            security_authz_score_other,
+            scan_compliance_score
+        FROM component_scores
+    """
+    return sql
+
+def run_aggregate_scores_workflow(
+        engine: Engine,
+        bucket_name: str
+    )->None:
+    """
+    Execute the fissma systems all metric and component level scores aggegation including building query, 
+    param preparation, execute query, store output.
+
+    Parameters:
+        engine (Engine): Database engine for data access.
+        bucket_name (str): Name of the storage bucket for output.
+
+    Returns:
+        None
+    """
+    etl_date= date.today()
+    logger.info(f"Aggregating fismascorecard metrics : {etl_date}") 
+
+   
+    logger.info("Build fisma systems' all scorecard metrics scores aggrigates.")
+    sql = build_fisma_all_metrics_aggregate_scores_sql()
+
+
+    logger.info("Excecute query.")
+    df = rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql,
+        params={"etl_date": etl_date}
+    )
+    
+    if df is not None:
+        logger.info(f"Scorecard all metrics system scores received. Total records: {len(df)}")         
+        logger.info(f"Load device score dataset to target table.")
+        df["etl_date"] = etl_date
+        dataset = "crma_hive_fismascorecard_fisma_system_all_metrics_scores"
+        fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
+            engine=engine,
+            df=df,
+            table=dataset,
+            etl_date=etl_date
+        )
+
+        fismaScorecardUtility.archive_to_s3(
+            df=df,
+            bucket_name=bucket_name,
+            dataset=dataset
+        )
+
+    else:
+        logger.warning("Query returned no data")   
+        return 
+
+    logger.info("Build Component aggregate scores query.")
+    sql = build_component_scores_sql()
+
+
+    logger.info("Excecute Component aggregate scores query.")
+    df = rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql,
+        params={"etl_date": etl_date}
+    )
+    
+    if df is not None:
+        logger.info(f"Component aggregates scores received. Total records: {len(df)}")         
+        logger.info(f"Load device score dataset to target table.")
+        df["etl_date"] = etl_date
+        dataset = "crma_hive_fismascorecard_component_scores"
+        fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
+            engine=engine,
+            df=df,
+            table=dataset,
+            etl_date=etl_date
+        )
+
+        fismaScorecardUtility.archive_to_s3(
+            df=df,
+            bucket_name=bucket_name,
+            dataset=dataset
+        )
+
+    else:
+        logger.warning("Query returned no data")   
+        return 
+
+
+def main():
+
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    engine = connection.postgres_engine("edae-crma-hive") 
+
+    run_aggregate_scores_workflow(engine=engine, bucket_name=bucket_name)       
+      
+    utility.log_memory_usage() 
+    elapsed_minutes = (time.time() - start_time) / 60 
+    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+
+
+if __name__ == "__main__":
+    main()
+
+import logging
+
+import pandas as pd
+import time
+from datetime import datetime, date
+import os
+
+import urllib3
+
+from crma_hive_connections import Connection
+from crma_hive_utilities import Utility, Read_Write_Utility
+from crma_hive_scorecard_utilities import FismaScorecardUtility
+
+
+from sqlalchemy.engine import Engine
+
+# Turning off warnings
+urllib3.disable_warnings()
+
+# Setting up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+utility = Utility()
+connection = Connection()
+rw_util = Read_Write_Utility()
+fismaScorecardUtility = FismaScorecardUtility()
+
+
+def build_scored_devices_summary_sql() -> str:
+    """
+    Build the scored devices summary computation query.
+    """
+
+    sql = f"""
+        WITH
+        input_devices AS(
+            SELECT 
+                d.device_id,
+                d.fisma_id,
+                f.fisma_reportable,
+                f.fisma_category,
+                f.fisma_inventory_selc_status,
+                f.iscm_waiver
+            FROM crma_hive.crma_hive_fismascorecard_input_devices d
+            LEFT JOIN crma_hive.crma_hive_snow_fismadetails f
+                ON d.fisma_id = f.fisma_id
+        ),
+        vm_device AS(
+            SELECT
+                fisma_id,
+                device_id		
+            FROM crma_hive.crma_hive_fismascorecard_device_vm_score
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+                AND etl_date =  %(etl_date)s
+        ),
+        cm_device_hva AS(
+            SELECT
+                fisma_id,
+                device_id	
+            FROM crma_hive.crma_hive_fismascorecard_device_cm_score
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+                AND dhs_hva iLike 'yes'
+                AND etl_date =  %(etl_date)s
+        ),
+        cm_device_other AS(
+            SELECT
+                fisma_id,
+                device_id	
+            FROM crma_hive.crma_hive_fismascorecard_device_cm_score
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+                AND (dhs_hva iLike 'no' OR  dhs_hva IS NULL )
+                AND etl_date =  %(etl_date)s
+        ),
+        hbd_device AS (
+            SELECT
+                fisma_id,
+                device_id		
+            FROM crma_hive.crma_hive_fismascorecard_device_hbd_score
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+                AND etl_date =  %(etl_date)s
+        ),
+        swam_device AS (
+            SELECT
+                fisma_id,
+                device_id		
+            FROM crma_hive.crma_hive_fismascorecard_device_swam_score
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+                AND etl_date =  %(etl_date)s
+        ),
+        pos_device AS (
+            SELECT
+                fisma_id,
+                device_id		
+            FROM crma_hive.crma_hive_fismascorecard_device_prohibited_os_score
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+                AND devicerole iLike 'ENDPOINT'
+                AND etl_date = %(etl_date)s
+        ),
+        vm_count AS (
+            SELECT
+                fisma_id,
+                COUNT(device_id) AS fisma_vm_scored	
+            FROM vm_device
+            GROUP BY fisma_id
+        ),
+        cm_hva_count AS (
+            SELECT
+                fisma_id,
+                COUNT(device_id) AS fisma_cm_scored_hva	
+            FROM cm_device_hva
+            GROUP BY fisma_id
+        ),
+        cm_other_count AS (
+            SELECT
+                fisma_id,
+                COUNT(device_id) AS fisma_cm_scored_other	
+            FROM 	cm_device_other
+            GROUP BY fisma_id
+        ),
+        swam_count AS (
+            SELECT
+                fisma_id,
+                COUNT(device_id) AS fisma_swam_scored		
+            FROM swam_device
+            GROUP BY fisma_id
+        ),
+        hbd_count AS (
+            SELECT
+                fisma_id,
+                COUNT(device_id) AS fisma_hbd_scored	
+            FROM hbd_device
+            GROUP BY fisma_id 
+        ),
+        pos_count AS (
+            SELECT
+                fisma_id,
+                COUNT(device_id) AS fisma_pos_scored	
+            FROM pos_device
+            GROUP BY fisma_id 
+        ),
+        hwam_count AS (
+            SELECT
+                fisma_id,
+                COUNT(device_id) AS fisma_hwam_scored
+            FROM input_devices
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+            GROUP BY fisma_id 
+        ),
+        totals AS (
+            SELECT
+                (SELECT COUNT(device_id) FROM vm_device) AS component_vm_scored,
+                (SELECT COUNT(device_id) FROM cm_device_hva) AS component_cm_scored_hva,
+                (SELECT COUNT(device_id) FROM cm_device_other) AS component_cm_scored_other,
+                (SELECT COUNT(device_id) FROM hbd_device)  AS component_hbd_scored,
+                (SELECT COUNT(device_id) FROM  swam_device) AS component_swam_scored ,
+                (SELECT COUNT(device_id) FROM input_devices) AS   component_hwam_scored ,
+                (SELECT COUNT(device_id) FROM pos_device) AS component_pos_scored       
+        ),
+        scored_devices_summary AS(
+            SELECT    
+                fd.fisma_id,
+                fd.acronym,	
+                fd.fisma_name,
+
+                COALESCE(vm.fisma_vm_scored, 0) AS vm_scored_devices,
+
+                CAST(
+                    COALESCE(vm.fisma_vm_scored, 0) * 100.0 / NULLIF(t.component_vm_scored, 0)
+                    AS DECIMAL(10,7)
+                ) AS vm_scored_percent_of_component,
+                
+                COALESCE(cmh.fisma_cm_scored_hva, 0) AS cm_scored_devices_hva,
+                
+                CAST(
+                    COALESCE(cmh.fisma_cm_scored_hva, 0) * 100.0 / NULLIF(t.component_cm_scored_hva, 0) 
+                    AS DECIMAL(10,7)
+                )AS cm_scored_hva_percent_of_component,
+
+                COALESCE(cmo.fisma_cm_scored_other, 0) AS cm_scored_devices_other,
+                CAST(
+                    COALESCE(cmo.fisma_cm_scored_other, 0) * 100.0 / NULLIF(t.component_cm_scored_other, 0) 
+                    AS DECIMAL(10,7)		
+                ) AS cm_scored_other_percent_of_component,
+
+                COALESCE(swam.fisma_swam_scored, 0) AS swam_scored_devices,
+
+                CAST(
+                    COALESCE(swam.fisma_swam_scored, 0) * 100.0 / NULLIF(t.component_swam_scored, 0) 
+                    AS DECIMAL(10,7)			
+                ) AS swam_scored_percent_of_component,		
+
+                COALESCE(hwam.fisma_hwam_scored, 0) AS hwam_scored_devices,
+                
+                CAST(
+                    COALESCE(hwam.fisma_hwam_scored, 0) * 100.0 / NULLIF(t.component_hwam_scored, 0) 
+                    AS DECIMAL(10,7)		
+                ) AS hwam_scored_percent_of_component,
+
+                COALESCE(pos.fisma_pos_scored, 0) AS pos_scored_devices,
+
+                CAST(
+                    COALESCE(pos.fisma_pos_scored, 0) * 100.0 / NULLIF(t.component_pos_scored, 0) 
+                    AS DECIMAL(10,7)			
+                ) AS pos_scored_percent_of_component,
+                    
+                COALESCE(hbd.fisma_hbd_scored, 0) AS hbd_scored_devices,
+
+                CAST(
+                    COALESCE(hbd.fisma_hbd_scored, 0) * 100.0/ NULLIF(t.component_hbd_scored, 0)
+                    AS DECIMAL(10,7)			
+                ) AS hbd_scored_percent_of_component,		 
+
+                COALESCE(vm.fisma_vm_scored, 0) AS sc_scored_devices,
+            
+                CAST(
+                    COALESCE(vm.fisma_vm_scored, 0) * 100.0 / NULLIF(t.component_vm_scored, 0)   			 
+                    AS DECIMAL(10,7)			
+                ) AS sc_scored_percent_of_component
+
+            FROM  crma_hive.crma_hive_snow_fismadetails fd
+            LEFT JOIN vm_count vm
+                ON fd.fisma_id = vm.fisma_id
+            LEFT JOIN cm_hva_count cmh
+                ON fd.fisma_id = cmh.fisma_id
+            LEFT JOIN cm_other_count cmo
+                ON fd.fisma_id = cmo.fisma_id
+            LEFT JOIN swam_count swam
+                ON fd.fisma_id = swam.fisma_id
+            LEFT JOIN hwam_count hwam
+                ON fd.fisma_id = hwam.fisma_id
+            LEFT JOIN pos_count pos
+                ON fd.fisma_id = pos.fisma_id
+            LEFT JOIN hbd_count hbd
+                ON fd.fisma_id = hbd.fisma_id
+            CROSS JOIN totals t
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+        )
+        SELECT
+            fisma_id,
+            acronym,	
+            fisma_name,
+            vm_scored_devices,
+            vm_scored_percent_of_component,
+            cm_scored_devices_hva, 
+            cm_scored_hva_percent_of_component,
+            cm_scored_devices_other, 
+            cm_scored_other_percent_of_component,
+            swam_scored_devices, 
+            swam_scored_percent_of_component,
+            hwam_scored_devices,
+            hwam_scored_percent_of_component,		 
+            pos_scored_devices,
+            pos_scored_percent_of_component,	
+            hbd_scored_devices,
+            hbd_scored_percent_of_component,
+            sc_scored_devices,
+            sc_scored_percent_of_component 	
+        FROM scored_devices_summary
+    """
+    return sql
+
+def build_cve_impact_sql() -> str:
+    """
+    Build CVE impact query.
+    """
+    sql = f"""
+        WITH 
+        -- Step 1: Select VM Score Eligible devices
+        devices AS (
+            SELECT 
+                device_id,
+                preferred_hostname  AS hostname,
+                preferred_ipv4 AS ip,
+                fisma_id,
+                device_last_seen,
+                asset_id,
+                is_credentialed
+            FROM  crma_hive.crma_hive_fismascorecard_input_devices 
+            WHERE devicerole IN ('ENDPOINT','NETWORKING DEVICE')
+                AND fisma_id iLIKE 'ICE-%%'
+                AND is_credentialed IS TRUE
+                AND asset_id IS NOT NULL
+        ),
+        -- Step 2: Dedup asset_id 
+                -- group by asset_id -> rank by device_last_seen, keep top ranked
+        deduped_devices AS(	
+            SELECT *
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id
+                        ORDER BY device_last_seen DESC
+                    ) AS asset_rn
+                FROM devices
+            ) ranked
+            WHERE asset_rn = 1 
+        ),
+        --Stetp 3: Enrich devices with fisma details
+        fisma_enriched_devices AS (
+            SELECT 
+                d.device_id,
+                d.hostname,
+                d.ip,
+                d.fisma_id,
+                d.asset_id,
+                d.is_credentialed,
+                f.fisma_name,
+                f.acronym
+            FROM deduped_devices d
+            LEFT JOIN crma_hive.crma_hive_snow_fismadetails f
+                ON d.fisma_id = f.fisma_id 
+            WHERE f.fisma_reportable iLike 'yes'
+                AND f.fisma_category in ('MAJ', 'GSS')
+                AND f.fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(f.iscm_waiver, '') not ILIKE 'yes'
+        ),
+        -- Step 4: Get eligibile scans
+        flattened_cves AS (
+            -- 4.1: Flatten
+            SELECT
+                v.finding_id,
+                v.plugin_id,
+                v.asset_uuid AS asset_id,
+                v.last_found,
+                v.state,
+                TRIM(cve) AS cve_id
+            FROM crma_hive.crma_hive_tvm_vulns v
+            CROSS JOIN LATERAL UNNEST(v.plugin_cve) AS cve
+            WHERE
+                v.plugin_cve IS NOT NULL
+                AND array_length(v.plugin_cve, 1) > 0
+                AND v.state IN ('OPEN', 'REOPENED')
+        ),
+        latest_cves AS (
+            -- Step 4.2 - In case of duplicate asset_id - cve combination - keep the latest one
+            SELECT 
+                *
+            FROM (
+                SELECT
+                    finding_id,
+                    plugin_id,
+                    asset_id,
+                    last_found,
+                    state,
+                    cve_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id, cve_id
+                        ORDER BY last_found DESC
+                    ) AS rn
+                FROM flattened_cves
+            )ranked
+            WHERE rn =1
+        ),
+        -- Step 5: Enrich vulns with CVE NVD/KEV data
+                -- Where cve published date is on/before 15th of last calander month
+        enriched_cves AS (
+            SELECT
+                lv.finding_id,
+                lv.plugin_id,
+                lv.asset_id,
+                lv.state,
+                lv.cve_id,
+                ck.cvss_v3_score,
+                ck.published     AS cve_published_date,
+                ck.is_kev,
+                ck.date_added AS kev_date_added
+            FROM latest_cves lv
+            LEFT JOIN crma_hive.crma_hive_cve_score_kev_info_combined ck
+                ON lv.cve_id = ck.cve_id
+         	WHERE ck.published  <= %(cve_kev_cutoff_date)s
+        ),
+        -- Step 6: lEFT JOIN enriched_vulns to eligibile_devices and  on asset_uuid 
+        eligible_devices_cves AS (
+            SELECT
+                ev.finding_id,
+                ev.plugin_id,
+                ev.state,
+                ev.asset_id,
+                ed.device_id,
+                ed.hostname,
+                ed.ip,
+                ed.is_credentialed,
+                ed.fisma_id,
+                ed.fisma_name,
+                ed.acronym,
+                ev.cve_id,
+                ev.cvss_v3_score,
+                ev.cve_published_date,
+                ev.is_kev,
+                ev.kev_date_added,
+        		(ev.is_kev = TRUE AND ev.kev_date_added <= %(cve_kev_cutoff_date)s) AS is_eligible_kev
+
+            FROM enriched_cves  ev
+            LEFT JOIN  fisma_enriched_devices ed	
+                ON ev.asset_id = ed.asset_id
+            WHERE ed.device_id IS NOT NULL
+        ),
+        -- Step 7: add CVE type fields
+        cve_type AS (
+            SELECT
+                asset_id,
+                cve_id,
+                plugin_id,
+                state,
+                device_id,
+                hostname,
+                ip,
+                is_credentialed,
+                fisma_id,
+                fisma_name,
+                acronym,
+                cvss_v3_score,
+                cve_published_date,
+                is_eligible_kev,
+                kev_date_added,
+                CASE
+                    WHEN is_eligible_kev = TRUE THEN 'KEV'
+                    WHEN cvss_v3_score BETWEEN 9.0 AND 10.0 THEN 'Critical'
+                    WHEN cvss_v3_score BETWEEN 7.0 AND 8.9 THEN 'High'
+                    ELSE NULL
+                END AS type
+            FROM eligible_devices_cves	
+        ),
+        cves AS (
+            SELECT 
+                *
+            FROM cve_type
+            WHERE type IS NOT NULL
+        ),
+        -- Step 8: Prepare counts for computing impact
+        device_type_counts AS (
+            -- 8.1: CVE counts by type in a device
+            SELECT
+                device_id,
+                SUM(CASE WHEN type = 'KEV' THEN 1 ELSE 0 END) AS device_kev_count,
+                SUM(CASE WHEN type = 'Critical' THEN 1 ELSE 0 END) AS device_critical_count,
+                SUM(CASE WHEN type = 'High' THEN 1 ELSE 0 END) AS device_high_count
+            FROM cves
+            GROUP BY device_id
+        ),
+        fisma_device_counts AS (
+                -- 8.2: device counts in fisma system
+            SELECT
+                fisma_id,
+                COUNT(DISTINCT device_id) AS fisma_device_count
+            FROM cves
+            GROUP BY fisma_id
+        ),
+        component_device_counts AS (
+            -- 8.3 : VM score eligible device counts in the entire component
+            SELECT
+                COUNT(DISTINCT device_id) AS component_device_count
+            FROM cves 
+        ),
+
+        -- Step 9: Compute CVE device impacts
+        cve_impact_base AS (
+            -- 9.1: compute CVE device nominal and real impact
+            SELECT
+                cve.*,
+                CASE
+                    WHEN cve.type = 'KEV' THEN 1.0
+                    WHEN cve.type = 'Critical' THEN 0.1
+                    WHEN cve.type = 'High' THEN 0.05
+                END AS device_nominal_impact,
+                
+                CAST(
+                    CASE
+                        WHEN cve.type = 'KEV'
+                        THEN 1.0 / NULLIF(dtc.device_kev_count, 0)
+
+                        WHEN cve.type = 'Critical'
+                        AND dtc.device_critical_count <= 5
+                        THEN 0.1
+
+                        WHEN cve.type = 'Critical'
+                        THEN 0.5 / NULLIF(dtc.device_critical_count, 0)
+
+                        WHEN cve.type = 'High'
+                        AND dtc.device_high_count <= 10
+                        THEN 0.05
+
+                        WHEN cve.type = 'High'
+                        THEN 0.5 / NULLIF(dtc.device_high_count, 0)
+
+                    END
+                    AS DECIMAL(10,7)
+                )AS device_real_impact
+            FROM cves cve
+            LEFT JOIN device_type_counts dtc
+                ON cve.device_id = dtc.device_id	
+        ),
+        cve_impact AS (
+                -- 9.2: add cve system and component nominal and real impacts
+            SELECT
+                ib.*,
+                
+                CAST(
+                    ib.device_nominal_impact / NULLIF(fdc.fisma_device_count, 0) 
+                    AS DECIMAL(10,7)
+                ) AS fisma_nominal_impact,
+
+                CAST(
+                    ib.device_real_impact / NULLIF(fdc.fisma_device_count, 0) 
+                    AS DECIMAL(10,7)
+                ) AS fisma_real_impact,
+                
+                CAST(
+                    ib.device_nominal_impact / NULLIF(cdc.component_device_count, 0) 
+                    AS DECIMAL(10,7)
+                )AS component_nominal_impact, 
+
+                CAST(
+                    ib.device_real_impact / NULLIF(cdc.component_device_count, 0) 
+                    AS DECIMAL(10,7)
+                ) AS component_real_impact 
+
+            FROM cve_impact_base ib
+            LEFT JOIN fisma_device_counts fdc
+                ON Ib.fisma_id = fdc.fisma_id
+            CROSS JOIN component_device_counts cdc
+        )
+        SELECT
+            cve_id,
+            asset_id,
+            plugin_id,	
+            state,
+            device_id,
+            hostname,
+            ip,
+            is_credentialed,
+            fisma_id,
+            fisma_name,
+            acronym,
+            cvss_v3_score,
+            cve_published_date,
+            is_eligible_kev,
+            kev_date_added,
+            type,
+            device_nominal_impact,
+            device_real_impact,
+            fisma_nominal_impact,
+            fisma_real_impact,
+            component_nominal_impact,
+            component_real_impact
+        FROM cve_impact
+
+    """
+    return sql
+
+def build_psw_impact_sql() -> str:
+    """
+    Build psw(prohibed software) impact query.
+    """
+    sql = f"""
+        WITH
+        -- Step 1: Select SWAM eligible devices and dedup 
+        eligible_devices AS(	
+                -- Step 3.1: Dedup asset_id 
+                    -- group by asset_id -> rank by device_last_seen, keep top ranked
+            SELECT *
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id
+                        ORDER BY device_last_seen DESC
+                    ) AS asset_rn
+                FROM crma_hive.crma_hive_fismascorecard_input_devices
+                WHERE devicerole = 'ENDPOINT'
+                AND is_credentialed IS TRUE
+                AND asset_id IS NOT NULL
+            ) ranked
+            WHERE asset_rn = 1 
+        ),
+        --Stetp 2: Enrich devices with fisma details
+        fisma_enriched_devices AS (
+            SELECT 
+                d.device_id,
+                d.preferred_hostname  AS hostname,
+                d.preferred_ipv4 AS ip,
+                d.fisma_id,
+                d.asset_id,
+                f.fisma_name,
+                f.acronym
+            FROM eligible_devices d
+            LEFT JOIN crma_hive.crma_hive_snow_fismadetails f
+                ON d.fisma_id = f.fisma_id 
+            WHERE f.fisma_reportable iLike 'yes'
+                AND f.fisma_category in ('MAJ', 'GSS')
+                AND f.fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(f.iscm_waiver, '') not ILIKE 'yes'
+        ),
+        -- Step 3: Join tvm normalized softwares to mobius reference map on softwar name
+                -- LEFT JOIN normalized_tvm_software to tvm_to_mobius_software map ON software_name
+        partial_match  AS(
+            SELECT DISTINCT 
+                ts.asset_id,
+                ts.last_seen AS assets_last_seen,
+                map.tvm_software_name,
+                ts.software_version AS tvm_software_version,
+                map.mobius_software_name,
+                map.mobius_product_id
+            FROM crma_hive.crma_hive_tvm_normalized_softwares ts
+            LEFT JOIN crma_hive.crma_hive_tvm_to_mobius_software_map map
+                ON ts.software_name=map.tvm_software_name
+         	WHERE ts.last_seen >= %(lookback_date)s 
+        ),
+        -- Step 4: Check if tvm-mobius  software name  match also match on version for prohibites softwares 
+                -- LEFT JOIN partial_match to normalized_mobius map ON software_name and version(or version_label)
+                -- x in version is wildcard character and should match any number. 
+        psw_full_match AS(
+            SELECT DISTINCT 
+                pm.asset_id,
+                pm.tvm_software_name,
+                pm.tvm_software_version,
+                pm.assets_last_seen,
+                ms.software_name AS mobius_software_name,
+                ms.normalized_version AS mobius_software_version,
+                ms.normalized_version_label AS mobius_version_label,
+                ms.status
+            FROM partial_match pm
+            LEFT JOIN crma_hive.crma_hive_mobius_normalized_softwares ms
+                ON pm.mobius_product_id=ms.mobius_product_id
+                AND(
+                    pm.tvm_software_version = ms.normalized_version
+                        OR pm.tvm_software_version = ms.normalized_version_label
+                        OR ms.normalized_version ~ ('^' || regexp_replace(pm.tvm_software_version, 'x', '[0-9]+', 'g') || '$')
+                        OR ms.normalized_version_label ~ ('^' || regexp_replace(pm.tvm_software_version, 'x', '[0-9]+', 'g') || '$')
+                        -- escape parentheses in normalized_version field before running regex_replace			
+                        OR pm.tvm_software_version ~ ('^' || regexp_replace(
+                                                                regexp_replace( 
+                                                                    regexp_replace(ms.normalized_version, '\(', '\\(', 'g'), 
+                                                                    '\)', '\\)', 'g'
+                                                                ),
+                                                                'x', '[0-9]+', 'g'
+                                                            ) || '$')
+                        OR pm.tvm_software_version ~ ('^' || regexp_replace(
+                                                                regexp_replace( 
+                                                                    regexp_replace(ms.normalized_version_label, '\(', '\\(', 'g'), 
+                                                                    '\)', '\\)', 'g'
+                                                                ),
+                                                                'x', '[0-9]+', 'g'
+                                                            ) || '$')                           
+                    )
+            WHERE ms.status ILIKE 'Prohibited' 
+            OR ms.status ILIKE 'Not Authorized'
+        ),
+        -- Step 5: Join psw_full_match with axonius devices data to identify eligible devices
+        device_psw AS (
+                -- 3.2: Join
+            SELECT  DISTINCT 
+                dev.device_id,
+                dev.hostname,
+                dev.ip,
+                dev.fisma_id,
+                dev.fisma_name,
+                dev.acronym,
+                dev.asset_id,
+                sw.tvm_software_name AS software,
+                sw.tvm_software_version AS version,
+                sw.status
+            FROM fisma_enriched_devices dev
+            LEFT JOIN psw_full_match sw  
+                ON dev.asset_id = sw.asset_id
+        ),
+        -- Step 6: Exclude softwares
+        cleaned_device_psw AS (
+            SELECT *
+            FROM device_psw
+            WHERE LOWER(software) NOT IN (
+                'microsoft internet explorer',
+                'microsoft visioviewer',
+                'microsoft office compatibility pack',
+                'microsoft visio viewer'
+            )
+        ),
+        -- Step 7: Prepare counts for computing impact
+        device_psw_counts AS (
+            -- 7.1: software counts in devices
+            SELECT
+                device_id,
+                COUNT(*) AS device_psw_count
+            FROM cleaned_device_psw
+            GROUP BY device_id
+        ),
+        fisma_device_counts AS (
+            -- 7.2: device counts in fisma system
+            SELECT
+                fisma_id,
+                COUNT(DISTINCT device_id) AS fisma_device_count
+            FROM cleaned_device_psw
+            GROUP BY fisma_id
+        ),
+        component_device_counts AS (
+            -- 8.3 : VM score eligible device counts in the entire component
+            SELECT
+                COUNT(DISTINCT device_id) AS component_device_count
+            FROM cleaned_device_psw 
+        ),
+        -- Step 8: Compute psw device impacts
+        psw_impact_base AS (
+            -- 8.1: compute psw device nominal and real impact
+            SELECT DISTINCT
+                psw.*,
+                1.0 AS device_nominal_impact,
+                
+                CAST(
+                    1.0 / NULLIF(dsc.device_psw_count, 0)			
+                    AS DECIMAL(10,7)
+                )AS device_real_impact
+            FROM cleaned_device_psw psw
+            LEFT JOIN device_psw_counts dsc
+                ON psw.device_id = dsc.device_id	
+        ),
+        psw_impact AS (
+                -- 8.2: add psw system and component nominal and real impacts
+            SELECT
+                ib.*,
+                
+                CAST(
+                    ib.device_nominal_impact / NULLIF(fdc.fisma_device_count, 0) 
+                    AS DECIMAL(10,7)
+                ) AS fisma_nominal_impact,
+
+                CAST(
+                    ib.device_real_impact / NULLIF(fdc.fisma_device_count, 0) 
+                    AS DECIMAL(10,7)
+                ) AS fisma_real_impact,
+                
+                CAST(
+                    ib.device_nominal_impact / NULLIF(cdc.component_device_count, 0) 
+                    AS DECIMAL(10,7)
+                )AS component_nominal_impact, 
+
+                CAST(
+                    ib.device_real_impact / NULLIF(cdc.component_device_count, 0) 
+                    AS DECIMAL(10,7)
+                ) AS component_real_impact 
+
+            FROM psw_impact_base ib
+            LEFT JOIN fisma_device_counts fdc
+                ON ib.fisma_id = fdc.fisma_id
+            CROSS JOIN component_device_counts cdc
+        )
+        SELECT 
+            device_id,
+            hostname,
+            ip,
+            fisma_id,
+            fisma_name,
+            acronym,
+            asset_id,
+            software,
+            version,
+            status,
+            device_nominal_impact,
+            device_real_impact,
+            fisma_nominal_impact,
+            fisma_real_impact,
+            component_nominal_impact,
+            component_real_impact 
+        FROM psw_impact
+    """
+    return sql
+
+def build_failed_compliace_check_impact_sql() -> str:
+    """
+     Build failed compliace check impact query.
+    """
+    sql = f"""
+        WITH
+        -- Step 1: Identify latest and most complete audit file per asset
+        audit_files AS (
+            SELECT
+                asset_id,
+                asset_last_seen,
+                audit_file,
+                COUNT(*) AS audit_file_count
+            FROM crma_hive.crma_hive_tvm_compliance_failed_31d_mv
+            GROUP BY
+                asset_id,
+                asset_last_seen,
+                audit_file
+        ),
+
+        -- Step 2: Counts
+        device_cat_counts AS (
+            -- 2.1: FAILED check counts in a device by CAT
+            SELECT
+                device_id,
+                SUM(CASE WHEN severity = 'I' THEN 1 ELSE 0 END) AS device_cat1_count,
+                SUM(CASE WHEN severity = 'II' THEN 1 ELSE 0 END) AS device_cat2_count,
+                SUM(CASE WHEN severity = 'III' THEN 1 ELSE 0 END) AS device_cat3_count
+            FROM crma_hive.crma_hive_failed_checks_mv
+            GROUP BY
+                device_id
+        ),
+
+        fisma_device_counts AS (
+            -- 2.2: Device counts in FISMA system
+            SELECT
+                fisma_id,
+                COUNT(DISTINCT device_id) AS fisma_device_count
+            FROM crma_hive.crma_hive_failed_checks_mv
+            GROUP BY
+                fisma_id
+        ),
+
+        component_device_counts_hva AS (
+            -- 2.3: VM score eligible device counts in the entire component for HVA devices
+            SELECT
+                COUNT(DISTINCT device_id) AS component_device_count_hva
+            FROM crma_hive.crma_hive_failed_checks_mv
+            WHERE dhs_hva ILIKE 'yes'
+        ),
+
+        component_device_counts_other AS (
+            -- 2.4: VM score eligible device counts in the entire component for non-HVA devices
+            SELECT
+                COUNT(DISTINCT device_id) AS component_device_count_other
+            FROM crma_hive.crma_hive_failed_checks_mv
+            WHERE dhs_hva ILIKE 'no'
+            OR dhs_hva IS NULL
+        ),
+
+        -- Step 3: Compute failed check impact
+        failed_check_impact_base AS (
+            -- 3.1: Compute failed check device impact
+            SELECT
+                fc.*,
+                CAST(
+                    CASE
+                        WHEN fc.severity = 'I'
+                            THEN 0.5 / NULLIF(dcc.device_cat1_count, 0)
+
+                        WHEN fc.severity = 'II'
+                            THEN 0.3 / NULLIF(dcc.device_cat2_count, 0)
+
+                        WHEN fc.severity = 'III'
+                            THEN 0.2 / NULLIF(dcc.device_cat3_count, 0)
+                    END AS DECIMAL(7, 4)
+                ) AS device_impact
+            FROM crma_hive.crma_hive_failed_checks_mv fc
+            LEFT JOIN device_cat_counts dcc
+                ON fc.device_id = dcc.device_id
+        ),
+
+        failed_check_impact AS (
+            -- 3.2: Add FISMA system and component nominal and real impacts
+            SELECT
+                ib.*,
+                CAST(
+                    ib.device_impact / NULLIF(fdc.fisma_device_count, 0)
+                    AS DECIMAL(7, 4)
+                ) AS fisma_impact,
+
+                CAST(
+                    ib.device_impact / NULLIF(hcdc.component_device_count_hva, 0)
+                    AS DECIMAL(7, 4)
+                ) AS component_impact_hva,
+
+                CAST(
+                    ib.device_impact / NULLIF(ocdc.component_device_count_other, 0)
+                    AS DECIMAL(7, 4)
+                ) AS component_impact_other
+            FROM failed_check_impact_base ib
+            LEFT JOIN fisma_device_counts fdc
+                ON ib.fisma_id = fdc.fisma_id
+            CROSS JOIN component_device_counts_hva hcdc
+            CROSS JOIN component_device_counts_other ocdc
+        )
+
+        SELECT
+            rule_id,
+            stig_id,
+            device_id,
+            hostname,
+            ip,
+            fisma_id,
+            fisma_name,
+            acronym,
+            dhs_hva,
+            asset_id,
+            audit_file,
+            sscg_os_version,
+            severity,
+            device_impact,
+            fisma_impact,
+            component_impact_hva,
+            component_impact_other
+        FROM failed_check_impact;
+    """
+    return sql
+
+
+def run_impact_computation_workflow(
+        engine: Engine,
+        bucket_name: str
+    )->None:
+    """
+    Execute the scorecard impact computation workflow, including building query to fetch input data, 
+    param preparation, execute query, score, store output.
+
+    Parameters:
+        engine (Engine): Database engine for data access.
+        bucket_name (str): Name of the storage bucket for output.
+
+    Returns:
+        None
+    """
+    etl_date= date.today()
+    params = fismaScorecardUtility.compute_date_params(etl_date)
+    logger.info("Lookback date: %s", params["lookback_date"])
+    logger.info("CVE/KEV cutoff date: %s", params["cve_kev_cutoff_date"])
+
+   #Scored Devices Summary
+    logger.info(f"Computing scored devices summary for : {etl_date}") 
+
+    logger.info("Build scored devices dummary computation query.")
+    sql = build_scored_devices_summary_sql() 
+
+    logger.info("Excecute scored devices dummary query.")
+    df = rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql,
+        params={"etl_date": etl_date}
+    )
+
+    if df is not None:
+        logger.info(f"Scored devices dummary computed, total recores: {len(df)}")         
+        logger.info(f"Load e dataset to target table.")
+        df["etl_date"] = etl_date
+        dataset = "crma_hive_fismascorecard_scored_devices_summary"
+        fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
+            engine=engine,
+            df=df,
+            table=dataset,
+            etl_date=etl_date
+        )
+        fismaScorecardUtility.archive_to_s3(
+            df=df,
+            bucket_name=bucket_name,
+            dataset=dataset
+        )
+    else:
+        logger.warning("Query returned no data")   
+
+    #CVE Impact
+    logger.info(f"Computing Scorecard CVE impact  for : {etl_date}") 
+
+    logger.info("Build cve impact computation query.")
+    sql = build_cve_impact_sql() 
+
+    logger.info("Excecute cve impact query.")
+    df = rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql,
+        params=params
+    )
+
+    if df is not None:
+        logger.info(f"CVE impact computed, total recores: {len(df)}")         
+        logger.info(f"Load e dataset to target table.")
+        df["etl_date"] = etl_date
+        dataset = "crma_hive_fismascorecard_cve_impact"
+        fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
+            engine=engine,
+            df=df,
+            table=dataset,
+            etl_date=etl_date
+        )
+        fismaScorecardUtility.archive_to_s3(
+            df=df,
+            bucket_name=bucket_name,
+            dataset=dataset
+        )
+    else:
+        logger.warning("Query returned no data")   
+
+    #Prohibited software impact 
+    logger.info(f"Computing Scorecard PSW impact  for : {etl_date}") 
+
+    logger.info("Build psw impact computation query.")
+    sql = build_psw_impact_sql() 
+
+    logger.info("Excecute psw impact query.")
+    df = rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql,
+        params=params
+    )
+    if df is not None:
+        logger.info(f"Prohibed sw impact computed, total recores: {len(df)}")         
+        logger.info(f"Load e dataset to target table.")
+        df["etl_date"] = etl_date
+        dataset = "crma_hive_fismascorecard_psw_impact"
+        fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
+            engine=engine,
+            df=df,
+            table=dataset,
+            etl_date=etl_date
+        )
+        fismaScorecardUtility.archive_to_s3(
+            df=df,
+            bucket_name=bucket_name,
+            dataset=dataset
+        )
+    else:
+        logger.warning("Query returned no data")   
+
+    #Failed compliance check mpact
+    logger.info(f"Computing Scorecard failed compliace check impact  for : {etl_date}") 
+
+    logger.info("Refresh materialized views utilized in failed compliace check impact computation.")
+    mvs = [
+            "crma_hive_tvm_compliance_failed_31d_mv",
+            "crma_hive_scan_audit_mapping_mv",
+            "crma_hive_failed_checks_mv"
+        ]
+    fismaScorecardUtility.refresh_materialized_views(engine=engine, views=mvs) 
+
+    logger.info("Build failed compliace check impact computation query.")
+    sql = build_failed_compliace_check_impact_sql() 
+
+    logger.info("Excecute failed compliace check impact query.")
+    df = rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql,
+        params=params
+    )
+
+    if df is not None:
+        logger.info(f"CVE impact computed, total recores: {len(df)}")         
+        logger.info(f"Load e dataset to target table.")
+        df["etl_date"] = etl_date
+        dataset = "crma_hive_fismascorecard_failed_compliace_check_impact"
+        fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
+            engine=engine,
+            df=df,
+            table=dataset,
+            etl_date=etl_date
+        )
+        fismaScorecardUtility.archive_to_s3(
+            df=df,
+            bucket_name=bucket_name,
+            dataset=dataset
+        )
+    else:
+        logger.warning("Query returned no data")   
+                 
+
+def main():
+
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    engine = connection.postgres_engine("edae-crma-hive") 
+
+
+    run_impact_computation_workflow(engine=engine, bucket_name=bucket_name)       
       
     utility.log_memory_usage() 
     elapsed_minutes = (time.time() - start_time) / 60 

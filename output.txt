@@ -1,20 +1,180 @@
+import pandas as pd
+import numpy as np
+import urllib3
+from datetime import datetime
+import logging
+import time
+from crma_hive_utilities import Utility, Read_Write_Utility
+from crma_hive_data_quality_utilities import DataQualityUtilities
+from crma_hive_connections import Connection
+from sqlalchemy.engine.base import Engine
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_known_mobius_os(
-    software_name text,
-    etl_date date,
-    mobius_id
-);
+# Turning off warnings
+urllib3.disable_warnings()
 
-GRANT SELECT ON TABLE crma_hive.crma_hive_known_mobius_os TO crmahivedb_fqt_user_role;
+from sqlalchemy.engine import Engine
 
-CREATE INDEX idx_known_mobius_id ON crma_hive.crma_hive_known_mobius_os (mobius_id);
+# Setting up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Instantiate classes
+utility = Utility()
+rw_util = Read_Write_Utility()
+connection = Connection()
+dataQualityUtils = DataQualityUtilities()
+
+def process_and_load_known_mobius_os(bucket_name: str, engine: Engine ) -> None:
+    """
+    Load the known software Mobius list (crma_hive_known_mobius_os) from S3 into Postgres to track new software names 
+    in mobius that have not been evaluated as targets for unmapped Axonius/TVM names 
+    in the OS reference map.
+
+    Steps:
+      - Read the CSV file from the landing zone in S3.
+      - Select relevant mapping columns and standardize null-like values.
+      - Archive a processed copy to S3 in Parquet format.
+      - Add ETL date and load the data into the target table in the primary DB.
+      - Load the same data into HIVE tb.
+
+    Args:
+        bucket_name: Name of the S3 bucket containing input and archive data.
+        engine: SQLAlchemy Engine connected to the primary Postgres database.
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "CRMA_HIVE_KNOWN_MOBIUS_OS"
+    prefix = "raw_data/KNOWN_MOBIUS/"
+    base_name = prefix + dataset
+
+    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "CSV") 
+
+    logger.info(f"Total records fetched: {len(df)}")
+
+    target_columns = ["software_name", "mobius_id"]
+    logger.info("Selecting target columns...")
+    
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan' ], np.nan)
+
+    logger.info("Storing a copy in S3 bucket for archival...")
+    filename =f"processed/MOBIUS/{dataset}" 
+    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
+
+    logger.info("Loading data to database...")
+    df["etl_date"] = datetime.now().date() 
+    schema="crma_hive"
+    table_name = f"{dataset.lower()}"
+    rw_util.truncate_and_load_table(
+           engine=engine, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
+
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    rw_util.truncate_and_load_table(
+           engine=engine2, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )     
 
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_known_mobius_software(
-    software_name text,
-    etl_date date,
-    mobius_product_id text
-);
+def process_and_load_known_mobius_software(bucket_name: str, engine: Engine ) -> None:
+    """
+    Load the known software Mobius list (crma_hive_known_mobius_software) from S3 into Postgres to track new software names 
+    in mobius that have not been evaluated as targets for unmapped TVM names 
+    in the software reference map.
 
-GRANT SELECT ON TABLE crma_hive.crma_hive_known_mobius_software TO crmahivedb_fqt_user_role;
-CREATE INDEX idx_known_mobius_product_id ON crma_hive.crma_hive_known_mobius_software (mobius_product_id);
+    Steps:
+      - Read the CSV file from the landing zone in S3.
+      - Select relevant mapping columns and standardize null-like values.
+      - Archive a processed copy to S3 in Parquet format.
+      - Add ETL date and load the data into the target table in the primary DB.
+      - Load the same data into HIVE tb.
+
+    Args:
+        bucket_name: Name of the S3 bucket containing input and archive data.
+        engine: SQLAlchemy Engine connected to the primary Postgres database.
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "CRMA_HIVE_KNOWN_MOBIUS_SOFTWARE"
+    prefix = "raw_data/KNOWN_MOBIUS/"
+    base_name = prefix + dataset
+
+    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "CSV")  
+
+    logger.info(f"Total records fetched: {len(df)}")
+
+    target_columns = ["software_name", "mobius_product_id"]
+    logger.info("Selecting target columns...")
+    
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan' ], np.nan)
+
+    logger.info("Storing a copy in S3 bucket for archival...")
+    filename =f"processed/MOBIUS/{dataset}" 
+    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
+
+    logger.info("Loading data to database...")
+    df["etl_date"] = datetime.now().date() 
+    schema="crma_hive"
+    table_name = f"{dataset.lower()}"
+    rw_util.truncate_and_load_table(
+           engine=engine, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
+
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    rw_util.truncate_and_load_table(
+           engine=engine2, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
+ 
+
+def main():
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    engine = connection.postgres_engine("edae-crma-hive") 
+
+    if not bucket_name:
+       raise ValueError("S3 bucket not found!")
+    
+    logger.info("Process and load known mobius software")
+    process_and_load_known_mobius_software(
+        bucket_name=bucket_name,
+        engine=engine
+    )
+    utility.log_memory_usage() 
+
+    logger.info("Process and load known mobius os")
+    process_and_load_known_mobius_os(
+        bucket_name=bucket_name,
+        engine=engine
+    )
+    utility.log_memory_usage() 
+
+    # log runtime 
+    elapsed_minutes = (time.time() - start_time)/60
+    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+
+if __name__ == "__main__":
+    main()

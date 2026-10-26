@@ -1,264 +1,1103 @@
-import boto3
-import logging
+
 import pandas as pd
-import requests
-import time
-import urllib3
-from crma_hive_connections import Connection
-from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_data_quality_utilities import DataQualityUtilities
-from datetime import datetime
-from io import StringIO
-from requests.auth import HTTPBasicAuth
-from typing import Optional, List
-import pyarrow
+import numpy as np
+from datetime import datetime, timedelta, timezone
+import logging
+import re
+import json
+import ast
+from typing import Iterable, List, Sequence, Tuple
+from typing import Optional
 
 
 
-# Turning off warnings
-urllib3.disable_warnings()
-
-# Setting up logger
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Instantiate classes
-connection = Connection()
-utility = Utility()
-rw_util = Read_Write_Utility()
-dataQualityUtils = DataQualityUtilities()
+class DataQualityUtilities:
 
+    def select_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Select subset of columns from a dataframe
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            select_cols(list[str]): Columns to keep
+        
+        Returns:
+            pd.DataFrame: Dataframe with only the select columns
+        """
 
-class NonRetryableHTTPError(Exception):
-    pass
+        missing = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        return df.loc[:, cols]
 
-def get_with_retries(
-        session: requests.Session,
-        url: str,
-        params: dict,
-        timeout: tuple,
-        max_retries: int,
-        backoff_factor: float,
-) -> List[dict]:
-    """
-    Get request with retries and exponential backoff
-    """
-    attempt = 0
-    retryable_status_codes = (429, 500, 502, 503, 504)  
+    def rename_fields(self, df: pd.DataFrame, rename_map: dict[str, str]) -> pd.DataFrame:
+        """
+        Rename columns in a dataframe
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            rename_map(dict[str, str]): Rename map
+        
+        Returns:
+            pd.DataFrame: Dataframe with renamed columns
+        """
+        logger.info("Renaming fields")
+        
+        valid_map = {old: new for old, new in rename_map.items() if old in df.columns} #Ensures to rename only existing columns
+        
+        return df.rename(columns=valid_map)
 
-    while True:
-        try:
-            resp = session.get(url, params=params, timeout=timeout, verify=False)
+    def clean_date_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean and convert date columns to ISO 8601 date format
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            date_columns(list[sr]): list of date columns 
+        
+        Rules:
+            Convert to Datime dtype
+            Replace 'TBD' values with null
+            Standardize format to 'YYYY-MM-DD'(ISO 8601)
             
-            if resp.status_code == 200:
-                result = resp.json().get("result", [])
-                if not isinstance(result, list):
-                    raise ValueError("Unexpected response format: 'result' is not a list")
-                return result 
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ2: Cleaning and standardizing  date columns to ISO 8601 format.")
+
+        missing = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            df[col] = pd.to_datetime(df[col], format='mixed', errors="coerce").dt.date    
+        
+        return df
+    
+    def normalize_date_array_fields(self, df: pd.DataFrame, cols: list[str]) ->  pd.DataFrame:
+        """
+        Normalize mixed list/scalar fields into date list/scalar fields. If list then return date sorted in DESC order.
+
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            date_columns(list[sr]): list of date columns 
             
-            if resp.status_code not in retryable_status_codes:
-                logger.error(f"Non-retryable status code {resp.status_code} received: {resp.text}")
-                raise NonRetryableHTTPError(f"Non-retryable status code: {resp.status_code}")
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying: Normalize mixed list/scalr fields into valid ISO 8601 timestamp formats")
+
+        for col in cols:
+            if col not in df.columns:
+                continue
+
+            def clean_to_list(val):
+                # handle missing data
+                if pd.isna(val) or val == "":
+                    return None
+                #turn comma-seperated string to python list
+                if isinstance(val, str) and ',' in val:
+                    val = [item.strip() for item in val.split(',')]
+
+                # force single values into a list so evertying is a list
+                if not isinstance(val, (list, tuple, np.ndarray, set)):
+                    val = [val]
+
+                # clean all elements insde list
+                parsed_series = pd.to_datetime(pd.Series(list(val)), format='mixed', errors='coerce')
+
+                # extract only vald dates
+                clean_dates = parsed_series.dropna().dt.date.tolist()
+
+                if not clean_dates:
+                    return None
                 
-            resp.raise_for_status()  
+                # sort text in desc order
+                clean_dates.sort(reverse=True)
+
+                return clean_dates
             
-        except ValueError as ve: 
-            logger.error(f"Rerutned invalid response format: {ve}")
-            raise
+            df[col] = df[col].apply(clean_to_list)
 
-        except NonRetryableHTTPError as nre: 
-            logger.error(f"Non-retryable HTTP error occurred: {nre}")
-            raise
+        return df
+
+
+    def clean_timestamp_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean and convert timestamp columns to ISO 8601 timestam format format    
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+    .        cols(list[sr]): list of timestamp columns     
+        Rules:
+            Convert to Datime dtype
+            Standardize format to 'YYYY-MM-DD HH:MM:SS'      
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying  DQ6:Cleaning and standardizing timestamp to ISO 8601 timestamp format ")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
         
-        except Exception as e:
-            attempt +=1
-            if attempt > max_retries:
-                logger.error(f"Max retries exceeded: {e}")
-                raise
+        for col in cols:
+            # print(df[col].astype(str).apply(repr).head())
+            df[col] = df[col].astype(str).str.strip()
+            # df[col] = pd.to_datetime(df[col], errors="coerce", utc=True, format="ISO8601")
+            df[col] = pd.to_datetime(df[col], errors="coerce", infer_datetime_format=True)
 
-            sleep = min(backoff_factor * (2 ** attempt), 60)  # Cap backoff at 60 seconds
-            logger.warning(f"Retry {attempt} for URL {url} with params {params} after error: {e}, sleeping for {sleep} seconds")
-            time.sleep(sleep)
 
-def fetch_cmdb_data(
-        user: str, 
-        password: str, 
-        url: str ,
-        table_name: str,
-        fields: Optional[List[str]]= None,
-        query: Optional[str] = None,
-    ) -> pd.DataFrame:
-    """
-    Fetches data from a SNOW table.
+        return df
 
-    Parameters:
-        user (str): API username
-        password (str): API user password
-        url (str): Table url
-        table_name (str): Table name
-        fields(str): Fields to fetch
-        query(str): Query to filter records records to fetch
-    Returns:
-        Pandas dataframe of the data retrieved from the table
-    """
-    # Request params
-    page_size = 1500
-    timeout = (10, 240)
-    max_retries = 5
-    backoff_factor = 1.5
+    def clean_timestamp_fields_iso8601_format(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean and convert timestamp columns to ISO 8601 timestam format format    
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+    .        cols(list[sr]): list of timestamp columns     
+        Rules:
+            Convert to Datime dtype
+            Standardize format to 'YYYY-MM-DD HH:MM:SS'      
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying  DQ6:Cleaning and standardizing timestamp to ISO 8601 timestamp format ")
 
-    session = requests.Session()
-    session.auth = HTTPBasicAuth(user, password)
-    session.headers.update({
-        "Content-Type": "application/json", 
-        "Accept": "application/json",
-        "Connection": "keep-alive",
-    })
-
-    params = {
-        "sysparm_limit": page_size,
-        "sysparm_offset": 0,
-        "sysparm_display_value": "true",
-        "sysparm_exclude_reference_link": "true",
-    }
-
-    all_records = []
-    total_fetched = 0
-    logger.info(f"Fetching data from SNOW Tables API: {url}")
-
-    while True:
-
-        records = get_with_retries(session, url,params, timeout, max_retries, backoff_factor)
-
-        if not records:
-            logger.info(f"Completed fetching records for {table_name}. Total records fetched: {total_fetched}")
-            break
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
         
-        all_records.extend(records)
-        now_fetched = len(records)
-        total_fetched += now_fetched
-        params["sysparm_offset"] += now_fetched
-        logger.info(f"Total records fetched so far: {total_fetched}")
+        for col in cols:
+            # print(df[col].astype(str).apply(repr).head())
+            df[col] = df[col].astype(str).str.strip()
+            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True, format="ISO8601")
+
+        return df
+
+    def convert_unix_timestamp_to_iso8601_format(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Converts specified columns in a DataFrame from Unix timestamp (seconds) to ISO8601 format (UTC).
+        
+        Parameters:
+            df (pd.DataFrame): The input DataFrame.
+            columns (list): List of column names to convert.
+            
+        Returns:
+            pd.DataFrame: DataFrame with converted columns.
+        """
+        logger.info("Converting Unix timestamp to ISO8601 format (UTC) ")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            df[col] = df[col].apply(
+                lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if pd.notnull(ts) else None
+            )
+        return df
+
+    def clean_int_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean numberic columns to Ingeger
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of integer columns     
+        Rules:
+            Convert valid values to Integer
+            Replace invaid or missing values with null        
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ4: Converting numeric(int) columns to Integer dtype")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        # for col in cols:
+        #     df[col] = pd.to_numeric(df[col], errors="coerce")
+        #     df[col] = df[col].astype("Int64")
+
+        for col in cols:
+            df[col] = (
+                df[col]
+                .astype("string")
+                .str.strip()
+                .str.replace(",", "", regex=False)
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = df[col].astype("Int64")
+
+        return df
+
+    def clean_float_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean numberic columns to Float
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of float columns     
+        Rules:
+            Convert valid values to Float
+            Replace invaid or missing values with null        
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ9: Converting numeric(decimal) columns to float dtype")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")  # Convert to numeric, coercing errors to NaN
+            df[col] = df[col].astype(float)  # Convert to float
+
+        return df
     
-    df = pd.DataFrame(all_records)
-    df = df.drop_duplicates(subset="sys_id", keep="first")
-
-    return df
+    def clean_name_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Validate and clean name columns 
         
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of name columns     
+        Rules:
+            Accept only valid names 
+            Quarantine records with invalid names       
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ10: Validate and clean names")
 
-def main():
-    # Creating variables
-    start_time = time.time()
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+       # name_pattern = re.compile(r"^[\w\s,'\"()-\.]+$", re.UNICODE)
+        name_pattern =re.compile(r"^(?![\d-])([a-zA-Z\s,'\"().-]+)$", re.UNICODE)
+        validity = pd.Series(True, index=df.index)        
+        for col in cols:
+            validity &= df[col].apply(lambda x: bool(name_pattern.match(str(x))))
 
-    # Set the service account user and password credentials
-    user = connection.get_secret("edae-crma-hive")["snow_username"]
-    password = connection.get_secret("edae-crma-hive")["snow_password"]
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    base_url = "https://iceserviceportal.servicenowservices.com/api/now/table"
+        #valid
+        clean_df =df[validity].copy()
 
-     # log memory usage
-    utility.log_memory_usage()
+        #invalid
+        quarantine_df = df[~validity].copy()
+        quarantine_df["errors"] = "invalid name"
 
-    tables = [
-
-        {
-          "name": "cmdb_ci_computer", 
-          "output_filename": "CRMA_HIVE_CMDB_CI_COMPUTER",
-          "fields": [
-                        "operational_status", "sys_updated_on", "discovery_source", "first_discovered", "u_tenable_repository_name", "used_for",
-                        "object_id", "short_description", "managed_by", "os_domain", "last_discovered", "sys_class_name", "manufacturer", "u_last_login_user_account",
-                        "assigned_to", "os_version", "serial_number", "correlation_id", "unverified", "u_last_logon_timestamp", "asset", "sys_created_on",
-                        "asset_tag", "fqdn", "u_fisma_id", "internet_facing", "hardware_status", "install_status", "name", "subcategory", "default_gateway",
-                        "virtual", "sys_id", "sys_class_path", "u_discovered_location", "u_fisma_data_call_response_item", "os", "attestation_status",
-                        "ip_address", "model_id", "u_active_directory_ou", "category"            
-                    ],   
-        },  
-        {
-          "name": "cmdb_ci_server", 
-          "output_filename": "CRMA_HIVE_CMDB_CI_SERVER",
-          "fields": [
-                        "operational_status", "sys_updated_on", "first_discovered", "sys_created_by", "object_id", "dns_domain", "short_description", "managed_by", 
-                        "last_discovered", "sys_class_name", "manufacturer", "u_last_login_user_account", "assigned_to", "os_version", "u_resourceid", 
-                        "x_g_dh5_axonius_in_axonius_id", "correlation_id", "asset", "u_username", "sys_created_on", "asset_tag", "fqdn", "u_fisma_id", "name", 
-                        "subcategory", "virtual", "sys_id", "os", "ip_address", "model_id", "u_active_directory_ou", "host_name",                        
-                    ],   
-        },   
-        {
-          "name": "cmdb_ci_database", 
-          "output_filename": "CRMA_HIVE_CMDB_CI_DATABASE",
-          "fields":[
-                        "operational_status","sys_updated_on",  "type", "first_discovered", "sys_updated_by", "sys_created_on", "sys_created_by", "short_description", "asset_tag", "fqdn",
-                        "u_fisma_id", "owned_by", "install_status", "name", "life_cycle_stage", "managed_by", "last_discovered", "sys_class_name", "manufacturer", "sys_id",
-                        "life_cycle_stage_status", "serial_number", "ip_address", "correlation_id",                                               
-                    ],     
-        },
-        { 
-          "name": "cmdb_ci_network", 
-          "output_filename": "CRMA_HIVE_CMDB_CI_NETWORK",
-          "fields": [
-                        "operational_status", "sys_updated_on", "first_discovered", "state", "sys_created_by", "sys_created_on", "owned_by", "object_id", "short_description", "last_discovered", "sys_class_name",
-                        "manufacturer", "life_cycle_stage_status", "cidr", "serial_number", "is_dhcp_enabled", "correlation_id", "asset", "asset_tag",  "fqdn", "u_fisma_id",
-                        "broadcast_address", "install_status", "name", "default_gateway", "sys_id", "netmask", "mac_address", "ip_address", "model_id", "sys_tags",
-                                         
-                    ],    
-        },  
-        {
-          "name": "cmdb_ci_vm_instance", 
-          "output_filename": "CRMA_HIVE_CMDB_CI_VM_INSTANCE",
-          "fields": [
-                        "operational_status", "sys_updated_on",  "first_discovered", "vm_inst_id", "state", "sys_created_by", "sys_created_on", "owned_by", "object_id", "life_cycle_stage",
-                        "short_description", "last_discovered", "sys_class_name", "manufacturer", "life_cycle_stage_status", "vendor", "serial_number",
-                        "correlation_id", "asset", "sys_updated_by", "fqdn", "u_fisma_id", "install_status", "name", "sys_id", "ip_address", "sys_tags",                        
-                    ],   
-        },  
-        {
-          "name": "cmdb_ci_service", 
-          "output_filename": "CRMA_HIVE_CMDB_CI_SERVICE",
-          "fields": [
-                        "operational_status", "u_application_criticality","sys_updated_on", "first_discovered", "number", "used_for", "u_description", "service_status", "portfolio_status", "u_test_environment_exists", 
-                        "busines_criticality", "u_fisma_id1", "last_discovered", "u_program_office", "sys_class_name", "u_fips_199_security_categorization_overall", "u_csam_id",
-                        "u_security_group", "u_number_of_users_supported", "sys_created_on", "u_fisma_id", "name", "sys_id", "u_asb_managed", "service_classification",                                                 
-                    ],   
-        },      
-    ]
-
+        return clean_df, quarantine_df
     
-    for table in tables:
-        # Creating variable names
-        table_name = table["name"]
-        table_url = f"{base_url}/{table_name}"
-        output_filename = table["output_filename"]
-        fields = table["fields"]
+    def clean_email_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Validate and clean email columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of name columns     
+        Rules:
+            Accept only valid names 
+            Add invalid to warnning, and replace with null        
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ11: Validate and clean emails")
 
-        df = fetch_cmdb_data(
-            user=user, 
-            password=password, 
-            url=table_url,
-            table_name=table_name,
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        clean_df = df.copy()
+        email_pattern = re.compile( r"^(?!\.)[a-zA-Z0-9._%+'-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+        validity = pd.Series(True, index=df.index)       
+        for col in cols:
+            col_valid = df[col].apply(lambda x: bool(email_pattern.match(str(x))) if pd.notnull(x) else False)
+            validity &= col_valid
+            clean_df.loc[~col_valid, col] = None
+
+        warning_df =df[~validity].copy()
+        warning_df["warnings"] = "invalid email"
+
+        return clean_df, warning_df
+      
+    def normalize_boolean_fields(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Normalize boolean columns and make dtype boolean
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            cols(list[sr]): list of boolean columns     
+        Rules:
+            Convert valid values values to True/False, make dtype boolean
+            Replace invaid or missing values with null        
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ3: Normalizing boolean columns")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        for col in cols:
+            df[col]=(
+                df[col]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .map({"true": True, "false": False})
+                .astype("boolean")
+            )
+
+        return df
+
+    def remove_html_tags(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """
+        Clean columns with html tags
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            html_columns(list[sr]): list of columns values with html tags
+        Rules:
+            Remove HTML tags
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Apply DQ5: Removing HTML tags .")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        html_tag_re = re.compile(r"<.*?>")
+        def strip_tags(value):
+            if pd.isna(value):
+                return pd.NA
+            text = re.sub(html_tag_re, "", str(value))
+            return " ".join(text.split()) if text.strip() else pd.NA
+            
+        for col in cols:
+            df[col] = df[col].apply(strip_tags).astype("string")
+
+        return df
+
+    def flatten_json_object(self, df: pd.DataFrame, col: str, key: str) -> pd.DataFrame:
+        """
+        Flatten json objects 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            col(str): Column with json value
+            key(str): the key to the select value
+        Rules:
+            Flatten json to selected field
+        Returns:
+            pd.DataFrame: Cleaned dataframe
+        """
+        logger.info("Applying DQ7: Flattening JSON objects")
+
+        if col not in df.columns:
+            logger.error(f"Column {col} not in dataset")
+            raise KeyError(f"Column {col} not in dataset")
+    
+        def extract_key(value):
+            if pd.isna(value):
+                return pd.NA
+            
+            if isinstance(value, dict):
+                return value.get(key, pd.NA)
+            
+            if isinstance(value, str):
+                val = value.strip()
+                try:
+                    obj = json.loads(val)
+                    if isinstance(obj, dict):
+                        return obj.get(key, pd.NA)
+                except json.JSONDecodeError:
+                    pass
+                
+                try:
+                    obj = ast.literal_eval(val)
+                    if isinstance(obj, dict):
+                        return obj.get(key, pd.NA)
+                except Exception:
+                    return pd.NA
+                
+            return pd.NA
+        
+        df[col] = df[col].apply(extract_key).astype("string") 
+
+        return df
+
+    def flatten_nested_columns(
+            self,
+            df: pd.DataFrame, 
+            cols_to_pars: dict
+            ) -> pd.DataFrame:
+        """
+        Flattens specified nested dictionary columns in a DataFrame.
+
+        Args:
+            df (pd.DataFrame): Input DataFrame containing nested dictionary columns.
+            cols_to_pars (dict): Mapping of parent column names to lists of child field names.
+
+        Returns:
+            pd.DataFrame: DataFrame with new flattened columns and original parent columns removed.
+
+        """
+        logger.info("Flattening nested dictionary columns.")
+
+        for parent_col, child_cols in cols_to_pars.items():
+            if parent_col not in df.columns:
+                raise KeyError(f"Column '{parent_col}' not found in DataFrame.")
+            
+            for child_col in child_cols:
+                new_col_name = f"{parent_col}_{child_col}"
+                df[new_col_name] = df[parent_col].apply(
+                    lambda x: x.get(child_col) if isinstance(x, dict) else None
+                )
+        df = df.drop(columns=list(cols_to_pars.keys()))
+        return df
+
+    def apply_not_nullable_q_constraint(self, df: pd.DataFrame, cols: list[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Enforce not nullable constariant on the given columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            not_nullable_columns: list[str]: List of not nullable columns
+        Rules:
+            Raws with null values are removed from df and sent to quarentine_df
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame]: clean and quarantine dataframes 
+        """
+        logger.info("Applying DQ1: Enforcing Not Nullable constainst ")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+        
+        quarantine_df = df[df[cols].isnull().any(axis=1)].copy()
+        quarantine_df['errors'] = quarantine_df[cols].apply(lambda row: 'null values in ' + ', '.join([col for col in cols if pd.isnull(row[col])]), axis=1) 
+
+        cleaned_df = df.dropna(subset=cols).copy()
+
+        return cleaned_df, quarantine_df
+
+    def apply_not_nullable_w_constraint(self, df: pd.DataFrame, cols: list[str]) ->  pd.DataFrame:
+        """
+        Enforce not nullable constariant on the given columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            not_nullable_columns: list[str]: List of not nullable columns
+        Rules:
+            Raws with null are copied to warning_df
+        Returns:
+            pd.DataFrame: Warnning dataframes 
+        """
+        def _is_val_null(val):
+            if isinstance(val, (list, np.ndarray)):
+                return all(pd.isnull(val)) 
+            return pd.isnull(val)
+
+        logger.info("Applying DQ1 W: Enforcing Not Nullable warnning constraint ")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+                
+        warning_df = df[df[cols].isnull().any(axis=1)].copy()
+        warning_df['warnings'] = warning_df[cols].apply(lambda row: 'null values in ' + ', '.join([col for col in cols if _is_val_null(row[col])]), axis=1) 
+
+        return warning_df
+
+    def apply_no_duplicates_constraint(self, df: pd.DataFrame, cols: list[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Enforce no duplicates constaint on the given columns 
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+            not_nullable_columns: list[str]: List of not nullable columns
+        Rules:
+            Records with duplicate values in these columns will be removed from df and sent to quarentine_df
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame]: clean and quarantine dataframes 
+        """
+        logger.info("Applying DQ0: Enforcing no duplicates constainst ")
+
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+
+        duplicate_masks = {col: df.duplicated(subset=[col], keep=False) for col in cols}
+        duplicate_mask = pd.concat(duplicate_masks.values(), axis=1).any(axis=1)
+
+        cleaned_df = df[~duplicate_mask].copy()
+        quarantine_df = df[duplicate_mask].copy()
+
+        def find_duplicate_columns(row):
+            duplicate_columns = [col for col in cols if duplicate_masks[col].get(row.name, False)]
+            if duplicate_columns:
+                return 'duplicates in ' + ', '.join(duplicate_columns)
+            else:
+                return ''
+
+        quarantine_df['errors'] = quarantine_df.apply(find_duplicate_columns, axis=1)
+
+        cleaned_df = df[~duplicate_mask].copy()
+        
+    
+        return cleaned_df, quarantine_df
+    
+    def clean_column_names(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Cleans and converts df columns names to confirm valid columns naming convension
+        
+        Parameters:
+            df(pd.DataFrame): Input dataframe
+        Rules:
+            Convert to lower case
+            Replace spaces and special characters by '_'
+            Remove consecutive underscoures 
+            Strip leadin/trailing underscores
+        Returns:
+            pd.DataFrame: Warnning dataframes 
+        """
+        
+        def _clean_name(name):
+            name = name.lower()
+            name = name.replace(" ", "_")
+            name = re.sub(r"[^\w]", "_", name)
+            name = re.sub(r"__+", "_", name)
+            name = name.strip("_")
+            return name
+
+        df.columns = [_clean_name(col) for col in df.columns]
+        return df
+
+    def column_has_mixed_list_and_scalar(self, col: pd.Series) -> bool:
+        """
+        Checks if column has mixed list and scalar values
+        
+        Parameters:
+            col(pd.Series): Input column
+        Rules:
+            If mixed values return true else 
+        Returns:
+            bool: flag 
+        """ 
+        has_list = False
+        has_scalar = False
+        for val in col:
+            if isinstance(val, list):
+                has_list = True
+            elif pd.notnull(val):
+                has_scalar = True
+            if has_list and has_scalar:
+                return True
+        return False
+    
+    def ensure_list(self, val: str) -> str:
+        """
+        Checks if column has mixed list and scalar values
+        
+        Parameters:
+            val(str): Input value
+        Rules:
+            If scalar convert to list
+        Returns:
+            str: value in list format 
+        """
+        if isinstance(val, list):
+            return val
+        elif pd.isnull(val):
+            return pd.NA  
+        else:
+            return [val]
+        
+    def convert_arrays_for_postgres(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Converts columns containing lists or numpy arrays in a pandas DataFrame to PostgreSQL array literal strings,
+        with proper escaping of special characters. Scalar values and nulls are left unchanged.
+
+        This transformation ensures compatibility when inserting data into PostgreSQL array fields.
+        Lists and arrays are converted to strings in the format: {"elem1","elem2",...}.
+        Escapes backslashes and double quotes in array elements.
+
+        Args:
+            df (pd.DataFrame): The input DataFrame to process.
+
+        Returns:
+            pd.DataFrame: The DataFrame with array columns converted to PostgreSQL array literal strings.
+        """
+        
+        logger.info("Converting Lists or numpy arrays to postgresql.")
+
+        def _to_pg_array(val):
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                return None
+            if isinstance(val, (list, np.ndarray)):
+                def _escape_elem(x):
+                    s = str(x)
+                    s = s.replace('\\', '\\\\').replace('"', '\\"')
+                    return f'"{s}"'
+                return '{' + ','.join(_escape_elem(x) for x in val) + '}'
+            return val 
+
+        for col in df.columns:
+            if df[col].apply(lambda x: isinstance(x, (list, np.ndarray))).any():
+                df[col] = df[col].apply(_to_pg_array).astype('object')
+        return df   
+    
+    def remove_non_printable_chars(self, val): 
+        """
+        Recursively removes all non-printable characters including NUL, ASCII control codes
+        from strings, lists, and numpy arrays to ensure compatibility with PostgreSQL text fields.
+
+        Examples of removed characters include: NUL ('\\x00'), tab ('\\x09'), newline ('\\x0A'), carriage return ('\\x0D'), 
+        and other ASCII control codes in the ranges '\\x00'-'\\x1F' and '\\x7F'-'\\x9F'.
+
+        Args:
+            val: A string, list, numpy array, or other value.
+
+        Returns:
+            The input value with non-printable characters removed from any contained strings.
+        """
+        if isinstance(val, str):
+            return re.sub(r'[\x00-\x1F\x7F-\x9F]', '', val)
+        elif isinstance(val, list):
+            return [self.remove_non_printable_chars(x) for x in val]
+        elif isinstance(val, np.ndarray):
+            return np.array([self.remove_non_printable_chars(x) for x in val])
+        return val
+
+
+    def extract_assest_credential_check(self, df: pd.DataFrame, output_col: str) -> pd.DataFrame:
+        """
+        Enrich df with:
+            - credential_check: 'yes'/'no' (string) or NaN
+            - scan_start_date: pandas.Timestamp or NaT
+
+        The function:
+        - operates in-place on df
+        - drops the original details_col
+        - returns df for convenience
+        """
+        logger.info("Extract credential check info from vulns->output field.")
+
+        if output_col not in df.columns:
+            raise KeyError(f"Column '{output_col}' not found in DataFrame.")
+
+        # Compile regexes (case-insensitive)
+        cred_pattern = re.compile(
+            r"credential\w*\s*checks?\s*:\s*(yes|no)\b",
+            flags=re.IGNORECASE,
+        )
+        date_pattern = re.compile(
+            r"scan\s*start\s*date\s*:\s*(.+)",
+            flags=re.IGNORECASE,
+        )
+
+        details_series = df[output_col].astype("string")
+
+        # Extract credential yes/no
+        df["credential_check"] = (
+            details_series.str.extract(cred_pattern, expand=False).str.lower()
+        )
+
+        # Extract and parse scan start date
+        df["scan_start_date"] = (
+            details_series.str.extract(date_pattern, expand=False).str.lower()
         )
         
-        #Select target columns, if specified 
-        if fields:
-            df = dataQualityUtils.select_fields(df, fields)
+        # Drop the original details column
+        df.drop(columns=[output_col], inplace=True)
 
-        # Store in S3 bucket
-        full_filename = "raw_data/CMDB/" + output_filename
-        rw_util.load_to_s3(bucket_name, df, full_filename, "PARQUET" )
+        return df
 
-        # # store csv - for testing purposes only 
-        # temp_filename = "test/raw/CMDB/" + output_filename
-        # rw_util.load_to_s3(bucket_name, df, temp_filename, "CSV")
+
+    def extract_timestamp(self, df: pd.DataFrame, col: str) -> pd.DataFrame:
+        """
+        Convert a string timestamp column with values like:
+            '2026/4/17 8:44 central standard time (utc -05:00)'
+            '2026/4/17 5:17 utc '
+        into ISO 8601 UTC strings, in-place on `col`.
+
+        After running, df[col] will contain strings like:
+            '2026-04-17T13:44:00Z'
         
-        # # save json file locally for data profiling 
-        # json_file =f"{output_filename}.json"
-        # df.to_json(json_file, orient="records",indent=4)
+        """
+        logger.info("Extract timestamp from date&time string.")
 
-        utility.log_memory_usage() 
+        if col not in df.columns:
+            raise KeyError(f"Column '{col}' not found in DataFrame.")
 
-    elapsed_minutes = (time.time() - start_time) / 60
-    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+        # Example patterns:
+        # '2026/4/17 8:44 central standard time (utc -05:00)'
+        # '2026/4/17 5:17 utc '
+        dt_pattern = re.compile(r'^\s*(\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2})', re.IGNORECASE)
+        offset_pattern = re.compile(r'\(utc\s*([+-]\d{2}:\d{2})\)', re.IGNORECASE)
+
+        def _parse_single(value):
+            if pd.isna(value):
+                return pd.NaT
+
+            text = str(value).strip()
+
+            # 1) Extract the date & time part: '2026/4/17 8:44'
+            m_dt = dt_pattern.search(text)
+            if not m_dt:
+                return pd.NaT
+            dt_part = m_dt.group(1)
+
+            # 2) Extract UTC offset from '(utc -05:00)', or fall back to 'utc' = +00:00
+            m_off = offset_pattern.search(text)
+            if m_off:
+                offset = m_off.group(1)  # e.g. '-05:00'
+            else:
+                # If offset info not provided, it is utc time
+                offset = '+00:00'
+
+            # 3) Build a parseable string and convert to UTC
+            try:
+                ts = pd.to_datetime(f"{dt_part} {offset}", format="%Y/%m/%d %H:%M %z")
+                ts_utc = ts.tz_convert("UTC")
+                return ts_utc
+            except Exception:
+                return pd.NaT
+
+        # Parse to timezone-aware UTC
+        ts_utc_series = df[col].apply(_parse_single)
+
+        # Format as ISO 8601 with 'Z' suffix
+        df[col] = ts_utc_series.dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        return df
+
+    def exclude_old_records(self, df: pd.DataFrame, timestamp_col: str, days: int) -> pd.DataFrame:
+        """
+            Filter a DataFrame in-place to keep rows where `timestamp_col` is within the past `days` days.
+
+            Args:
+                df (pd.DataFrame): The DataFrame to filter.
+                timestamp_col (str): Name of the column containing timestamps.
+                days (int): Number of days to look back from the current time.
+
+            Returns:
+                pd.DataFrame: The filtered DataFrame with only records within the past `days` days.
+
+            """       
+        logger.info("Exclude old records.")
+
+        if timestamp_col not in df.columns:
+            raise ValueError(f"Column '{timestamp_col}' not found in DataFrame.")
+        if not isinstance(days, int) or days <= 0:
+            raise ValueError("days must be a positive integer.")
+        
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors='coerce', utc=True)         
+        df.drop(df[df[timestamp_col].isna()].index, inplace=True)
+        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+        df.drop(df[df[timestamp_col].dt.date < cutoff_date].index, inplace=True)
+
+        return df
+    
+
+    def dedup_records(self, df: pd.DataFrame, dedup_col: str, timestamp_col: str) -> pd.DataFrame:
+        """
+        For each duplicate in `dedup_col`, keep only the row with the latest `timestamp_col`.
+
+        Args:
+        df (pd.DataFrame): The DataFrame to filter.
+        dedup_col (str): Name of the column containing IDs to deduplicate.
+        timestamp_col (str): Name of the column containing timestamps.
+
+        Returns:
+            pd.DataFrame: DataFrame with only the latest record per ID.
+        """
+        logger.info("Removing duplicates.")
+
+        if timestamp_col not in df.columns:
+            raise ValueError(f"Column '{timestamp_col}' not found in DataFrame.")
+        if dedup_col not in df.columns:
+            raise ValueError(f"Column '{dedup_col}' not found in DataFrame.")
+
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors='coerce', utc=True)
+        df = df.drop(df[df[timestamp_col].isna()].index)
+        df = df.sort_values(by=timestamp_col, ascending=False) 
+        df = df.drop_duplicates(subset=dedup_col, keep='first')
+        df = df.reset_index(drop=True)
+
+        return df
+
+    def flatten_string_list_columns(self, df, cols):
+        """
+        Flatten list/array-like values in the specified columns into strings.
+        """
+
+        missing = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+
+        def flatten_value(x):
+
+            # NumPy array
+            if isinstance(x, np.ndarray):
+                return ",".join(map(str, x.tolist()))
+
+            # Python list/tuple/set
+            if isinstance(x, (list, tuple, set)):
+                return ",".join(map(str, x))
+
+            # Already a scalar (string, etc.)
+            return x
+
+        for col in cols:
+            df[col] = df[col].apply(flatten_value)
+
+        return df
+
+    def standardize_sscg_scorecard(self, df: pd.DataFrame, column: str = 'scorecard') -> pd.DataFrame:
+        """
+        Standardizes the values in the specified column of a DataFrame to:
+        - 'Required for Scorecard'
+        - 'Not Required for Scorecard'
+        All other values are set to None.
+
+        Args:
+            df (pd.DataFrame): The DataFrame to process.
+            column (str): The column name to standardize. Default is 'status'.
+
+        Returns:
+            pd.DataFrame: The DataFrame with the standardized column.
+        """
+        def standardize(val):
+            v = str(val).strip().lower()
+            if 'required for scorecard' in v:
+                if 'not' in v:
+                    return 'Not Required for Scorecard'
+                else:
+                    return 'Required for Scorecard'
+            else:
+                return None
+        df[column] = df[column].apply(standardize)
+        return df
 
 
+    def normalize_software_name(
+            self, 
+            manufacturer: str, 
+            product: str
+        ) -> str:
+        """
+        Normalize a software name from manufacturer and product.
 
-if __name__ == "__main__":
-    main()
+        Steps:
+        - Combine manufacturer and product into a single string.
+        - Convert to lowercase.
+        - Replace hyphens and underscores with spaces.
+        - Remove non-alphanumeric characters except spaces.
+        - Remove corporate suffixes (e.g., inc, corp, llc).
+        - Collapse multiple spaces and trim leading/trailing spaces.
+
+        Args:
+            manufacturer: Software manufacturer/vendor name.
+            product: Software product name.
+
+        Returns:
+            A normalized software name as a single lowercase string.
+        """
+        corp_suffixes = [
+        'inc', 'corp', 'llc', 'ltd', 'co', 'company', 'corporation', 'plc', 'gmbh', 'ag', 'sa', 'bv', 'sarl', 'oy', 'pte', 'limited'
+        ]
+
+        name = f"{manufacturer} {product}"
+        name = name.lower()      # Lowercase
+        name = re.sub(r'[-_]', ' ', name)       # Replace hyphens and underscores with spaces
+        name = re.sub(r'[^a-z0-9 ]', '', name)       # Remove special characters except spaces
+        for suffix in corp_suffixes:                   # Remove corporate suffixes
+            name = re.sub(rf'\b{suffix}\b', '', name)
+        name = re.sub(r'\s+', ' ', name).strip()        # Clean up extra spaces
+
+        return name
+
+    def normalize_version(
+            self,
+            version: Optional[str]
+        ) -> Optional[str]:
+        """
+        Normalize a version string into a simplified form.
+
+        Behavior:
+        - Accepts None or empty strings and returns None.
+        - Strips whitespace.
+        - If a colon (:) is present, keeps only the part before the first colon
+            (e.g., "2.24.3:extra" -> "2.24.3").
+        - Splits on dots (.) and keeps only the first one or two segments:
+            - "2.24.3"   -> "2.24"
+            - "2.24"     -> "2.24"
+            - "2"        -> "2"
+        - Returns None if there is no usable content after normalization.
+
+        Args:
+            version: Raw version string (may be None).
+
+        Returns:
+            A simplified version string (e.g., "2.24") or None if not applicable.
+        """
+        if not version:
+            return None
+
+        v = str(version).strip()
+        if not v:
+            return None
+
+        # Keep only the part before the first colon
+        v = re.split(r":", v)[0].strip()
+        if not v:
+            return None
+
+        parts = v.split(".")
+        if len(parts) >= 2:
+            return f"{parts[0]}.{parts[1]}"
+        elif parts:
+            return parts[0]
+        else:
+            return None
+        
+    def flatten_boolean_array_columns(self, df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+        """
+        Flattens specified boolean array columns in a DataFrame to single boolean or None.
+        Returns a DataFrame with the columns updated.
+        """
+        missing  = set(cols) - set(df.columns)
+        if missing:
+            logger.error(f"Missing columns: {missing}")
+            raise KeyError(f"Required columns missing: {missing}")
+
+        def flatten(arr: List[bool]) -> Optional[bool]:
+            return arr[0] if arr else None
+
+        for col in cols:
+            df[col] = df[col].apply(flatten)
+        return df
+    
+
+    def normalize_tvm_os(self, df: pd.DataFrame, raw_os_col: str) -> pd.DataFrame:
+        """
+        Given a DataFrame and the column name containing raw_os,
+        returns a DataFrame with a new normalized_tvm_os column (all lower case).
+        """
+        def _parse(val):
+            """
+            Parses a raw_os value that may be a string, list, or PostgreSQL array.
+            Returns a list of OS description strings.
+            """
+            if isinstance(val, str):
+                val = val.strip()
+                # Handle PostgreSQL array-like string: {"item1","item2"}
+                if val.startswith('{') and val.endswith('}'):
+                    inner = val[1:-1]
+                    items = re.findall(r'"([^"]+)"', inner)
+                    if items:
+                        return [item.strip() for item in items]
+                    return [item.strip().strip('"') for item in inner.split(',')]
+                # Try to parse as Python list
+                try:
+                    parsed = ast.literal_eval(val)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed]
+                except Exception:
+                    pass
+                return [val]
+            elif isinstance(val, list):
+                return [str(x).strip() for x in val]
+            else:
+                return [str(val).strip()]
+
+        def _normalize(entry):
+            """
+            Normalizes a single OS description string and returns it in lower case.
+            """
+            entry = entry.strip().lower()
+
+            # Windows Server
+            ws_match = re.search(r'windows server (\d{4})', entry)
+            if ws_match:
+                return f'windows server {ws_match.group(1)}'
+            if 'windows server 2012 r2' in entry:
+                return 'windows server 2012 r2'
+            if 'windows server 2008 r2' in entry:
+                return 'windows server 2008 r2'
+
+            # Generic Windows version
+            win_match = re.search(r'windows (11|10|8|7|vista|xp)', entry)
+            if win_match:
+                return f'windows {win_match.group(1)}'
+
+            # Red Hat Enterprise Linux
+            rh_match = re.search(r'red hat enterprise linux (\d+\.\d+)', entry)
+            if rh_match:
+                return f'linux red hat {rh_match.group(1)}'
+
+            # CentOS Linux
+            centos_match = re.search(r'centos linux (\d+\.\d+)', entry)
+            if centos_match:
+                return f'linux centos {centos_match.group(1)}'
+
+            # Ubuntu Linux
+            ubuntu_match = re.search(r'ubuntu(?: linux)? (\d+\.\d+)', entry)
+            if ubuntu_match:
+                return f'ubuntu linux {ubuntu_match.group(1)}'
+
+            # Debian Linux
+            debian_match = re.search(r'debian(?: gnu\/linux| linux)? (\d+\.\d+|\d+)', entry)
+            if debian_match:
+                return f'debian linux {debian_match.group(1)}'
+
+            # Linux Kernel X.Y or X.x
+            kernel_match = re.search(r'linux kernel (\d+\.\d+|[1-9]\.x)', entry)
+            if kernel_match:
+                return f'linux kernel {kernel_match.group(1)}'
+
+            return None  # Use None for unknowns
+
+        def _execute(val):
+            if val is None or (isinstance(val, float) and np.isnan(val)) or val == '' or val == []:
+                return np.nan
+            items = _parse(val)
+            if not items or items == ['']:
+                return np.nan
+            for item in items:
+                norm = _normalize(item)
+                if norm:
+                    return norm.lower()
+            # If none matched, return joined string or np.nan
+            joined = ', '.join([str(i).strip().lower() for i in items if str(i).strip()])
+            return joined if joined else np.nan
+
+        df = df.copy()
+        df['normalized_tvm_os'] = df[raw_os_col].apply(_execute)
+        return df

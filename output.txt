@@ -1,21 +1,17 @@
+import boto3
 import logging
-
 import pandas as pd
+import requests
+from requests.exceptions import RequestException
 import time
-from datetime import datetime, date
-import re
-import ast
-from typing import List, Tuple
-import numpy as np
-
-
 import urllib3
-
-from crma_hive_data_quality_utilities import DataQualityUtilities
 from crma_hive_connections import Connection
 from crma_hive_utilities import Utility, Read_Write_Utility
-
-from sqlalchemy.engine import Engine
+from crma_hive_data_quality_utilities import DataQualityUtilities
+from datetime import datetime
+from io import StringIO
+from typing import Optional, List
+import pyarrow
 
 # Turning off warnings
 urllib3.disable_warnings()
@@ -24,179 +20,1231 @@ urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-utility = Utility()
+# Instantiate classes
 connection = Connection()
+utility = Utility()
 rw_util = Read_Write_Utility()
 dataQualityUtils = DataQualityUtilities()
 
-MAIN_SCHEMA = rw_util.MAIN_SCHEMA
 
+class NonRetryableHTTPError(Exception):
+    pass
 
-def load_to_db_and_perform_post_load_validation(
-        engine: Engine,
-        df: pd.DataFrame,
-        table: str, 
-) -> None:
+def get_data_with_retries(
+        url: str ,
+        headers: dict, 
+        payload: dict
+    ) -> pd.DataFrame:
     """
-    Loads data to desttination database
-    
-    Parameters:
-        engine (create_engine): Database connection engine
-        df (pd.DataFrame):
-        schema (str):
-        table (str):
-        load_control_table (str):
-    """
-    logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")
-
-    rw_util.bulk_truncate_and_load_with_copy(
-        engine=engine,
-        df=df,
-        schema=MAIN_SCHEMA,
-        target_table=table
-    )
-    logger.info(f"Perfomming post load validation on table '{table}' in '{MAIN_SCHEMA}' schema")
-    if rw_util.post_load_validation(
-            engine=engine,
-            df=df,
-            schema_name=MAIN_SCHEMA,
-            table_name=table
-        ): 
-        logger.info(f"Post load validation check passed for table '{table}' in '{MAIN_SCHEMA}' schema")
-
-        ##Parallel loading##
-        logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-        logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")     
-        engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-        rw_util.bulk_truncate_and_load_with_copy(
-            engine=engine2,
-            df=df,
-            schema=MAIN_SCHEMA,
-            target_table=table
-         )
-         
-    else:
-        raise RuntimeError(f"Post load validation check failed for {table} in '{MAIN_SCHEMA}' schema")
-        
-def archive_to_s3(
-        df: pd.DataFrame,
-        bucket_name: str,
-        dataset: str
-)->None:
-    """
-    Load dataset to s3
-    params:
-        df: dataset to store
-        bucket_name: s3 bucket name
-        dataset: dataset name
-    return:
-        None
-    """
-    logger.info("Load device score copy for to S3 for archival")
-    filename = f"processed/TVM/{dataset.upper()}"
-    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET") 
-
-    # # **Uncomment the following to save as CSV for testing**
-    # filename = f"test/raw/SCORECARD/{dataset.upper()}"
-    # rw_util.load_to_s3(bucket_name ,df, filename, "CSV")
-    # ## 
-
-CORPORATE_SUFFIXES = [
-    'inc', 'corp', 'llc', 'ltd', 'co', 'company', 'corporation', 'plc', 'gmbh', 'ag', 'sa', 'bv', 'sarl', 'oy', 'pte', 'limited'
-]
-
-def build_os_fetch_query() -> str:
-    """
-    Build query to fetch input fields from the tvm_assets table
-    """
-    sql = f"""
-        SELECT 
-            id AS asset_id, 
-            operating_systems AS tvm_os 
-        FROM crma_hive.crma_hive_tvm_assets
-    """
-    return sql
-
-
-def execute_workflow(
-        engine: Engine,
-        bucket_name: str,
-    ) -> None:
-    """
-    Run the TVM  OS normalization workflow.
-
-    - Query OS data from the source database.
-    - Parse and Normalize operating systems field
-    - Upsert into target table 
-    - Archive a copy to S3.
-
-    Args:
-        engine: SQLAlchemy Engine for Postgres database.
-        bucket_name: S3 bucket used for archival copies.
+    Fetch data from an API using session.post() with retries and exponential backoff.
+    Returns a pandas DataFrame.    Parameters:
+        url (str): api url
+        headers (dict): api request headers
+        payload (dict): api request payload
+    Returns:
+        Pandas dataframe of the data retrieved 
     """
 
-    logger.info("Build query.")
-    sql = build_os_fetch_query()
+    retryable_status_codes = (429, 500, 502, 503, 504)
+    timeout = (10, 720)
+    max_retries = 5
+    backoff_factor=1.5
 
-    logger.info("Excecute query.")
-    df= rw_util.query_postgres_to_dataframe(
-        engine=engine,
-        sql_query=sql
-    )
+    with requests.Session() as session:
+        attempt = 0
+        while True:
+            try:
+                response = session.post(url, headers=headers, json=payload, verify=False, timeout=timeout)
+                status = response.status_code
 
-    logger.info("Normalize TVM operating systems")
-    df = dataQualityUtils.normalize_tvm_os(df, "tvm_os")
+                if status == 200:
+                    data = response.json()["assets"]
+                    df = pd.DataFrame(data)
+                    return df
 
-    df["etl_date"] = datetime.now().date() 
+                if status not in retryable_status_codes:
+                    logger.error(f"Non-retryable status code {response.status_code} received: {response.text}")
+                    raise NonRetryableHTTPError(f"Non-retryable error: {response.status_code}")
 
-    logger.info("Load to database")
-    table="crma_hive_tvm_normalized_os"
-    rw_util.truncate_and_load_table(
-        engine=engine,
-        df=df,
-        schema_name=MAIN_SCHEMA,
-        table_name=table,
-        exist_type="append"
-    )
-    
-    ##Parallel loading##
-    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")     
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    rw_util.truncate_and_load_table(
-        engine=engine2,
-        df=df,
-        schema_name=MAIN_SCHEMA,
-        table_name=table,
-        exist_type="append"
-    )
+                response.raise_for_status()
 
-    logger.info(f"Total records loaded to DB : {len(df)}")
+            except NonRetryableHTTPError as nre: 
+                logger.error(f"Non-retryable HTTP error occurred: {nre}")
+                raise
 
-    logger.info("Save a copy to S3 for archival")
-    archive_to_s3(
-        df=df,
-        bucket_name=bucket_name,
-        dataset=table
-    )
-
-           
+            except Exception as e:
+                attempt += 1
+                if attempt > max_retries:
+                    raise Exception(f"Max retries exceeded. Last error: {e}")
+                sleep = min(backoff_factor * (2 ** (attempt - 1)), 60)  # Cap at 60 seconds
+                print(f"Attempt {attempt} failed: {e}. Retrying in {sleep:.1f} seconds...")
+                time.sleep(sleep)
 
 def main():
-
+    # Creating variables
     start_time = time.time()
-    utility.log_memory_usage() 
 
+    # Set the service account user and password credentials
+    API_KEY = connection.get_secret("edae-crma-hive")["axonious_key"]
+    API_SECRET = connection.get_secret("edae-crma-hive")["axonious_secret"]
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    engine = connection.postgres_engine("edae-crma-hive") 
+    base_url ="https://axonius.ice.dhs.gov/api/v2"
 
-    execute_workflow(engine=engine, bucket_name=bucket_name)
+    # log memory usage
+    utility.log_memory_usage()
 
-      
-    utility.log_memory_usage() 
+    #setup
+    HEADERS = {
+        'accept': 'application/json',
+        'content-type': 'application/json',
+        'api-key': API_KEY,
+        'api-secret': API_SECRET,
+    }
+    payload = {
+        'use_cache_entry': True,
+        'return_empty_details': True,
+        'return_complex_fields_data': True,
+        'include_metadata': True,
+        'include_details': False,
+        'exlude_subfields': True,
+    }
+    targets = [
+        {
+            "dataset": "devices",
+            "endpoint": "assets/devices",
+            "output_filename": "CRMA_HIVE_AXONIUS_DEVICES",
+            "fields" : [
+                        'internal_axon_id',
+                        'labels',
+                        'adapters',
+                        'adapters_data.tenable_io_adapter.asset_uuid',
+                        'adapters_data.gui.custom_devicerole',
+                        'adapters_data.gui.custom_devicetype',
+                        'adapters_data.gui.custom_enrichment_fisma_id',
+                        'adapters_data.gui.custom_asset_auth_status',
+                        'adapters_data.gui.custom_asset_hosting',
+                        'adapter_list_length',
+                        'specific_data.data.axonius_classification_identifier.device_type',
+                        'specific_data.data.domain',
+                        'specific_data.data.hostname_preferred',
+                        'specific_data.data.os.type',
+                        'specific_data.data.os.distribution',
+                        'specific_data.data.os.type_distribution',
+                        'specific_data.data.os.type_distribution_preferred',
+                        'specific_data.data.network_interfaces.mac',
+                        'specific_data.data.network_interfaces.ips_v4_preferred',
+                        'specific_data.data.network_interfaces.ips_v6_preferred',
+                        'specific_data.data.serial_number_preferred',
+                        'specific_data.data.first_seen',
+                        'specific_data.data.last_seen',
+                        'specific_data.data.enrichment_u_security_support_portfolio',
+                        'specific_data.data.enrichment_u_acronym',
+                        'specific_data.data.enrichment_u_inventory_system',
+                        'specific_data.data.organizational_unit',
+                        'specific_data.data.enrichment_u_dhs_hva',
+                        'adapters_data.crowd_strike_adapter.last_seen', 
+                        'adapters_data.crowd_strike_adapter.policies.policy_type',
+                        'adapters_data.crowd_strike_adapter.policies.applied',
+
+                    ]
+        },  
+        # TODO: Troubleshoot issue with missing fields preferred_name and preferred_vendor
+        # {
+        #     "dataset": "software",
+        #     "endpoint": "assets/software",
+        #     "output_filename": "CRMA_HIVE_AXONIUS_SOFTWARE",
+        #     "fields":  [
+        #                 'internal_axon_id',
+        #                 '_id',
+        #                 'specific_data.data.installed_software.sw_uid',
+        #                 'labels',
+        #                 'devices_count',
+        #                 'specific_data.data.installed_software.app_hash',
+        #                 'specific_data.data.installed_software.name_version',
+        #                 'specific_data.data.installed_software.preferred_name',
+        #                 'specific_data.data.installed_software.version',
+        #                 'specific_data.data.installed_software.preferred_vendor',
+        #                 'specific_data.data.installed_software.publisher',
+        #                 'specific_data.data.installed_software.vendor_publisher',
+        #                 'specific_data.data.installed_software.architecture',
+        #                 'specific_data.data.installed_software.category',
+        #                 'specific_data.data.installed_software.source',
+        #                 'specific_data.data.installed_software.first_found',
+        #                 'specific_data.data.installed_software.installed_on',
+        #                 'specific_data.data.installed_software.last_used_date',
+        #                 'specific_data.data.installed_software.update_time',
+        #                 'specific_data.data.installed_software.has_reached_end_of_life',
+        #                 'specific_data.data.installed_software.has_reached_end_of_support',
+        #                 'specific_data.data.installed_software.end_of_life',
+        #                 'specific_data.data.installed_software.end_of_support',
+        #                 'adapters',
+        #             ]
+        # }, 
+
+    ]
+
+    for target in targets:
+        dataset = target["dataset"]
+        endpoint = target["endpoint"]
+        url = f"{base_url}/{endpoint}" 
+        output_filename = target["output_filename"] 
+        if "fields" in target and target["fields"]:
+            payload["fields"] = target["fields"]
+
+        logger.info(f"Fetching data AXONIUS {dataset} dataset")
+
+        df = get_data_with_retries(url=url, headers=HEADERS, payload=payload)
+
+        logger.info("Cleanup mixed value columns to prepare for parquet storage...")
+        mixed_val_cols = [col for col in df.columns if dataQualityUtils.column_has_mixed_list_and_scalar(df[col])]        
+        for col in mixed_val_cols:
+            df[col] = df[col].apply(dataQualityUtils.ensure_list)
+    
+        logger.info("Uploading to S3...")
+        filename = "raw_data/AXONIUS/" + output_filename
+        rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
+
+        # ## store csv - for testing purposes only 
+        # filename = "test/raw/AXONIUS/" + output_filename
+        # rw_util.load_to_s3(bucket_name ,df, filename, "CSV")
+        # ###
+
+        # # save json file locally for data profiling
+        # df.to_json(f"{output_filename}.json", orient="records",indent=4)
+        # ###
+ 
+        utility.log_memory_usage() 
+
     elapsed_minutes = (time.time() - start_time) / 60 
     logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
 
 
 if __name__ == "__main__":
     main()
+
+import pandas as pd
+import urllib3
+from datetime import datetime
+import boto3
+import logging
+from io import StringIO
+import time
+from crma_hive_utilities import Utility, Read_Write_Utility
+from crma_hive_data_quality_utilities import DataQualityUtilities
+from crma_hive_connections import Connection
+from sqlalchemy.engine.base import Engine
+import pyarrow
+import re
+import json
+import ast
+from typing import Tuple, Optional
+
+
+# Turning off warnings
+urllib3.disable_warnings()
+
+# Setting up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Instantiate classes
+utility = Utility()
+rw_util = Read_Write_Utility()
+connection = Connection()
+dataQualityUtils = DataQualityUtilities()
+
+def load_to_processed(
+        bucket_name: str,
+        dataset: str,
+        clean_df: pd.DataFrame,
+        quarantine_df: Optional[pd.DataFrame] = None,
+        warning_df: Optional[pd.DataFrame] = None,
+        backfill_date: Optional[str] = None
+) -> None:
+    """
+    Helper function to call s3 util functions to laod process data s3 bucket
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525)
+        clean_df(pd.DataFrame): The clean dataframe
+        quarantine_df(pd.DataFrame): The dataframe with erronous data
+        warnning_df(pd.DataFrame): Dataframe with rows containing warning flangs 
+    """
+    if backfill_date:
+        prefix = "processed/AXONIUS/CLEAN/"
+        s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_CLEAN"
+        target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET") 
+        rw_util.load_to_s3(bucket_name, clean_df, target_filename, "PARQUET", True)
+       
+        if quarantine_df is not None:
+            prefix = "processed/AXONIUS/QUARANTINE/"
+            s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_QUARANTINE"
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET")
+            rw_util.load_to_s3(bucket_name, quarantine_df, target_filename, "PARQUET", True)   
+
+        if warning_df is not None:
+            prefix = "processed/AXONIUS/WARNING/"
+            s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_WARNING"        
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET")
+            rw_util.load_to_s3(bucket_name, warning_df, target_filename, "PARQUET", True)     
+    else:    
+        output_file= f"processed/AXONIUS/CLEAN/CRMA_HIVE_AXONIUS_{dataset}_CLEAN"
+        rw_util.load_to_s3(bucket_name, clean_df, output_file, "PARQUET")
+
+        if quarantine_df is not None:
+            output_file= f"processed/AXONIUS/QUARANTINE/CRMA_HIVE_AXONIUS_{dataset}_QUARANTINE"
+            rw_util.load_to_s3(bucket_name, quarantine_df, output_file, "PARQUET")   
+
+        if warning_df is not None:
+            output_file= f"processed/AXONIUS/WARNING/CRMA_HIVE_AXONIUS_{dataset}_WARNING"
+            rw_util.load_to_s3(bucket_name, warning_df, output_file, "PARQUET")         
+
+## For dev testing purpose only##
+def load_to_test(
+        bucket_name: str,
+        dataset: str,
+        clean_df: pd.DataFrame,
+        quarantine_df: Optional[pd.DataFrame] = None,
+        warning_df: Optional[pd.DataFrame] = None,
+        backfill_date: Optional[str] = None
+) -> None:
+    """
+    Helper function to call s3 util functions to load process data s3 bucket
+    
+    """
+    if backfill_date:
+        prefix = "test/processed/AXONIUS/CLEAN/"
+        s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_CLEAN"
+        target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV") 
+        rw_util.load_to_s3(bucket_name, clean_df, target_filename, "CSV", True)
+       
+        if quarantine_df is not None:
+            prefix = "test/processed/AXONIUS/QUARANTINE/"
+            s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_QUARANTINE"
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV")
+            rw_util.load_to_s3(bucket_name, quarantine_df, target_filename, "CSV", True)   
+
+        if warning_df is not None:
+            prefix = "test/processed/AXONIUS/WARNING/"
+            s3_filename = f"CRMA_HIVE_AXONIUS_{dataset}_WARNING"        
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV")
+            rw_util.load_to_s3(bucket_name, warning_df, target_filename, "CSV", True)     
+    else:    
+        output_file= f"test/processed/AXONIUS/CLEAN/CRMA_HIVE_AXONIUS_{dataset}_CLEAN"
+        rw_util.load_to_s3(bucket_name, clean_df, output_file, "CSV")
+
+        if quarantine_df is not None:
+            output_file= f"test/processed/AXONIUS/QUARANTINE/CRMA_HIVE_AXONIUS_{dataset}_QUARANTINE"
+            rw_util.load_to_s3(bucket_name, quarantine_df, output_file, "CSV")   
+
+        if warning_df is not None:
+            output_file= f"test/processed/AXONIUS/WARNING/CRMA_HIVE_AXONIUS_{dataset}_WARNING"
+            rw_util.load_to_s3(bucket_name, warning_df, output_file, "CSV")  
+  
+def process_devices(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of AXONIUS devices dataset.
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "DEVICES" 
+    prefix = "raw_data/AXONIUS/"
+    base_name = prefix + "CRMA_HIVE_AXONIUS_" + dataset
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+    
+    target_columns = ["internal_axon_id", "adapters", "adapter_list_length", "labels", "specific_data.data.domain", "specific_data.data.hostname_preferred", "specific_data.data.enrichment_u_acronym", 
+                      "specific_data.data.enrichment_u_inventory_system", "specific_data.data.enrichment_u_security_support_portfolio", "specific_data.data.first_seen",
+                      "specific_data.data.last_seen", "specific_data.data.network_interfaces.mac", "specific_data.data.network_interfaces.ips_v4_preferred", "specific_data.data.network_interfaces.ips_v6_preferred", 
+                      "specific_data.data.organizational_unit", "specific_data.data.os.distribution", "specific_data.data.os.type", "specific_data.data.os.type_distribution",
+                      "adapters_data.tenable_io_adapter.asset_uuid", "adapters_data.gui.custom_devicerole", "adapters_data.gui.custom_devicetype", "specific_data.data.axonius_classification_identifier.device_type", 
+                      "specific_data.data.enrichment_u_dhs_hva", "adapters_data.crowd_strike_adapter.last_seen", "specific_data.data.os.type_distribution_preferred", "adapters_data.crowd_strike_adapter.policies.policy_type",
+                      "adapters_data.crowd_strike_adapter.policies.applied", "adapters_data.gui.custom_enrichment_fisma_id", "specific_data.data.serial_number_preferred", "adapters_data.gui.custom_asset_auth_status",
+                      "adapters_data.gui.custom_asset_hosting",
+                      ]
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    #Remaname columns
+    map = {
+        "specific_data.data.domain": "devices_domain","specific_data.data.hostname_preferred": "devices_hostname_preferred", "specific_data.data.enrichment_u_acronym": "devices_enrichment_u_acronym",
+         "specific_data.data.enrichment_u_inventory_system":"devices_enrichment_u_inventory_system", 
+         "specific_data.data.enrichment_u_security_support_portfolio": "devices_enrichment_u_security_support_portfolio", "specific_data.data.first_seen": "devices_first_seen", 
+         "specific_data.data.last_seen": "devices_last_seen", "specific_data.data.network_interfaces.mac": "devices_mac", "specific_data.data.network_interfaces.ips_v4_preferred": "devices_ips_v4_preferred",
+         "specific_data.data.network_interfaces.ips_v6_preferred": "devices_ips_v6_preferred", "specific_data.data.organizational_unit": "devices_organizational_unit", 
+         "specific_data.data.os.distribution": "devices_os_distribution", "specific_data.data.os.type": "devices_os_type", "specific_data.data.os.type_distribution":"devices_os_type_distribution", 
+         "adapters_data.tenable_io_adapter.asset_uuid": "asset_uuid", "specific_data.data.axonius_classification_identifier.device_type": "devices_type", "adapters_data.gui.custom_devicerole": "devices_custom_devicerole",
+         "adapters_data.gui.custom_devicetype": "devices_custom_devicetype", "specific_data.data.enrichment_u_dhs_hva": "devices_enrichment_u_dhs_hva", "adapters_data.crowd_strike_adapter.last_seen": "crowd_strike_last_seen", 
+         "specific_data.data.os.type_distribution_preferred": "devices_os_type_distribution_preferred", "adapters_data.crowd_strike_adapter.policies.policy_type": "crowd_strike_adapter_policies_policy_type",
+         "adapters_data.crowd_strike_adapter.policies.applied": "crowd_strike_adapter_policies_applied", "adapters_data.gui.custom_enrichment_fisma_id":"devices_custom_enrichment_fisma_id",
+         "specific_data.data.serial_number_preferred": "devices_serial_number_preferred", "adapters_data.gui.custom_asset_auth_status": "devices_custom_asset_auth_status", 
+         "adapters_data.gui.custom_asset_hosting": "devices_custom_asset_hosting"
+        }
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Remove non-printerbal characters
+    logger.info("Removing non-printable characters from string literals.")
+    df = df.map(dataQualityUtils.remove_non_printable_chars)
+
+
+    #Flatten select list/numpy array/set fields to str 
+    cols = ["devices_enrichment_u_dhs_hva"]
+    df = dataQualityUtils.flatten_string_list_columns(df, cols) 
+
+    #Convert DataFrame columns containing lists or numpy arrays to PostgreSQL array
+    df = dataQualityUtils.convert_arrays_for_postgres(df)  
+  
+    #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["devices_first_seen", "devices_last_seen", "crowd_strike_last_seen"]    
+    df = dataQualityUtils.clean_date_fields(df, cols)   
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["adapter_list_length", ]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["adapters", "devices_hostname_preferred", "devices_custom_enrichment_fisma_id"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = ["internal_axon_id"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = ["internal_axon_id"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    # #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    #Load to destination  
+    logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing only ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+
+def process_software(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of AXONIUS software dataset. 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "SOFTWARE" 
+    prefix = "raw_data/AXONIUS/"
+    base_name = prefix + "CRMA_HIVE_AXONIUS_" + dataset
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+    
+    target_columns = ["internal_axon_id", "adapters", 	"labels", "_id", "devices_count",	"specific_data.data.installed_software.app_hash", "specific_data.data.installed_software.architecture", 
+                      "specific_data.data.installed_software.category", "specific_data.data.installed_software.first_found", "specific_data.data.installed_software.has_reached_end_of_life", "specific_data.data.installed_software.installed_on",
+                      "specific_data.data.installed_software.last_used_date", "specific_data.data.installed_software.name_version", "specific_data.data.installed_software.preferred_name", "specific_data.data.installed_software.preferred_vendor",
+                      "specific_data.data.installed_software.publisher", "specific_data.data.installed_software.source", "specific_data.data.installed_software.sw_uid", "specific_data.data.installed_software.update_time", 
+                      "specific_data.data.installed_software.vendor_publisher", "specific_data.data.installed_software.version", "specific_data.data.installed_software.end_of_life", "specific_data.data.installed_software.end_of_support", 
+                      "specific_data.data.installed_software.has_reached_end_of_support",
+                      ]
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    #Remaname columns
+    map = {"_id": "software_id", "specific_data.data.installed_software.app_hash":"software_app_hash", "specific_data.data.installed_software.architecture": "software_architecture", 
+           "specific_data.data.installed_software.category": "software_category", "specific_data.data.installed_software.first_found": "software_first_found", "specific_data.data.installed_software.has_reached_end_of_life": "software_has_reached_end_of_life",
+           "specific_data.data.installed_software.installed_on": "software_installed_on", "specific_data.data.installed_software.last_used_date": "software_last_used_date", "specific_data.data.installed_software.name_version": "software_name_version",
+           "specific_data.data.installed_software.preferred_name": "software_preferred_name", "specific_data.data.installed_software.preferred_vendor": "software_preferred_vendor", "specific_data.data.installed_software.publisher": "software_publisher",
+           "specific_data.data.installed_software.source": "software_source", "specific_data.data.installed_software.sw_uid": "software_sw_uid", "specific_data.data.installed_software.update_time": "software_update_time",
+           "specific_data.data.installed_software.vendor_publisher": "software_vendor_publisher", "specific_data.data.installed_software.version": "software_version", "specific_data.data.installed_software.end_of_life": "software_end_of_life", 
+           "specific_data.data.installed_software.end_of_support": "software_end_of_support", "specific_data.data.installed_software.has_reached_end_of_support": "software_has_reached_end_of_support",        
+        }
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Remove non-printerbal characters
+    logger.info("Removing non-printable characters from string literals.")
+    df = df.map(dataQualityUtils.remove_non_printable_chars)
+
+
+    #Convert DataFrame columns containing lists or numpy arrays to PostgreSQL arrays
+    df = dataQualityUtils.convert_arrays_for_postgres(df)
+  
+    #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["software_last_used_date"]    
+    df = dataQualityUtils.clean_date_fields(df, cols)   
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["devices_count"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["adapters"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = ["internal_axon_id", "software_id"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = ["internal_axon_id"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    # #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    #Load to destination  
+    logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing only ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+
+def run_backfill_mode(bucket_name: str, hist_table_name: str, backfill_date: str, datasets: list) -> None:
+    """
+    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
+
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+        datasets (list): List of datsets upstream to a historical table
+    
+    Returns:
+        None
+    """
+    logger.info(f"Running in BACKFILL mode.")
+    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
+
+    # check valid backfill date format
+    if not utility.is_valid_backfill_date(backfill_date):
+        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
+        raise
+
+    if not datasets:
+        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
+        raise
+    
+    for dataset in datasets:
+        dataset_upper = dataset.upper().strip()
+
+        # call processors with backfill_date
+        if dataset_upper == "AXONIUS_DEVICES":
+            logger.info("Processing DEVICES (in backfill mode)")
+            process_devices(bucket_name, backfill_date)
+            utility.log_memory_usage() 
+
+        if dataset_upper == "AXONIUS_SOFTWARE":
+            logger.info("Processing DEVICES (in backfill mode)")
+            process_software(bucket_name, backfill_date)
+            utility.log_memory_usage() 
+
+def main():
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+
+    if not bucket_name:
+       raise ValueError("S3 bucket not found!")
+
+    # resolve workflow run properties
+    workflow_params = utility.get_workflow_props()
+    backfill_date = workflow_params.get("--backfill_date")
+    hist_table_name = workflow_params.get("--hist_table_name")
+    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
+
+    # run in backfill mode if all backfill properties are present
+    backfill_mode = bool(backfill_date and hist_table_name)
+
+    if backfill_mode:
+        run_backfill_mode(bucket_name, hist_table_name, backfill_date, datasets)
+    else:
+        logger.info(f"Running in Normal mode.")
+
+        logger.info("Processing DEVICES")
+        process_devices(bucket_name)
+        utility.log_memory_usage() 
+
+        # TODO: Troubleshoot issue with missing fields preferred_name and preferred_vendor in raw data
+        # logger.info("Processing SOFTWARE")
+        # process_software(bucket_name)
+        # utility.log_memory_usage() 
+        
+    # log runtime
+    elapsed_minutes = (time.time() - start_time)/60
+    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+
+
+if __name__ == "__main__":
+    main()
+
+import unittest
+from unittest.mock import MagicMock, patch, call, ANY
+import pandas as pd
+from datetime import datetime
+from sqlalchemy import create_engine, text
+
+
+from crma_hive_axonius_data_to_target import load_data_to_db  
+
+class TestLoadAxoniusToTarget(unittest.TestCase):
+
+    def setUp(self):
+        self.engine = create_engine('sqlite:///:memory:')
+
+        with self.engine.connect() as conn:
+            # Create the schemas
+            conn.execute(text("ATTACH DATABASE ':memory:' AS crma_hive"))
+            conn.execute(text("ATTACH DATABASE ':memory:' AS crma_hive_backfill"))
+    
+            # Create the base tables for chrma_hive schema
+            conn.execute(text("CREATE TABLE IF NOT EXISTS crma_hive.CRMA_HIVE_AXONIUS_DEVICES (internal_axon_id TEXT, devices_hostname TEXT, adapters TEXT, etl_date TEXT);"))
+            conn.execute(text("CREATE TABLE IF NOT EXISTS crma_hive.CRMA_HIVE_AXONIUS_DEVICES_QUARANTINE (internal_axon_id TEXT, devices_hostname TEXT, adapters TEXT, errors TEXT, etl_date TEXT);"))
+            conn.execute(text("CREATE TABLE IF NOT EXISTS crma_hive.CRMA_HIVE_AXONIUS_DEVICES_WARNING (internal_axon_id TEXT, devices_hostname TEXT, adapters TEXT, warnings TEXT, etl_date TEXT);"))
+
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_from_s3") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.post_load_validation") 
+    def test_load_data_to_db_writes_to_axonius_tables(
+            self, 
+            mock_post_load_validation, 
+            mock_fetch_file_from_s3
+        ):               
+        """Test the load_data_to_db() function and confirm all records load succsfully into a AXONIUS table. Record counts should match expected value"""
+  
+        # Setup
+        mock_engine = self.engine
+        bucket_name = "test_bucket"
+        dataset = "AXONIUS_DEVICES"
+        schema = "crma_hive"
+
+        # Mock the DataFrame returned by fetch_file_from_s3
+        mock_clean_df = pd.DataFrame({
+                    'internal_axon_id' : ["00224602b858bf53c1111e4a794c888c","11124942b858bf53c1777e4a794c998c"],
+                    'devices_hostname' : ["LIPTNAAA0000000","LINTNBBB1111111"],
+                    'adapters' : ["['crowd_strike_adapter','aws_adapter']","['service_now_adapter','azure_ad_adapter']"]
+                })
+
+        mock_quarantine_df = pd.DataFrame({
+                    'internal_axon_id' : ["00224602b858bf53c1111e4a794c888c","11124942b858bf53c1777e4a794c998c"],
+                    'devices_hostname' : ["LIPTNAAA0000000","LINTNBBB1111111"],
+                    'adapters' : ["['crowd_strike_adapter','aws_adapter']","['service_now_adapter','azure_ad_adapter']"],
+                    'errors':["fail DQ","fail DQ"]        
+                    })
+
+        mock_warning_df = pd.DataFrame({
+                    'internal_axon_id' : ["00224602b858bf53c1111e4a794c888c","11124942b858bf53c1777e4a794c998c"],
+                    'devices_hostname' : ["LIPTNAAA0000000","LINTNBBB1111111"],
+                    'adapters' : ["['crowd_strike_adapter','aws_adapter']","['service_now_adapter','azure_ad_adapter']"],
+                    'warnings':["fail DQ","fail DQ"]   
+                })
+
+
+        # Mock fetch_file_from_s3 to return different DataFrames for different classes
+        def fetch_file_side_effect(bucket, prefix, filename, file_type):
+            if "CLEAN" in filename:
+                return mock_clean_df
+            elif "QUARANTINE" in filename:
+                return mock_quarantine_df
+            elif "WARNING" in filename:
+                return mock_warning_df
+            return None
+        
+        mock_fetch_file_from_s3.side_effect = fetch_file_side_effect
+
+        # Act
+        load_data_to_db(engine=mock_engine, bucket_name=bucket_name, dataset=dataset, schema=schema)
+
+        # Assert: method fetch_file_from_s3() and post_load_validation() is called
+        mock_post_load_validation.assert_called()
+        mock_fetch_file_from_s3.assert_called()
+
+        # Aseert: record count in db match expected values
+        with self.engine.connect() as connection:
+            result = connection.execute(text(f"SELECT COUNT(*) FROM crma_hive.CRMA_HIVE_{dataset}"))
+            result_q = connection.execute(text(f"SELECT COUNT(*) FROM crma_hive.CRMA_HIVE_{dataset}_QUARANTINE"))
+            result_w = connection.execute(text(f"SELECT COUNT(*) FROM crma_hive.CRMA_HIVE_{dataset}_WARNING"))
+            # should find 2 records loaded into DEVICES table and its quarantine and warning tables.
+            self.assertEqual(result.scalar(), 2)
+            self.assertEqual(result_q.scalar(), 2)
+            self.assertEqual(result_w.scalar(), 2)
+
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_from_s3") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_by_date") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.post_load_validation")
+    def test_load_data_to_db_writes_to_axonius_tables_in_backfill_mode(
+            self, 
+            mock_post_load_validation, 
+            mock_fetch_file_by_date,
+            mock_fetch_file
+        ):               
+        """Test the load_data_to_db() function in backfill mode and confirm all records load into a AXONIUS table within backfill schema. Record counts should match expected value"""
+  
+        # Setup
+        mock_engine = self.engine
+        bucket_name = "test_bucket"
+        dataset = "AXONIUS_DEVICES"
+        schema = "crma_hive_backfill"
+        backfill_date = "123125"
+
+        # Mock the DataFrame returned by fetch_file_by_date
+        mock_clean_df = pd.DataFrame({
+                    'internal_axon_id' : ["00224602b858bf53c1111e4a794c888c","11124942b858bf53c1777e4a794c998c"],
+                    'devices_hostname' : ["LIPTNAAA0000000","LINTNBBB1111111"],
+                    'adapters' : ["['crowd_strike_adapter','aws_adapter']","['service_now_adapter','azure_ad_adapter']"]
+                })
+
+        mock_quarantine_df = pd.DataFrame({
+                    'internal_axon_id' : ["00224602b858bf53c1111e4a794c888c","11124942b858bf53c1777e4a794c998c"],
+                    'devices_hostname' : ["LIPTNAAA0000000","LINTNBBB1111111"],
+                    'adapters' : ["['crowd_strike_adapter','aws_adapter']","['service_now_adapter','azure_ad_adapter']"],
+                    'errors':["fail DQ","fail DQ"]        
+                    })
+
+        mock_warning_df = pd.DataFrame({
+                    'internal_axon_id' : ["00224602b858bf53c1111e4a794c888c","11124942b858bf53c1777e4a794c998c"],
+                    'devices_hostname' : ["LIPTNAAA0000000","LINTNBBB1111111"],
+                    'adapters' : ["['crowd_strike_adapter','aws_adapter']","['service_now_adapter','azure_ad_adapter']"],
+                    'warnings':["fail DQ","fail DQ"]   
+                })
+
+
+        # Mock fetch_file_by_date to return different DataFrames for different classes
+        def fetch_file_by_date_side_effect(bucket, prefix, filename, backfill_date, file_type):
+            if "CLEAN" in filename:
+                return mock_clean_df
+            elif "QUARANTINE" in filename:
+                return mock_quarantine_df
+            elif "WARNING" in filename:
+                return mock_warning_df
+            return None
+        
+        mock_fetch_file_by_date.side_effect = fetch_file_by_date_side_effect
+        mock_fetch_file.return_value = MagicMock()
+
+        # Act
+        load_data_to_db(engine=mock_engine, bucket_name=bucket_name, dataset=dataset, schema=schema, backfill_date=backfill_date)
+
+        # Assert: method fetch_file_by_date() and post_load_validation() is called
+        mock_post_load_validation.assert_called()
+        mock_fetch_file_by_date.assert_called()
+
+        # Assert: method fetch_file_from_s3() and post_load_validation() is called
+        mock_fetch_file.assert_not_called()
+
+        # Aseert: record count in db match expected values
+        with self.engine.connect() as connection:
+            result = connection.execute(text(f"SELECT COUNT(*) FROM crma_hive_backfill.CRMA_HIVE_{dataset}"))
+            result_q = connection.execute(text(f"SELECT COUNT(*) FROM crma_hive_backfill.CRMA_HIVE_{dataset}_QUARANTINE"))
+            result_w = connection.execute(text(f"SELECT COUNT(*) FROM crma_hive_backfill.CRMA_HIVE_{dataset}_WARNING"))
+            # should find 2 records loaded into DEVICES table and its quarantine and warning tables.
+            self.assertEqual(result.scalar(), 2)
+            self.assertEqual(result_q.scalar(), 2)
+            self.assertEqual(result_w.scalar(), 2)
+
+    @patch("crma_hive_axonius_data_to_target.rw_util.truncate_and_load_table") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_from_s3") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.post_load_validation") 
+    def test_load_data_to_db_calls_subfunctions(
+            self, 
+            mock_post_load_validation, 
+            mock_fetch_file_from_s3,
+            mock_truncate_and_load_table
+        ):               
+        """Test the load_data_to_db() function and confirm utility functions are called and correct paramters are passed in""" 
+ 
+        # Setup
+        mock_engine = MagicMock()
+        bucket_name = "test_bucket"
+        dataset = "AXONIUS_DEVICES"
+        schema = "test_schema"
+
+        # Mock the DataFrame returned by fetch_file_from_s3
+        mock_clean_df = MagicMock()
+        mock_clean_df.__getitem__.side_effect = lambda key: None 
+        mock_quarantine_df = MagicMock()
+        mock_quarantine_df.__getitem__.side_effect = lambda key: None
+        mock_warning_df = MagicMock()
+        mock_warning_df.__getitem__.side_effect = lambda key: None
+
+        # Mock fetch_file_from_s3 to return different DataFrames for different classes
+        def fetch_file_side_effect(bucket, prefix, filename, file_type):
+            if "CLEAN" in filename:
+                return mock_clean_df
+            elif "QUARANTINE" in filename:
+                return mock_quarantine_df
+            elif "WARNING" in filename:
+                return mock_warning_df
+            return None
+        
+        mock_fetch_file_from_s3.side_effect = fetch_file_side_effect
+
+        # Mock post_load_validation to always return True
+        mock_post_load_validation.return_value = True
+
+        # Act
+        load_data_to_db(engine=mock_engine, bucket_name=bucket_name, dataset=dataset, schema=schema)
+
+        # Assert: Check fetch_file_from_s3 calls            
+        mock_fetch_file_from_s3.assert_any_call(bucket_name, "processed/AXONIUS/CLEAN/CRMA_HIVE", f"processed/AXONIUS/CLEAN/CRMA_HIVE_{dataset}_CLEAN", "PARQUET")
+        mock_fetch_file_from_s3.assert_any_call(bucket_name, "processed/AXONIUS/QUARANTINE/CRMA_HIVE", f"processed/AXONIUS/QUARANTINE/CRMA_HIVE_{dataset}_QUARANTINE", "PARQUET")
+        mock_fetch_file_from_s3.assert_any_call(bucket_name, "processed/AXONIUS/WARNING/CRMA_HIVE", f"processed/AXONIUS/WARNING/CRMA_HIVE_{dataset}_WARNING", "PARQUET")
+
+        mock_truncate_and_load_table.assert_any_call(
+            engine=mock_engine,
+            df=mock_clean_df,
+            schema_name=schema,
+            table_name=f"crma_hive_{dataset.lower()}",
+            exist_type="append",
+        )
+        mock_truncate_and_load_table.assert_any_call(
+            engine=mock_engine,
+            df=mock_quarantine_df,
+            schema_name=schema,
+            table_name=f"crma_hive_{dataset.lower()}_quarantine",
+            exist_type="append",
+        )
+        mock_truncate_and_load_table.assert_any_call(
+            engine=mock_engine,
+            df=mock_warning_df,
+            schema_name=schema,
+            table_name=f"crma_hive_{dataset.lower()}_warning",
+            exist_type="append",
+        )
+
+        # Assert: Check post_load_validation calls
+        mock_post_load_validation.assert_any_call(
+            engine=mock_engine,
+            df=mock_clean_df,
+            schema_name=schema,  
+            table_name=f"crma_hive_{dataset.lower()}",  
+        )
+        mock_post_load_validation.assert_any_call(
+            engine=mock_engine,
+            df=mock_quarantine_df,
+            schema_name=schema, 
+            table_name=f"crma_hive_{dataset.lower()}_quarantine", 
+        )
+        mock_post_load_validation.assert_any_call(
+            engine=mock_engine,
+            df=mock_warning_df,
+            schema_name=schema,  
+            table_name=f"crma_hive_{dataset.lower()}_warning",  
+        )
+
+    @patch("crma_hive_axonius_data_to_target.rw_util.truncate_and_load_table") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_from_s3") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_by_date") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.post_load_validation") 
+    def test_load_data_to_db_calls_subfunctions_in_backfill_mode(    
+            self, 
+            mock_post_load_validation, 
+            mock_fetch_file_by_date,
+            mock_fetch_file,
+            mock_truncate_and_load_table
+        ):               
+        """Test the load_data_to_db() function in backfill mode and confirm utility functions are called and correct paramters are passed in""" 
+        
+        # Setup
+        mock_engine = MagicMock()
+        bucket_name = "test_bucket"
+        dataset = "AXONIUS_DEVICES"
+        schema = "test_schema"
+        backfill_date = "122125"
+
+        # Mock the DataFrame returned by fetch_file_by_date
+        mock_clean_df = MagicMock()
+        mock_clean_df.__getitem__.side_effect = lambda key: None 
+        mock_quarantine_df = MagicMock()
+        mock_quarantine_df.__getitem__.side_effect = lambda key: None
+        mock_warning_df = MagicMock()
+        mock_warning_df.__getitem__.side_effect = lambda key: None
+        
+        # Mock fetch_file_by_date to return different DataFrames for different classes
+        def fetch_file_by_date_side_effect(bucket, prefix, filename, backfill_date, file_type):
+            if "CLEAN" in filename:
+                return mock_clean_df
+            elif "QUARANTINE" in filename:
+                return mock_quarantine_df
+            elif "WARNING" in filename:
+                return mock_warning_df
+            return None        
+        
+        mock_fetch_file.return_value =  MagicMock(spec = pd.DataFrame)
+        mock_fetch_file_by_date.side_effect = fetch_file_by_date_side_effect
+
+        # Mock post_load_validation to always return True
+        mock_post_load_validation.return_value = True
+
+        # Act
+        load_data_to_db(engine=mock_engine, bucket_name=bucket_name, dataset=dataset, schema=schema, backfill_date=backfill_date)
+
+        # Assert: fetch_file_from_s3 is not called
+        mock_fetch_file.assert_not_called()
+
+        # Assert: fetch_file_from_s3 is called with correct parameters          
+        mock_fetch_file_by_date.assert_any_call(bucket_name, "processed/AXONIUS/CLEAN/CRMA_HIVE", f"processed/AXONIUS/CLEAN/CRMA_HIVE_{dataset}_CLEAN", '122125', "PARQUET")
+        mock_fetch_file_by_date.assert_any_call(bucket_name, "processed/AXONIUS/QUARANTINE/CRMA_HIVE", f"processed/AXONIUS/QUARANTINE/CRMA_HIVE_{dataset}_QUARANTINE", '122125', "PARQUET")
+        mock_fetch_file_by_date.assert_any_call(bucket_name, "processed/AXONIUS/WARNING/CRMA_HIVE", f"processed/AXONIUS/WARNING/CRMA_HIVE_{dataset}_WARNING", '122125', "PARQUET")
+
+        # Assert: truncate_and_load_table is called for all datasets with correct parameters
+        mock_truncate_and_load_table.assert_any_call(
+            engine=mock_engine,
+            df=mock_clean_df,
+            schema_name= schema,
+            table_name=f"crma_hive_{dataset.lower()}",
+            exist_type="append",
+        )
+        mock_truncate_and_load_table.assert_any_call(
+            engine=mock_engine,
+            df=mock_quarantine_df,
+            schema_name=schema,
+            table_name=f"crma_hive_{dataset.lower()}_quarantine",
+            exist_type="append",
+        )
+        mock_truncate_and_load_table.assert_any_call(
+            engine=mock_engine,
+            df=mock_warning_df,
+            schema_name=schema,
+            table_name=f"crma_hive_{dataset.lower()}_warning",
+            exist_type="append",
+        )
+
+        # Assert: Check post_load_validation calls for all datasets
+        mock_post_load_validation.assert_any_call(
+            engine=mock_engine,
+            df=mock_clean_df,
+            schema_name=schema,  
+            table_name=f"crma_hive_{dataset.lower()}",  
+        )
+        mock_post_load_validation.assert_any_call(
+            engine=mock_engine,
+            df=mock_quarantine_df,
+            schema_name=schema, 
+            table_name=f"crma_hive_{dataset.lower()}_quarantine", 
+        )
+        mock_post_load_validation.assert_any_call(
+            engine=mock_engine,
+            df=mock_warning_df,
+            schema_name=schema,  
+            table_name=f"crma_hive_{dataset.lower()}_warning",  
+        )
+
+    @patch("crma_hive_axonius_data_to_target.rw_util.truncate_and_load_table") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_from_s3")   
+    @patch("crma_hive_axonius_data_to_target.rw_util.post_load_validation") 
+    def test_load_data_to_db_throws_exception_on_missing_dataset(
+            self, 
+            mock_post_load_validation, 
+            mock_fetch_file_from_s3,
+            mock_truncate_and_load_table
+        ):               
+        """Test the load_data_to_db() function and confirm exception is thrown if no file fetched from s3"""
+    
+        # Setup
+        mock_engine = MagicMock()
+        bucket_name = "test_bucket"
+        dataset = "DEVICES"
+        schema = "test_schema"        
+
+        # Mock the DataFrame returned by fetch_file_from_s3
+        mock_clean_df = MagicMock()
+        mock_clean_df.__getitem__.side_effect = lambda key: None 
+        mock_quarantine_df = MagicMock()
+        mock_quarantine_df.__getitem__.side_effect = lambda key: None
+        mock_warning_df = MagicMock()
+        mock_warning_df.__getitem__.side_effect = lambda key: None
+
+        # Mock fetch_file_from_s3 to return None 
+        def fetch_file_side_effect(bucket, prefix, filename, file_type):
+            if "CLEAN" in filename:
+                return None
+            elif "QUARANTINE" in filename:
+                return None
+            elif "WARNING" in filename:
+                return None
+            return None
+        
+        mock_fetch_file_from_s3.side_effect = fetch_file_side_effect
+
+        # Mock post_load_validation to always return True
+        mock_post_load_validation.return_value = True
+
+        # Act and Assert: Expect ValueError due to missing dataset
+        with self.assertRaises(ValueError) as context:
+            load_data_to_db(engine=mock_engine, bucket_name=bucket_name, dataset=dataset, schema=schema)
+        
+        # Assert: Check the exception message
+        self.assertEqual(
+            str(context.exception),
+            "Dataset not found"
+        )
+
+        #Assert: truncate_and_load_table and post_load_validation are not called
+        mock_truncate_and_load_table.assert_not_called()
+        mock_post_load_validation.assert_not_called()
+
+    @patch("crma_hive_axonius_data_to_target.rw_util.truncate_and_load_table") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_from_s3")
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_by_date")  
+    @patch("crma_hive_axonius_data_to_target.rw_util.post_load_validation") 
+    def test_load_data_to_db_throws_exception_on_missing_dataset_in_backfill_mode(
+            self, 
+            mock_post_load_validation, 
+            mock_fetch_file_by_date,
+            mock_fetch_file,
+            mock_truncate_and_load_table
+        ):               
+        """Test the load_data_to_db() function in backfill mode and confirm an exception is thrown if no file fetched from s3"""
+        
+        # Setup
+        mock_engine = MagicMock()
+        bucket_name = "test_bucket"
+        dataset = "AXONIUS_DEVICES"
+        schema = "test_schema"
+        backfill_date = "123125"
+        
+        # Mock the DataFrame returned by fetch_file_by_date
+        mock_clean_df = MagicMock()
+        mock_clean_df.__getitem__.side_effect = lambda key: None 
+        mock_quarantine_df = MagicMock()
+        mock_quarantine_df.__getitem__.side_effect = lambda key: None
+        mock_warning_df = MagicMock()
+        mock_warning_df.__getitem__.side_effect = lambda key: None
+
+        # Mock fetch_file_by_date to return None 
+        def fetch_file_by_date_side_effect(bucket, prefix, filename, backfill_date, file_type):
+            if "CLEAN" in filename:
+                return None
+            elif "QUARANTINE" in filename:
+                return None
+            elif "WARNING" in filename:
+                return None
+            return None
+        
+        mock_fetch_file_by_date.side_effect = fetch_file_by_date_side_effect
+
+        # Mock post_load_validation to always return True
+        mock_post_load_validation.return_value = True
+
+        # Act and Assert: Expect ValueError due to missing dataset
+        with self.assertRaises(ValueError) as context:
+            load_data_to_db(engine=mock_engine, bucket_name=bucket_name, dataset=dataset, schema=schema, backfill_date=backfill_date)
+        
+        # Assert: Check the exception message
+        self.assertEqual(
+            str(context.exception),
+            "Dataset not found"
+        )
+
+        # Assert: fetch_file_from_s3 and truncate_and_load_table and post_load_validation are not called
+        mock_fetch_file.assert_not_called()
+        mock_truncate_and_load_table.assert_not_called()
+        mock_post_load_validation.assert_not_called()
+
+    @patch("crma_hive_axonius_data_to_target.rw_util.truncate_and_load_table") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_from_s3") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.post_load_validation") 
+    def test_load_data_to_db_throws_exception_on_post_validation_failure(
+            self, 
+            mock_post_load_validation, 
+            mock_fetch_file_from_s3,
+            mock_truncate_and_load_table
+        ):               
+        """Test the load_data_to_db() function and confirm exception is thrown if post-load validation fails"""
+    
+        # Setup
+        mock_engine = MagicMock()
+        bucket_name = "test_bucket"
+        dataset = "AXONIUS_DEVICES"
+        schema = "test_schema"
+
+        # Mock the DataFrame returned by fetch_file_from_s3
+        mock_clean_df = MagicMock()
+        mock_clean_df.__getitem__.side_effect = lambda key: None 
+        mock_quarantine_df = MagicMock()
+        mock_quarantine_df.__getitem__.side_effect = lambda key: None
+        mock_warning_df = MagicMock()
+        mock_warning_df.__getitem__.side_effect = lambda key: None
+
+        # Mock fetch_file_from_s3 to return different DataFrames for different classes
+        def fetch_file_side_effect(bucket, prefix, filename, file_type):
+            if "CLEAN" in filename:
+                return mock_clean_df
+            elif "QUARANTINE" in filename:
+                return mock_quarantine_df
+            elif "WARNING" in filename:
+                return mock_warning_df
+            return None
+        
+        mock_fetch_file_from_s3.side_effect = fetch_file_side_effect
+
+        # Mock post_load_validation to always return True
+        mock_post_load_validation.return_value = False
+
+        # Act and Assert: Expect RuntimeError due to post_load_validation failure
+        with self.assertRaises(RuntimeError) as context:
+            load_data_to_db(engine=mock_engine, bucket_name=bucket_name, dataset=dataset, schema=schema)
+        
+        # Assert: Check the exception message
+        self.assertEqual(
+            str(context.exception),
+            f"Post load validation check failed for table 'crma_hive_{dataset.lower()}' in '{schema}' schema"
+        )
+
+        # Assert: Check post_load_validation calls
+        mock_post_load_validation.assert_called_once_with(
+            engine=mock_engine,
+            df=mock_clean_df,
+            schema_name=schema,  
+            table_name=f"crma_hive_{dataset.lower()}",  
+        )
+        for call_args in mock_post_load_validation.call_args_list:
+            self.assertNotEqual(
+                call_args,
+                call(
+                    engine=mock_engine,
+                    df= mock_quarantine_df,  
+                    schema_name=schema,  
+                    table_name=f"crma_hive_{dataset.lower()}_quarantine",  
+                ),                
+            )
+            self.assertNotEqual(
+                call_args,
+                call(
+                    engine=mock_engine,
+                    df= mock_warning_df,  
+                    schema_name=schema,  
+                    table_name=f"crma_hive_{dataset.lower()}_warning",  
+                ),                
+            )           
+
+    @patch("crma_hive_axonius_data_to_target.rw_util.truncate_and_load_table") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_from_s3") 
+    @patch("crma_hive_axonius_data_to_target.rw_util.fetch_file_by_date")      
+    @patch("crma_hive_axonius_data_to_target.rw_util.post_load_validation") 
+    def test_load_data_to_db_throws_exception_on_post_validation_failure_in_backfill_mode(
+            self, 
+            mock_post_load_validation, 
+            mock_fetch_file_by_date,
+            mock_fetch_file,
+            mock_truncate_and_load_table,
+        ):               
+        """Test the load_data_to_db() function in backfill mode and confirm exception is thrown if post-load validation fails"""
+    
+        # Setup
+        mock_engine = MagicMock()
+        bucket_name = "test_bucket"
+        dataset = "AXONIUS_DEVICES"
+        schema = "test_schema"
+        backfill_date = "123125"
+
+        # Mock the DataFrame returned by fetch_file_by_date
+        mock_clean_df = MagicMock()
+        mock_clean_df.__getitem__.side_effect = lambda key: None 
+        mock_quarantine_df = MagicMock()
+        mock_quarantine_df.__getitem__.side_effect = lambda key: None
+        mock_warning_df = MagicMock()
+        mock_warning_df.__getitem__.side_effect = lambda key: None
+
+        # Mock fetch_file_by_date to return different DataFrames for different classes
+        def fetch_file_by_date_side_effect(bucket, prefix, filename, backfill_date, file_type):
+            if "CLEAN" in filename:
+                return mock_clean_df
+            elif "QUARANTINE" in filename:
+                return mock_quarantine_df
+            elif "WARNING" in filename:
+                return mock_warning_df
+            return None
+        
+        mock_fetch_file_by_date.side_effect = fetch_file_by_date_side_effect
+
+        # Mock post_load_validation to always return True
+        mock_post_load_validation.return_value = False
+
+        # Act and Assert: Expect RuntimeError due to post_load_validation failure
+        with self.assertRaises(RuntimeError) as context:
+            load_data_to_db(engine=mock_engine, bucket_name=bucket_name, dataset=dataset, schema=schema, backfill_date=backfill_date)
+        
+        # Assert: Check the exception message
+        self.assertEqual(
+            str(context.exception),
+            f"Post load validation check failed for table 'crma_hive_{dataset.lower()}' in '{schema}' schema"
+        )
+
+        # Assert: fetch_file_by_date is not called
+        mock_fetch_file.assert_not_called()
+
+        # Assert: Check post_load_validation called with correct parameters
+        mock_post_load_validation.assert_called_once_with(
+            engine=mock_engine,
+            df=mock_clean_df,
+            schema_name=schema,  
+            table_name=f"crma_hive_{dataset.lower()}",  
+        )
+
+        for call_args in mock_post_load_validation.call_args_list:
+            self.assertNotEqual(
+                call_args,
+                call(
+                    engine=mock_engine,
+                    df= mock_quarantine_df,  
+                    schema_name=schema,  
+                    table_name=f"crma_hive_{dataset.lower()}_quarantine"
+                ),                
+            )
+            self.assertNotEqual(
+                call_args,
+                call(
+                    engine=mock_engine,
+                    df= mock_warning_df,  
+                    schema_name=schema,  
+                    table_name=f"crma_hive_{dataset.lower()}_warning"
+                ),                
+            )
+
+if __name__ == '__main__':
+    unittest.main()

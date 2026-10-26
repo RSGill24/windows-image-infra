@@ -27,241 +27,164 @@ rw_util = Read_Write_Utility()
 fismaScorecardUtility = FismaScorecardUtility()
 
 
-def build_device_prohibited_os_score_sql() -> str:
+def build_system_security_authz_score_sql() -> str:
     """
-    Build the Prohibited OS Score per device data preparation SQL Command using CTEs.
+    Build the Security Authz Score per system data preparation SQL Command using CTEs.
     """
 
     sql = f"""
         WITH 
-        -- Step 1: Eligible devices
-        deduped_devices AS (
-            -- Step 1.1: dedup
-            SELECT *
-            FROM (
-                SELECT *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY asset_id
-                        ORDER BY device_last_seen DESC
-                    ) AS asset_rn
-                FROM crma_hive.crma_hive_fismascorecard_input_devices 
-                WHERE fisma_id iLIKE 'ICE-%%' 
-                    AND asset_id IS NOT NULL
-            ) ranked
-            WHERE asset_rn = 1 
-            UNION ALL
-            SELECT *,
-                NULL AS asset_rn
-            FROM crma_hive.crma_hive_fismascorecard_input_devices 
-            WHERE asset_id IS NULL
+        -- Step 2.0: Select eligible systems
+        eligible_systems AS (
+            SELECT  csam.*, fisma.fisma_category, fisma.iscm_waiver, (SELECT MAX(dt) FROM unnest(csam.published_in_federal_register) as dt) as sorn_date
+            FROM crma_hive.crma_hive_csam_systems_general_details_query csam
+            left join crma_hive.crma_hive_snow_fismadetails fisma 
+            ON csam.system_id = fisma.csam_id AND trim(csam.fisma_id) = trim(fisma.fisma_id)
+            WHERE csam.fisma_reportable = 'Yes' AND csam.system_operational_status = 'Operational' 
+            AND trim(fisma.fisma_category) in ('GSS','MAJ')
         ),
-        eligible_devices AS (
-            -- Step 1.2: apply eligibility filters
+        -- Step 2.1: Compute partial security authz checks
+        partial_securith_auth_checks AS(
             SELECT 
-                device_id,
-                preferred_hostname AS hostname, 
-                preferred_ipv4  AS ip,
-                fisma_id,
-                device_last_seen,
-                LOWER(preferred_os) AS axonius_os,
-                asset_id,
-                is_credentialed,
-                last_authenticated_scan_date,
-                devicerole
-            FROM   deduped_devices
-            WHERE devicerole iLIKE 'ENDPOINT'
-                AND NOT (preferred_os IS NULL AND is_credentialed IS FALSE)
+            *,
+            CASE
+                WHEN s.ato_date IS NOT NULL 
+                AND s.ato_date <= current_date 
+                AND (s.ato_expiration IS NULL OR s.ato_expiration >= current_date )
+                THEN TRUE
+                ELSE FALSE
+            END AS auth_status_check,
+     		CASE
+     			WHEN s.document_review_approval_date_completed IS NOT NULL 
+     			AND s.document_review_approval_date_completed <= current_date  
+     			THEN TRUE
+     			ELSE FALSE
+     		END AS document_review_check,		
+            CASE
+                WHEN s.contingency_plan_review_date_completed IS NOT NULL 
+                AND s.contingency_plan_review_date_completed <= current_date 
+                THEN TRUE
+                ELSE FALSE
+            END AS contingency_plan_check,
+            CASE
+                WHEN s.contingency_plan_test_review_date_completed IS NOT NULL 
+                AND s.contingency_plan_test_review_date_completed <= current_date 
+                AND s.contingency_plan_test_review_date_completed >= NOW() - INTERVAL '1 year' 
+                THEN TRUE
+                ELSE FALSE
+            END AS contingency_plan_test_check,		
+            CASE
+                WHEN s.pta_ipa_date_completed IS NOT NULL
+                AND TO_DATE(s.pta_ipa_date_completed, 'MM-DD-YYYY') <= current_date
+                AND TO_DATE(s.pta_ipa_date_completed, 'MM-DD-YYYY') >= NOW() - INTERVAL '3 year' 
+                THEN TRUE
+                ELSE FALSE
+            END AS pta_valid,
+            CASE
+                WHEN trim(s.privacy_impact_assessment_status) = 'Required under E-Government Act'
+                THEN TRUE
+                ELSE FALSE
+            END as pia_required,
+            CASE
+                WHEN trim(s.privacy_impact_assessment_status) = 'Required under E-Government Act'
+                AND s.privacy_impact_assessment_date_completed IS NOT NULL
+                AND s.privacy_impact_assessment_date_completed <= current_date
+                THEN TRUE
+                WHEN trim(s.privacy_impact_assessment_status) = 'Not Required under E-Government Act'
+                THEN TRUE
+                ELSE FALSE
+            END AS pia_valid,
+            CASE
+                WHEN trim(s.system_of_records_notice) = 'Required under Privacy Act'
+                THEN TRUE
+                ELSE FALSE
+            END as sorn_required,		
+            CASE
+                WHEN trim(s.system_of_records_notice) = 'Required under Privacy Act'
+				AND s.sorn_date IS NOT NULL 
+				AND s.sorn_date <= current_date 
+                THEN TRUE
+                WHEN trim(s.system_of_records_notice) = 'Not Required under Privacy Act'
+                THEN TRUE
+                ELSE FALSE
+            END AS sorn_valid
+            FROM eligible_systems s
         ),
-        -- Step 2: Device Operating system
-        device_oss AS (
-            -- 2.1: Add normalized tvm os 
-                SELECT 
-                    d.device_id,
-                    d.hostname, 
-                    d.ip,
-                    d.fisma_id,
-                    d.device_last_seen,
-                    d.asset_id,
-                    d.is_credentialed,
-                    d.last_authenticated_scan_date,
-                    d.devicerole,
-                    d.axonius_os,
-                    a.normalized_tvm_os AS tvm_os
-                FROM eligible_devices d
-                LEFT JOIN crma_hive.crma_hive_tvm_normalized_os a
-                    ON d.asset_id = a.asset_id
-        ),
-        device_preferred_os AS (
-            -- 2.1: Select preferred os for the each device
-                    -- device os will be axonius os if exists, else tvm os
-            SELECT
-                device_id,
-                hostname, 
-                ip,
-                fisma_id,
-                device_last_seen,
-                asset_id,
-                is_credentialed,
-                last_authenticated_scan_date,
-                devicerole,
-                COALESCE(axonius_os, tvm_os) AS device_os
-            FROM device_oss
-        ),
-        -- Step 3: Join axonius device data with reference map to create partial OS map
-        partial_map AS(
+        -- Step 2.2: Compute full security authz checks        
+        full_securith_auth_checks AS(
             SELECT 
-                dpo.device_id,
-                dpo.hostname, 
-                dpo.ip,
-                dpo.fisma_id,
-                dpo.device_last_seen,
-                dpo.asset_id,
-                dpo.is_credentialed,
-                dpo.last_authenticated_scan_date,
-                dpo.devicerole,
-                dpo.device_os,		
-                dtmo.mobius_os_name,
-                dtmo.mobius_os_version,
-                dtmo.mobius_os_version_2,
-                dtmo.mobius_id,
-                dtmo. component
-            FROM device_preferred_os dpo
-            LEFT JOIN crma_hive.crma_hive_device_to_mobius_os_map dtmo
-                ON dpo.device_os =  dtmo.device_os 
-            WHERE dpo.device_os IS NOT NULL	
+            *,
+            CASE 
+                WHEN s.pta_valid = TRUE
+                AND (s.pia_required = FALSE OR s.pia_valid = TRUE)
+                AND (s.sorn_required = FALSE OR s.sorn_valid = TRUE)
+                THEN TRUE
+                ELSE FALSE
+            END as privacy_check
+            FROM partial_securith_auth_checks s
         ),
-        -- Step 4: Join to nomalized mobius softwars to create full os map with mobius os status field
-        full_match AS (
+        -- Step 3.0: Compute full security authz checks           
+        securith_authz_score AS(
             SELECT 
-            pm.*,
-            mns.status	
-            FROM partial_map pm
-            LEFT JOIN crma_hive.crma_hive_mobius_normalized_softwares mns
-                ON  pm.mobius_id = mns.mobius_id
-        ),
-        -- Step 5: Compute Score
-        device_prohibited_os_score AS (
-            SELECT
-                *,
-                CASE
-                    WHEN status IN ('Prohibited', 'Not Authorized', 'Archived') THEN 1
-                    WHEN status IS NULL THEN 1   -- NO matching OS found in mobius
-                    ELSE 0
-                END AS prohibited_os_score
-            FROM full_match
-        ),
-        -- Step 6: Enrich with FISMA system information
-        device_prohibited_os_scores_enriched AS (
-            SELECT 
-                dpos.device_id,
-                dpos.hostname, 
-                dpos.ip,
-                dpos.fisma_id,
-                fd.fisma_name,
-                fd.security_support_portfolio AS portfolio,
-                fd.dhs_hva,
-                fd.public_facing,
-                fd.cfo_designated,
-                fd.fips_199_security_categorization_overall,
-                fd.active,
-                fd.iscm_waiver, 
-                fd.fisma_reportable,
-                fd.fisma_inventory_selc_status,
-                fd.fisma_category,
-                dpos.device_last_seen,
-                dpos.asset_id,
-                dpos.is_credentialed,
-                dpos.last_authenticated_scan_date,
-                dpos.devicerole,
-                dpos.device_os,
-                dpos.mobius_os_name,
-                dpos.mobius_os_version,
-                dpos.mobius_os_version_2,
-                dpos.mobius_id,
-                dpos.status,
-                dpos.prohibited_os_score  
-            FROM device_prohibited_os_score dpos
-            LEFT JOIN crma_hive.crma_hive_snow_fismadetails fd
-                ON dpos.fisma_id = fd.fisma_id
-        )
+     		*,
+            CASE
+                WHEN s.auth_status_check = TRUE
+     			AND s.document_review_check = TRUE
+                AND s.contingency_plan_check = TRUE
+                AND s.contingency_plan_test_check = TRUE
+                AND s.privacy_check = TRUE
+                THEN 1
+                ELSE 0
+            END as score
+            FROM full_securith_auth_checks s
+        )	
         SELECT 
-            device_id,
-            hostname, 
-            ip,
             fisma_id,
-            fisma_name,
-            portfolio,
-            dhs_hva,
-            public_facing,
-            cfo_designated,
-            fips_199_security_categorization_overall,
-            active,
-            iscm_waiver, 
+            system_name,
+            org,
+            sub_org as portfolio,
+            acronym,
+            high_value_asset as dhs_hva,
             fisma_reportable,
-            fisma_inventory_selc_status,
-            fisma_category,
-            device_last_seen,
-            asset_id,
-            is_credentialed,
-            last_authenticated_scan_date,
-            devicerole,
-            device_os,
-            mobius_os_name,
-            mobius_os_version,
-            mobius_os_version_2,
-            mobius_id,
-            status,
-            prohibited_os_score   
-        FROM device_prohibited_os_scores_enriched
-
-
-
+	        fisma_category,
+            system_category as fips_199_security_categorization_overall,
+            system_operational_status as fisma_inventory_selc_status,
+            cfo_designation as cfo_designated,
+            contractor_system,
+            iscm_waiver,
+        --  iscm_waiver_exp_date,
+            ato_type,
+            ato_date as authorization_date,
+            ato_expiration,
+            document_review_approval_date_completed as document_review_date,
+            contingency_plan_date_completed as contingency_plan_date,
+            contingency_plan_test_date_completed as contingency_plan_test_date,
+            pta_ipa_date_completed as privacy_threshold_analysis_date,
+            privacy_impact_assessment_date_completed as privacy_impact_assesment_date,
+            pia_required,
+            sorn_date,
+            sorn_required,
+            auth_status_check,
+            document_review_check,
+            contingency_plan_check,
+            contingency_plan_test_check,
+            privacy_check,
+            pta_valid,
+            pia_valid,
+            sorn_valid,
+            score as security_authz_score
+        FROM securith_authz_score
     """
 
-    return sql
+    return sql    
 
-def build_fisma_prohibited_os_score_sql() -> str:
-    """
-    Build the Prohibited OS Score per FISMA System data preparation SQL Command using CTEs.
-    """
-    sql = f"""
-        WITH
-        fisma_prohibited_os_score AS (
-            SELECT
-                fisma_id,
-                SUM(prohibited_os_score) AS prohibited_os_score
-            FROM crma_hive.crma_hive_fismascorecard_device_prohibited_os_score
-            WHERE devicerole iLike 'ENDPOINT'
-         	AND etl_date = %(etl_date)s
-            GROUP BY fisma_id
-        )
-        SELECT 
-            a.fisma_id,
-            a.fisma_name,
-            a.security_support_portfolio AS portfolio,
-            a.dhs_hva,
-            a.public_facing,
-            a.cfo_designated,
-            a.fips_199_security_categorization_overall,
-            a.active,
-            a.iscm_waiver,
-            a.fisma_reportable,
-            a.fisma_inventory_selc_status,
-            a.fisma_category,
-            b.prohibited_os_score
-        FROM crma_hive.crma_hive_snow_fismadetails a
-        LEFT JOIN fisma_prohibited_os_score b
-            ON a.fisma_id = b.fisma_id
 
-    """
-    return sql
-
-def run_prohibited_os_score_workflow(
+def run_security_authz_score_workflow(
         engine: Engine,
         bucket_name: str
     )->None:
     """
-    Execute the Prohibited OS score workflow, including building query, 
+    Execute the Security Authorization score workflow, including building query, 
     param preparation, execute query, store output.
 
     Parameters:
@@ -272,22 +195,23 @@ def run_prohibited_os_score_workflow(
         None
     """
     etl_date= date.today()
-    logger.info(f"Computing Scorecard Prohibited OS Score for : {etl_date}") 
+    logger.info(f"Computing Scorecard Sec Authz Score for : {etl_date}") 
 
-    logger.info("Build Device Prohibited OS score query.")
-    sql = build_device_prohibited_os_score_sql()
+    logger.info("Build Security Authz score query for FISMA Systems.")
+    sql = build_system_security_authz_score_sql()
 
-    logger.info("Excecute Device Prohibited OS score query.")
+
+    logger.info("Excecute Security Authz score query for FISMA Systems.")
     df = rw_util.query_postgres_to_dataframe(
         engine=engine,
-        sql_query=sql,
+        sql_query=sql
     )
     
     if df is not None:
-        logger.info(f"Per device Prohibited OS score received. Total number of devices: {len(df)}")         
-        logger.info(f"Load device score dataset to target table.")
+        logger.info(f"Total number of FISMA Systems scored: {len(df)}")         
+        logger.info(f"Load FISMA score dataset to target table.")
         df["etl_date"] = etl_date
-        dataset = "crma_hive_fismascorecard_device_prohibited_os_score"
+        dataset = "crma_hive_fismascorecard_fisma_system_security_authz_score"
         fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
             engine=engine,
             df=df,
@@ -302,39 +226,8 @@ def run_prohibited_os_score_workflow(
         )
 
     else:
-        logger.warning("Query returned no data")   
-        return 
-
-    logger.info("Build FISMA System Prohibited OS score query.")
-    sql = build_fisma_prohibited_os_score_sql()
-
-    logger.info("Excecute FISMA System Prohibited OS score query.")
-    df = rw_util.query_postgres_to_dataframe(
-        engine=engine,
-        sql_query=sql,
-        params={"etl_date": etl_date}
-    )
-
-    if df is not None:       
-        logger.info(f"Load FISMA System Prohibited OS score dataset to target table and save a copy to S3 for archival.")
-        df["etl_date"] = etl_date 
-        dataset='crma_hive_fismascorecard_fisma_system_prohibited_os_score'
-        fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
-            engine=engine,
-            df=df,
-            table=dataset,
-            etl_date=etl_date
-        )
-
-        fismaScorecardUtility.archive_to_s3(
-            df=df,
-            bucket_name=bucket_name,
-            dataset=dataset
-        )
-       
-    else:
-        logger.warning("Query returned no data")      
-         
+        logger.warning("Query returned no data")
+             
 
 def main():
 
@@ -344,8 +237,7 @@ def main():
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
     engine = connection.postgres_engine("edae-crma-hive") 
 
-
-    run_prohibited_os_score_workflow(engine=engine, bucket_name=bucket_name)       
+    run_security_authz_score_workflow(engine=engine, bucket_name=bucket_name)       
       
     utility.log_memory_usage() 
     elapsed_minutes = (time.time() - start_time) / 60 

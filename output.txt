@@ -27,164 +27,218 @@ rw_util = Read_Write_Utility()
 fismaScorecardUtility = FismaScorecardUtility()
 
 
-def build_system_security_authz_score_sql() -> str:
+def build_fisma_scan_compliance_score_sql() -> str:
     """
-    Build the Security Authz Score per system data preparation SQL Command using CTEs.
+    Build the Scan Compliance Score per device data preparation SQL Command using CTEs.
     """
 
     sql = f"""
         WITH 
-        -- Step 2.0: Select eligible systems
-        eligible_systems AS (
-            SELECT  csam.*, fisma.fisma_category, fisma.iscm_waiver, (SELECT MAX(dt) FROM unnest(csam.published_in_federal_register) as dt) as sorn_date
-            FROM crma_hive.crma_hive_csam_systems_general_details_query csam
-            left join crma_hive.crma_hive_snow_fismadetails fisma 
-            ON csam.system_id = fisma.csam_id AND trim(csam.fisma_id) = trim(fisma.fisma_id)
-            WHERE csam.fisma_reportable = 'Yes' AND csam.system_operational_status = 'Operational' 
-            AND trim(fisma.fisma_category) in ('GSS','MAJ')
+        -- Step 1: Select Eligible devices
+        deduped_devices AS (
+            -- Step 1.1: dedup
+            SELECT *
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id
+                        ORDER BY device_last_seen DESC
+                    ) AS asset_rn
+                FROM crma_hive.crma_hive_fismascorecard_input_devices 
+                WHERE fisma_id iLIKE 'ICE-%%'
+                    AND asset_id IS NOT NULL
+            ) ranked
+            WHERE asset_rn = 1 
+            UNION ALL
+            SELECT *,
+                NULL AS asset_rn
+            FROM crma_hive.crma_hive_fismascorecard_input_devices 
+            WHERE asset_id IS NULL
         ),
-        -- Step 2.1: Compute partial security authz checks
-        partial_securith_auth_checks AS(
+        eligible_devices AS (
+            -- Step 1.2: apply eligibility filters
             SELECT 
-            *,
-            CASE
-                WHEN s.ato_date IS NOT NULL 
-                AND s.ato_date <= current_date 
-                AND (s.ato_expiration IS NULL OR s.ato_expiration >= current_date )
-                THEN TRUE
-                ELSE FALSE
-            END AS auth_status_check,
-     		CASE
-     			WHEN s.document_review_approval_date_completed IS NOT NULL 
-     			AND s.document_review_approval_date_completed <= current_date  
-     			THEN TRUE
-     			ELSE FALSE
-     		END AS document_review_check,		
-            CASE
-                WHEN s.contingency_plan_review_date_completed IS NOT NULL 
-                AND s.contingency_plan_review_date_completed <= current_date 
-                THEN TRUE
-                ELSE FALSE
-            END AS contingency_plan_check,
-            CASE
-                WHEN s.contingency_plan_test_review_date_completed IS NOT NULL 
-                AND s.contingency_plan_test_review_date_completed <= current_date 
-                AND s.contingency_plan_test_review_date_completed >= NOW() - INTERVAL '1 year' 
-                THEN TRUE
-                ELSE FALSE
-            END AS contingency_plan_test_check,		
-            CASE
-                WHEN s.pta_ipa_date_completed IS NOT NULL
-                AND TO_DATE(s.pta_ipa_date_completed, 'MM-DD-YYYY') <= current_date
-                AND TO_DATE(s.pta_ipa_date_completed, 'MM-DD-YYYY') >= NOW() - INTERVAL '3 year' 
-                THEN TRUE
-                ELSE FALSE
-            END AS pta_valid,
-            CASE
-                WHEN trim(s.privacy_impact_assessment_status) = 'Required under E-Government Act'
-                THEN TRUE
-                ELSE FALSE
-            END as pia_required,
-            CASE
-                WHEN trim(s.privacy_impact_assessment_status) = 'Required under E-Government Act'
-                AND s.privacy_impact_assessment_date_completed IS NOT NULL
-                AND s.privacy_impact_assessment_date_completed <= current_date
-                THEN TRUE
-                WHEN trim(s.privacy_impact_assessment_status) = 'Not Required under E-Government Act'
-                THEN TRUE
-                ELSE FALSE
-            END AS pia_valid,
-            CASE
-                WHEN trim(s.system_of_records_notice) = 'Required under Privacy Act'
-                THEN TRUE
-                ELSE FALSE
-            END as sorn_required,		
-            CASE
-                WHEN trim(s.system_of_records_notice) = 'Required under Privacy Act'
-				AND s.sorn_date IS NOT NULL 
-				AND s.sorn_date <= current_date 
-                THEN TRUE
-                WHEN trim(s.system_of_records_notice) = 'Not Required under Privacy Act'
-                THEN TRUE
-                ELSE FALSE
-            END AS sorn_valid
-            FROM eligible_systems s
+                device_id,
+                fisma_id,
+                devicerole,
+                device_last_seen,
+                asset_id,
+                is_credentialed,
+                last_authenticated_scan_date
+            FROM  deduped_devices
+            WHERE devicerole IN ('ENDPOINT','NETWORKING DEVICE')
         ),
-        -- Step 2.2: Compute full security authz checks        
-        full_securith_auth_checks AS(
+        -- Step 2: Erich device data with FISMA details
+        fisma_enriched_eligible_devices AS(
             SELECT 
-            *,
-            CASE 
-                WHEN s.pta_valid = TRUE
-                AND (s.pia_required = FALSE OR s.pia_valid = TRUE)
-                AND (s.sorn_required = FALSE OR s.sorn_valid = TRUE)
-                THEN TRUE
-                ELSE FALSE
-            END as privacy_check
-            FROM partial_securith_auth_checks s
+                d.device_id,
+                d.fisma_id,
+                f.acronym,
+                f.fisma_name,
+                f.security_support_portfolio AS portfolio,
+                f.dhs_hva,
+                f.public_facing,
+                f.cfo_designated,
+                f.fips_199_security_categorization_overall,
+                f.active,
+                f.iscm_waiver, 
+                f.fisma_reportable,
+                f.fisma_inventory_selc_status,
+                f.fisma_category,
+                d.devicerole,
+                d.device_last_seen,
+                d.asset_id,
+                d.is_credentialed,
+                d.last_authenticated_scan_date
+            FROM  eligible_devices d
+            LEFT JOIN crma_hive.crma_hive_snow_fismadetails f
+            ON d.fisma_id = f.fisma_id 
         ),
-        -- Step 3.0: Compute full security authz checks           
-        securith_authz_score AS(
-            SELECT 
-     		*,
-            CASE
-                WHEN s.auth_status_check = TRUE
-     			AND s.document_review_check = TRUE
-                AND s.contingency_plan_check = TRUE
-                AND s.contingency_plan_test_check = TRUE
-                AND s.privacy_check = TRUE
-                THEN 1
-                ELSE 0
-            END as score
-            FROM full_securith_auth_checks s
-        )	
+        -- Step 3: compute FISMA system scores
+        fisma_scan_compliance_score AS (
+            SELECT
+                fisma_id,
+                MAX(acronym) AS acronym,
+                MAX(fisma_name) AS fisma_name,
+                MAX(portfolio) AS portfolio,
+                MAX(dhs_hva) AS dhs_hva,
+                MAX(public_facing) AS public_facing,
+                MAX(cfo_designated) AS cfo_designated ,
+                MAX(fips_199_security_categorization_overall) AS fips_199_security_categorization_overall,
+                BOOL_OR(active) AS active,
+                MAX(iscm_waiver) AS iscm_waiver, 
+                MAX(fisma_reportable) AS fisma_reportable,
+                MAX(fisma_inventory_selc_status) AS fisma_inventory_selc_status,
+                MAX(fisma_category) AS fisma_category,
+                COUNT(*) AS total_assets,
+                COUNT(*) FILTER (WHERE is_credentialed) AS total_credentialed_assets,
+                CAST(
+                    (COUNT(*) FILTER (WHERE is_credentialed)::float / COUNT(*)::float) * 100
+                    AS INT
+                ) AS scan_compliance_score
+            FROM fisma_enriched_eligible_devices
+            GROUP BY fisma_id
+        )
         SELECT 
             fisma_id,
-            system_name,
-            org,
-            sub_org as portfolio,
             acronym,
-            high_value_asset as dhs_hva,
+            fisma_name,
+            portfolio,
+            dhs_hva,
+            public_facing,
+            cfo_designated ,
+            fips_199_security_categorization_overall,
+            active,
+            iscm_waiver, 
             fisma_reportable,
-	        fisma_category,
-            system_category as fips_199_security_categorization_overall,
-            system_operational_status as fisma_inventory_selc_status,
-            cfo_designation as cfo_designated,
-            contractor_system,
-            iscm_waiver,
-        --  iscm_waiver_exp_date,
-            ato_type,
-            ato_date as authorization_date,
-            ato_expiration,
-            document_review_approval_date_completed as document_review_date,
-            contingency_plan_date_completed as contingency_plan_date,
-            contingency_plan_test_date_completed as contingency_plan_test_date,
-            pta_ipa_date_completed as privacy_threshold_analysis_date,
-            privacy_impact_assessment_date_completed as privacy_impact_assesment_date,
-            pia_required,
-            sorn_date,
-            sorn_required,
-            auth_status_check,
-            document_review_check,
-            contingency_plan_check,
-            contingency_plan_test_check,
-            privacy_check,
-            pta_valid,
-            pia_valid,
-            sorn_valid,
-            score as security_authz_score
-        FROM securith_authz_score
+            fisma_inventory_selc_status,
+            fisma_category,
+            total_credentialed_assets,
+            total_assets,	
+            scan_compliance_score
+        FROM fisma_scan_compliance_score
+
     """
 
-    return sql    
+    return sql
 
+def build_component_scan_compliance_score_sql() -> str:
+    """
+    Build the Scan Compliance Score for component(ICE) System data preparation SQL Command using CTEs. 
+    """
+    sql = f"""
+        WITH 
+        -- Step 1: Select Eligible devices
+        deduped_devices AS (
+            -- Step 1.1: dedup
+            SELECT *
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id
+                        ORDER BY device_last_seen DESC
+                    ) AS asset_rn
+                FROM crma_hive.crma_hive_fismascorecard_input_devices 
+                WHERE asset_id IS NOT NULL
+            ) ranked
+            WHERE asset_rn = 1 
+            UNION ALL
+            SELECT *,
+                NULL AS asset_rn
+            FROM crma_hive.crma_hive_fismascorecard_input_devices 
+            WHERE asset_id IS NULL
+        ),
+        eligible_devices AS (
+            -- Step 1.2: apply eligibility filters
+            SELECT 
+                device_id,
+                fisma_id,
+                devicerole,
+                device_last_seen,
+                asset_id,
+                is_credentialed,
+                last_authenticated_scan_date
+            FROM  deduped_devices
+            WHERE devicerole IN ('ENDPOINT','NETWORKING DEVICE')
+        ),
+        -- Step 2: Erich device data with FISMA details and filter for elibible fisma systems
+        fisma_enriched_eligible_devices AS(
+            SELECT 
+                d.device_id,
+                d.fisma_id,
+                f.acronym,
+                f.fisma_name,
+                f.security_support_portfolio AS portfolio,
+                f.dhs_hva,
+                f.public_facing,
+                f.cfo_designated,
+                f.fips_199_security_categorization_overall,
+                f.active,
+                f.iscm_waiver, 
+                f.fisma_reportable,
+                f.fisma_inventory_selc_status,
+                f.fisma_category,
+                d.devicerole,
+                d.device_last_seen,
+                d.asset_id,
+                d.is_credentialed,
+                d.last_authenticated_scan_date
+            FROM  eligible_devices d
+            LEFT JOIN crma_hive.crma_hive_snow_fismadetails f
+            ON d.fisma_id = f.fisma_id 
+            WHERE fisma_reportable iLike 'yes'
+                AND fisma_category in ('MAJ', 'GSS')
+                AND fisma_inventory_selc_status iLike 'Operational'
+                AND COALESCE(iscm_waiver, '') not ILIKE 'yes' 
+        ),
+        component_scan_compliance_score AS (
+            SELECT
+                'ICE' AS component,
+                COUNT(*) AS total_assets,
+                COUNT(*) FILTER (WHERE is_credentialed) AS total_credentialed_assets,
+                CASE
+                    WHEN COUNT(*) = 0 THEN NULL
+                    ELSE CAST(
+                        (COUNT(*) FILTER (WHERE is_credentialed)::float / COUNT(*)::float ) * 100
+                        AS INT )
+                END AS scan_compliance_score
+            FROM fisma_enriched_eligible_devices
+        )
+        SELECT 
+            component,
+            total_credentialed_assets,
+            total_assets,	
+            scan_compliance_score
+        FROM component_scan_compliance_score
+        """
+    return sql
 
-def run_security_authz_score_workflow(
+def run_scan_compliance_score_workflow(
         engine: Engine,
         bucket_name: str
     )->None:
     """
-    Execute the Security Authorization score workflow, including building query, 
+    Execute the Scan Compliance score workflow, including building query, 
     param preparation, execute query, store output.
 
     Parameters:
@@ -195,23 +249,23 @@ def run_security_authz_score_workflow(
         None
     """
     etl_date= date.today()
-    logger.info(f"Computing Scorecard Sec Authz Score for : {etl_date}") 
+    logger.info(f"Computing Scorecard SC Score for : {etl_date}")
 
-    logger.info("Build Security Authz score query for FISMA Systems.")
-    sql = build_system_security_authz_score_sql()
+    logger.info("Build FISMA Systems Scan Compliance score query.")
+    sql = build_fisma_scan_compliance_score_sql()
 
 
-    logger.info("Excecute Security Authz score query for FISMA Systems.")
+    logger.info("Excecute FISMA Systems Scan Compliace score query.")
     df = rw_util.query_postgres_to_dataframe(
         engine=engine,
-        sql_query=sql
+        sql_query=sql,
     )
     
     if df is not None:
-        logger.info(f"Total number of FISMA Systems scored: {len(df)}")         
-        logger.info(f"Load FISMA score dataset to target table.")
+        logger.info(f"Per FISMA System Scan compliance score received. Total records: {len(df)}")         
+        logger.info(f"Load fisma system score dataset to target table.")
         df["etl_date"] = etl_date
-        dataset = "crma_hive_fismascorecard_fisma_system_security_authz_score"
+        dataset = "crma_hive_fismascorecard_fisma_system_scan_compliance_score"
         fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
             engine=engine,
             df=df,
@@ -226,8 +280,38 @@ def run_security_authz_score_workflow(
         )
 
     else:
-        logger.warning("Query returned no data")
-             
+        logger.warning("Query returned no data")   
+        return 
+
+    logger.info("Build Component Scan Compliance score query.")
+    sql = build_component_scan_compliance_score_sql()
+
+    logger.info("Excecute Componenet Scan Compliance score query.")
+    df = rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql,
+    )
+
+    if df is not None:       
+        logger.info(f"Load Component Scan Compliance score dataset to target table and save a copy to S3 for archival.")
+        df["etl_date"] = etl_date 
+        dataset="crma_hive_fismascorecard_component_scan_compliance_score"
+        fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
+            engine=engine,
+            df=df,
+            table=dataset,
+            etl_date=etl_date
+        )
+
+        fismaScorecardUtility.archive_to_s3(
+            df=df,
+            bucket_name=bucket_name,
+            dataset=dataset
+        )
+       
+    else:
+        logger.warning("Query returned no data")      
+         
 
 def main():
 
@@ -237,7 +321,8 @@ def main():
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
     engine = connection.postgres_engine("edae-crma-hive") 
 
-    run_security_authz_score_workflow(engine=engine, bucket_name=bucket_name)       
+
+    run_scan_compliance_score_workflow(engine=engine, bucket_name=bucket_name)       
       
     utility.log_memory_usage() 
     elapsed_minutes = (time.time() - start_time) / 60 

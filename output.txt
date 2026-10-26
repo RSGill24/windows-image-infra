@@ -1,371 +1,18 @@
-import logging
-
-import requests
-import pandas as pd
-import time
-from datetime import datetime
-import os
-
-import urllib3
-
-from crma_hive_data_quality_utilities import DataQualityUtilities
-from crma_hive_connections import Connection
-from crma_hive_utilities import Utility, Read_Write_Utility
-
-from sqlalchemy.engine import Engine
-
-# Turning off warnings
-urllib3.disable_warnings()
-
-# Setting up logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-utility = Utility()
-connection = Connection()
-rw_util = Read_Write_Utility()
-dataQualityUtils = DataQualityUtilities()
-
-def extract_nvd_cvss_score(metrics: dict, key: str):
-    """
-    Extract CVSS baseScore from the specified metrics dictionary.
-
-    Parameters:
-        metrics (dict): Dictionary containing CVSS metric data.
-        key (str): Metric key to extract the baseScore from.
-
-    Returns:
-        base_score (float or None): The CVSS baseScore if available; otherwise, None.
-    """   
-    metric_list = metrics.get(key, [])
-    if metric_list and isinstance(metric_list, list) and 'cvssData' in metric_list[0]:
-        return metric_list[0]['cvssData'].get('baseScore')
-    return None
-
-def get_nvd_data_with_retries(url: str, start_index: int):
-    """
-        Fetch CVE records from the NVD CVE 2.0 API with pagination and retry logic.
-        Parameters:
-            url (str): Endpoint URL for the NVD CVE 2.0 API.
-            start_index (int): Index to start pagination from.
-        Returns:
-            records (list): List of CVE records retrieved from the API.
-            complete (bool): True if all records have been fetched; otherwise, False.
-            next_start_index (int): Index to use for the next page of results.
-        """
-    max_retries = 5        
-    records_per_page = 2000 
-    records = []
-    total_results = None  
-
-    while True:
-        params = {
-            "resultsPerPage": records_per_page, 
-            "startIndex": start_index,            
-        }
-
-        success = False
-
-        for attempt in range(max_retries):
-            try:
-                response = requests.get(
-                    url,
-                    params=params,
-                    timeout=60
-                )
-                if response.status_code in (403, 429):
-                    wait_time = 60
-                    logger.info(
-                        f"Received {response.status_code} at index {start_index}. "
-                        f"Sleeping {wait_time}s and retrying..."
-                    )
-                    time.sleep(wait_time)
-                    continue
-
-                response.raise_for_status()
-                data = response.json()
-
-                # Read totalResults from the first successful page
-                if total_results is None:
-                    total_results = data.get("totalResults", 0)
-                    logger.info(f"Total results reported by API: {total_results}")
-                    
-
-                vulnerabilities = data.get("vulnerabilities", [])
-
-                # If the API returns no vulnerabilities, assume we are done
-                if not vulnerabilities:
-                    logger.info("No more data returned by API. Stopping.")
-                    success = True
-                    break
-
-                # Process and store CVE records
-                for item in vulnerabilities:
-                    cve = item.get("cve", {})
-
-                    metrics = cve.get("metrics", {})
-
-                    # CVSS v3: prefer V31, fallback to V30
-                    cvss_v3_score = extract_nvd_cvss_score(metrics, 'cvssMetricV31')
-                    if cvss_v3_score is None:
-                        cvss_v3_score = extract_nvd_cvss_score(metrics, 'cvssMetricV30')
-
-                    record = {
-                        "cve_id": cve.get("id"),
-                        "published": cve.get("published"),
-                        "last_modified": cve.get("lastModified"),
-                        "cvss_v2_score": extract_nvd_cvss_score(metrics, 'cvssMetricV2'),
-                        "cvss_v3_score": cvss_v3_score,
-                        "cvss_v4_score": extract_nvd_cvss_score(metrics, 'cvssMetricV40')
-                    }
-                    records.append(record)                 
-                logger.info(
-                    f"Progress: {len(records)} / {total_results} "
-                    f"(startIndex={start_index})"
-                )                             
-
-                start_index +=  records_per_page 
-                success = True
-                time.sleep(6)
-                break  # exit retry loop on success
-
-            except (requests.exceptions.ReadTimeout,
-                    requests.exceptions.ConnectionError) as e:
-                wait_time = (attempt + 1) * 10
-                logger.info(
-                    f"Network issue at index {start_index}: {e}. "
-                    f"Retry {attempt+1}/{max_retries} in {wait_time}s..."
-                )
-                time.sleep(wait_time)
-
-            except Exception as e:
-                logger.error(f"Unexpected error at index {start_index}: {e}")
-                success = False
-                break
-
-        # If after all retries we still failed, stop and return what we have
-        if not success:
-            logger.info(
-                f"Failed to fetch index {start_index} after {max_retries} attempts. "
-                "Returning partial results."
-            )
-            break
-
-        if total_results is not None and start_index >= total_results:
-            logger.info("Completed. All records reported by API have been fetched.")
-            break
-    return records, success, start_index
-
-def fetch_nvd_data():
-    """
-    Fetch CVE records from the NVD CVE 2.0 API with pagination and retry logic.
-
-    Parameters:
-        url (str): Endpoint URL for the NVD CVE 2.0 API.
-
-    Returns:
-        pd.DataFrame or None: Normalized DataFrame of CVE records if data is found; otherwise, None.
-    """
- 
-    url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-
-    logger.info(f"Fetching NVD CVE data from {url}")
-
-    all_records = []
-    start_index = 0
-    max_retries =5
-    retry_count = 0
-
-    while True:
-
-        records, complete, next_start_index  = get_nvd_data_with_retries(
-             url=url,
-             start_index=start_index
-        )           
-        all_records.extend(records) 
-        if complete:
-            break
-        
-        if next_start_index == start_index:
-            retry_count += 1
-            if retry_count >= max_retries:
-                logger.error("Max retries reached. Breaking loop to avoid infinite loop.")
-                raise RuntimeError("Error Fetching data.") 
-        else:
-            retry_count = 0        
-
-        logger.info(f"Partial records returned.Retrying to fetch remaining.")
-        start_index = next_start_index
-        time.sleep(30)
-
-    if all_records:
-        logger.info(f"Totol records fetched: {len(all_records)}")
-        return pd.json_normalize(all_records)
-    else: 
-        return None
-
-def fetch_cisa_kev_catalog(engine: Engine):
-    """
-    Fetch and normalize CISA Known Exploited Vulnerabilities (KEV) catalog data.
-
-    Returns:
-        pd.DataFrame or None: Normalized DataFrame of KEV records if data is found; otherwise, None.
-
-    """
-    url ="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-    records = []
-    try:
-        resp = requests.get(url, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        vulnerabilities = data.get("vulnerabilities", [])
-        if not vulnerabilities:
-            logger.warning("No more data returned by API. Stopping.")
-            return None
-        
-        for item in vulnerabilities:
-            record = {
-                "cve_id": item.get("cveID"),
-                "date_added": item.get("dateAdded"),
-                "due_date": item.get("dueDate"),
-                "is_kev": True
-            }
-            records.append(record)            
-    except requests.RequestException as e:
-        logger.error(f"Error fetching KEV data: {e}")
-        raise
-    df =  pd.json_normalize(records)
-
-    logger.info("Loading CISA KEV Catalog data to database...")
-    df["etl_date"] = datetime.now().date() 
-    schema="crma_hive"
-    table_name = "crma_hive_cisa_kev_catalog"
-    kev_df = df.drop("is_kev", axis=1)
-    rw_util.bulk_upsert_with_copy(
-        engine=engine,
-        df=kev_df,
-        schema=schema,
-        target_table=table_name,
-        pk_columns=["cve_id"]
-    )
-
-    ##Parallel loading##
-    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    rw_util.bulk_upsert_with_copy(
-        engine=engine2,
-        df=kev_df,
-        schema=schema,
-        target_table=table_name,
-        pk_columns=["cve_id"]
-    )
-
-
-    return df
-
-def process_and_load_nvd_cisa_cve_data(df: pd.DataFrame, bucket_name: str, engine: Engine):
-    """
-    Clean and standardize CVE data, archive it to S3, and load it into a database.
-
-    Parameters:
-        df (pd.DataFrame): DataFrame containing CVE records to process.
-        bucket_name (str): Name of the S3 bucket for archival.
-        engine (Engine): SQLAlchemy Engine for database connection.
-
-    Returns:
-        None
-    """
-    logger.info("Standardizing date, timestamp, numeric and boolean fields.")
-    cols = ["date_added", "due_date"]    
-    df = dataQualityUtils.clean_date_fields(df, cols) 
-    cols = ["published", "last_modified"]    
-    df = dataQualityUtils.clean_timestamp_fields(df, cols)
-    cols = ["cvss_v2_score", "cvss_v3_score", "cvss_v4_score"]
-    df = dataQualityUtils.clean_float_fields(df, cols) 
-    cols = ["is_kev"]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-    logger.info("Storing a copy in S3 bucket for archival...")
-    filename = "raw_data/NVD_CISA/CRMA_HIVE_CVE_SCORE_KEV_INFO_COMBINED" 
-    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
-
-    logger.info("Loading data to database...")
-    df["etl_date"] = datetime.now().date() 
-    schema="crma_hive"
-    table_name = "crma_hive_cve_score_kev_info_combined"
-    rw_util.bulk_upsert_with_copy(
-        engine=engine,
-        df=df,
-        schema=schema,
-        target_table=table_name,
-        pk_columns=["cve_id"]
-    )
-
-    ##Parallel loading##
-    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    rw_util.bulk_upsert_with_copy(
-        engine=engine2,
-        df=df,
-        schema=schema,
-        target_table=table_name,
-        pk_columns=["cve_id"]
-    )
-
-def main():
-
-    start_time = time.time()
-    utility.log_memory_usage() 
-
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    engine = connection.postgres_engine("edae-crma-hive") 
-    
-    logger.info("Fetching KEV info from CISA")
-    cisa_kev_df = fetch_cisa_kev_catalog(engine)
-
-    logger.info("Fetching cve scores from NVD...")
-    nvd_cve_score_df = fetch_nvd_data()
-
-    
-    logger.info("Combine datasets")
-    df = pd.merge(
-        nvd_cve_score_df,
-        cisa_kev_df,
-        how='left',
-        left_on='cve_id',
-        right_on='cve_id'
-    )
-
-    logger.info("Clean and load data to distination")
-    process_and_load_nvd_cisa_cve_data(df, bucket_name, engine)
-
-      
-    utility.log_memory_usage() 
-    elapsed_minutes = (time.time() - start_time) / 60 
-    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
-
-
-if __name__ == "__main__":
-    main()
-
-import pandas as pd
-import urllib3
-from datetime import datetime
 import boto3
 import logging
-from io import StringIO
+import pandas as pd
+import requests
 import time
+import urllib3
+from crma_hive_connections import Connection
 from crma_hive_utilities import Utility, Read_Write_Utility
 from crma_hive_data_quality_utilities import DataQualityUtilities
-from crma_hive_connections import Connection
-from sqlalchemy.engine.base import Engine
+from datetime import datetime
+from io import StringIO
+from requests.auth import HTTPBasicAuth
+from typing import Optional, List
 import pyarrow
-import re
-import json
-import ast
-from typing import Tuple, Optional
+
 
 
 # Turning off warnings
@@ -376,922 +23,242 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Instantiate classes
+connection = Connection()
 utility = Utility()
 rw_util = Read_Write_Utility()
-connection = Connection()
 dataQualityUtils = DataQualityUtilities()
 
-def load_to_processed(
-        bucket_name: str,
-        dataset: str,
-        clean_df: pd.DataFrame,
-        quarantine_df: Optional[pd.DataFrame] = None,
-        warning_df: Optional[pd.DataFrame] = None,
-        backfill_date: Optional[str] = None
-) -> None:
+
+class NonRetryableHTTPError(Exception):
+    pass
+
+def get_with_retries(
+        session: requests.Session,
+        url: str,
+        params: dict,
+        timeout: tuple,
+        max_retries: int,
+        backoff_factor: float,
+) -> List[dict]:
     """
-    Helper function to call s3 util functions to laod process data s3 bucket
-    
+    Get request with retries and exponential backoff
+    """
+    attempt = 0
+    retryable_status_codes = (429, 500, 502, 503, 504)  
+
+    while True:
+        try:
+            resp = session.get(url, params=params, timeout=timeout, verify=False)
+            
+            if resp.status_code == 200:
+                result = resp.json().get("result", [])
+                if not isinstance(result, list):
+                    raise ValueError("Unexpected response format: 'result' is not a list")
+                return result 
+            
+            if resp.status_code not in retryable_status_codes:
+                logger.error(f"Non-retryable status code {resp.status_code} received: {resp.text}")
+                raise NonRetryableHTTPError(f"Non-retryable status code: {resp.status_code}")
+                
+            resp.raise_for_status()  
+            
+        except ValueError as ve: 
+            logger.error(f"Rerutned invalid response format: {ve}")
+            raise
+
+        except NonRetryableHTTPError as nre: 
+            logger.error(f"Non-retryable HTTP error occurred: {nre}")
+            raise
+        
+        except Exception as e:
+            attempt +=1
+            if attempt > max_retries:
+                logger.error(f"Max retries exceeded: {e}")
+                raise
+
+            sleep = min(backoff_factor * (2 ** attempt), 60)  # Cap backoff at 60 seconds
+            logger.warning(f"Retry {attempt} for URL {url} with params {params} after error: {e}, sleeping for {sleep} seconds")
+            time.sleep(sleep)
+
+def fetch_cmdb_data(
+        user: str, 
+        password: str, 
+        url: str ,
+        table_name: str,
+        fields: Optional[List[str]]= None,
+        query: Optional[str] = None,
+    ) -> pd.DataFrame:
+    """
+    Fetches data from a SNOW table.
+
     Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525)
-        clean_df(pd.DataFrame): The clean dataframe
-        quarantine_df(pd.DataFrame): The dataframe with erronous data
-        warnning_df(pd.DataFrame): Dataframe with rows containing warning flangs 
-    """
-    if backfill_date:
-        prefix = "processed/CMDB/CLEAN/"
-        s3_filename = f"CRMA_HIVE_{dataset}_CLEAN"
-        target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET") 
-        rw_util.load_to_s3(bucket_name, clean_df, target_filename, "PARQUET", True)
-       
-        if quarantine_df is not None:
-            prefix = "processed/CMDB/QUARANTINE/"
-            s3_filename = f"CRMA_HIVE_{dataset}_QUARANTINE"
-            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET")
-            rw_util.load_to_s3(bucket_name, quarantine_df, target_filename, "PARQUET", True)   
-
-        if warning_df is not None:
-            prefix = "processed/CMDB/WARNING/"
-            s3_filename = f"CRMA_HIVE_{dataset}_WARNING"        
-            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET")
-            rw_util.load_to_s3(bucket_name, warning_df, target_filename, "PARQUET", True)     
-    else:    
-        output_file= f"processed/CMDB/CLEAN/CRMA_HIVE_{dataset}_CLEAN"
-        rw_util.load_to_s3(bucket_name, clean_df, output_file, "PARQUET")
-
-        if quarantine_df is not None:
-            output_file= f"processed/CMDB/QUARANTINE/CRMA_HIVE_{dataset}_QUARANTINE"
-            rw_util.load_to_s3(bucket_name, quarantine_df, output_file, "PARQUET")   
-
-        if warning_df is not None:
-            output_file= f"processed/CMDB/WARNING/CRMA_HIVE_{dataset}_WARNING"
-            rw_util.load_to_s3(bucket_name, warning_df, output_file, "PARQUET")         
-
-## For dev testing purpose only##
-def load_to_test(
-        bucket_name: str,
-        dataset: str,
-        clean_df: pd.DataFrame,
-        quarantine_df: Optional[pd.DataFrame] = None,
-        warning_df: Optional[pd.DataFrame] = None,
-        backfill_date: Optional[str] = None
-) -> None:
-    """
-    Helper function to call s3 util functions to load process data s3 bucket
-    
-    """
-    if backfill_date:
-        prefix = "test/processed/CMDB/CLEAN/"
-        s3_filename = f"CRMA_HIVE_{dataset}_CLEAN"
-        target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV") 
-        rw_util.load_to_s3(bucket_name, clean_df, target_filename, "CSV", True)
-       
-        if quarantine_df is not None:
-            prefix = "test/processed/CMDB/QUARANTINE/"
-            s3_filename = f"CRMA_HIVE_{dataset}_QUARANTINE"
-            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV")
-            rw_util.load_to_s3(bucket_name, quarantine_df, target_filename, "CSV", True)   
-
-        if warning_df is not None:
-            prefix = "test/processed/CMDB/WARNING/"
-            s3_filename = f"CRMA_HIVE_{dataset}_WARNING"        
-            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV")
-            rw_util.load_to_s3(bucket_name, warning_df, target_filename, "CSV", True)     
-    else:    
-        output_file= f"test/processed/CMDB/CLEAN/CRMA_HIVE_{dataset}_CLEAN"
-        rw_util.load_to_s3(bucket_name, clean_df, output_file, "CSV")
-
-        if quarantine_df is not None:
-            output_file= f"test/processed/CMDB/QUARANTINE/CRMA_HIVE_{dataset}_QUARANTINE"
-            rw_util.load_to_s3(bucket_name, quarantine_df, output_file, "CSV")   
-
-        if warning_df is not None:
-            output_file= f"test/processed/CMDB/WARNING/CRMA_HIVE_{dataset}_WARNING"
-            rw_util.load_to_s3(bucket_name, warning_df, output_file, "CSV")  
-  
-def process_cmdb_ci_computer(bucket_name: str, backfill_date: Optional[str] = None) -> None:
-    """
-    Handles  data cleaning and enrichment of the  cmdb_ci_computer  dataset 
-    
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix.
-    
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-
+        user (str): API username
+        password (str): API user password
+        url (str): Table url
+        table_name (str): Table name
+        fields(str): Fields to fetch
+        query(str): Query to filter records records to fetch
     Returns:
-        None
+        Pandas dataframe of the data retrieved from the table
     """
-    logger.info(f"Fetching data from landing zone...")
+    # Request params
+    page_size = 1500
+    timeout = (10, 240)
+    max_retries = 5
+    backoff_factor = 1.5
+
+    session = requests.Session()
+    session.auth = HTTPBasicAuth(user, password)
+    session.headers.update({
+        "Content-Type": "application/json", 
+        "Accept": "application/json",
+        "Connection": "keep-alive",
+    })
+
+    params = {
+        "sysparm_limit": page_size,
+        "sysparm_offset": 0,
+        "sysparm_display_value": "true",
+        "sysparm_exclude_reference_link": "true",
+    }
+
+    all_records = []
+    total_fetched = 0
+    logger.info(f"Fetching data from SNOW Tables API: {url}")
+
+    while True:
+
+        records = get_with_retries(session, url,params, timeout, max_retries, backoff_factor)
+
+        if not records:
+            logger.info(f"Completed fetching records for {table_name}. Total records fetched: {total_fetched}")
+            break
+        
+        all_records.extend(records)
+        now_fetched = len(records)
+        total_fetched += now_fetched
+        params["sysparm_offset"] += now_fetched
+        logger.info(f"Total records fetched so far: {total_fetched}")
     
-    # Creating variables and the dataframe
-    dataset = "CMDB_CI_COMPUTER"
-    prefix = "raw_data/CMDB/"
-    base_name = prefix + "CRMA_HIVE_" + dataset
+    df = pd.DataFrame(all_records)
+    df = df.drop_duplicates(subset="sys_id", keep="first")
 
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+    return df
+        
 
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
+def main():
+    # Creating variables
+    start_time = time.time()
 
-    logger.info(f"Total records retrieved: {len(df)}")
-    
-    target_columns = [
+    # Set the service account user and password credentials
+    user = connection.get_secret("edae-crma-hive")["snow_username"]
+    password = connection.get_secret("edae-crma-hive")["snow_password"]
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    base_url = "https://iceserviceportal.servicenowservices.com/api/now/table"
+
+     # log memory usage
+    utility.log_memory_usage()
+
+    tables = [
+
+        {
+          "name": "cmdb_ci_computer", 
+          "output_filename": "CRMA_HIVE_CMDB_CI_COMPUTER",
+          "fields": [
                         "operational_status", "sys_updated_on", "discovery_source", "first_discovered", "u_tenable_repository_name", "used_for",
                         "object_id", "short_description", "managed_by", "os_domain", "last_discovered", "sys_class_name", "manufacturer", "u_last_login_user_account",
                         "assigned_to", "os_version", "serial_number", "correlation_id", "unverified", "u_last_logon_timestamp", "asset", "sys_created_on",
                         "asset_tag", "fqdn", "u_fisma_id", "internet_facing", "hardware_status", "install_status", "name", "subcategory", "default_gateway",
                         "virtual", "sys_id", "sys_class_path", "u_discovered_location", "u_fisma_data_call_response_item", "os", "attestation_status",
-                        "ip_address", "model_id", "u_active_directory_ou", "category",            
-                    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    #Rename fields:
-    map = {
-            "u_tenable_repository_name": "tenable_repository_name", "u_last_login_user_account": "last_login_user_account", "u_last_logon_timestamp": "last_logon_timestamp", "u_fisma_id": "fisma_id",
-            "u_discovered_location": "discovered_location", "u_fisma_data_call_response_item": "fisma_data_call_response_item", "u_active_directory_ou": "active_directory_ou",        
-    }    
-    df = dataQualityUtils.rename_fields(df, map)
-
-    #Replace '', 'NULL', 'NA' values with null
-    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
-
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["sys_updated_on", "first_discovered", "last_discovered", "last_logon_timestamp", "sys_created_on",  ]    
-    df = dataQualityUtils.clean_timestamp_fields(df, cols)
-
-    #Apply DQ3: Normalize boolean fields 
-    cols = ["internet_facing", "unverified", "virtual" ]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["sys_id", "name"]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = ["sys_id"]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    # #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
-
-
-    logger.info("Loading processed data to destination...")
-    load_to_processed(
-            bucket_name=bucket_name, 
-            dataset=dataset, clean_df=df, 
-            quarantine_df=quarantine_df, 
-            backfill_date=backfill_date
-        )
-
-    # #....for testing only ... #
-    #  load_to_test(
-    #         bucket_name=bucket_name, 
-    #         dataset=dataset, clean_df=df, 
-    #         quarantine_df=quarantine_df, 
-    #         backfill_date=backfill_date
-    #      )
-    # ##
-
-def process_cmdb_ci_server(bucket_name: str, backfill_date: Optional[str] = None) -> None:
-    """
-    Handles  data cleaning and enrichment of the  cmdb_ci_server  dataset 
-    
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix.
-    
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-
-    Returns:
-        None
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "CMDB_CI_SERVER"
-    prefix = "raw_data/CMDB/"
-    base_name = prefix + "CRMA_HIVE_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Total records retrieved: {len(df)}")
-    
-    target_columns = [
-                        "operational_status", "sys_updated_on", "first_discovered", "sys_created_by", "object_id", "dns_domain", "short_description", "managed_by", "last_discovered",
-                        "sys_class_name", "manufacturer", "u_last_login_user_account", "assigned_to", "os_version", "u_resourceid", "x_g_dh5_axonius_in_axonius_id",
-                        "correlation_id", "asset", "u_username", "sys_created_on", "asset_tag", "fqdn", "u_fisma_id", "name", "subcategory","virtual", "sys_id", "os", 
-                        "ip_address", "model_id", "u_active_directory_ou", "host_name",            
-                    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    #Rename fields:
-    map = {
-            "u_last_login_user_account": "last_login_user_account", "u_resourceid": "resourceid", "x_g_dh5_axonius_in_axonius_id": "in_axonius_id", "u_username": "username",
-             "u_fisma_id":  "fisma_id", "u_active_directory_ou": "active_directory_ou",
-         }    
-    df = dataQualityUtils.rename_fields(df, map)
-
-    #Replace '', 'NULL', 'NA' values with null
-    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["sys_updated_on", "first_discovered", "last_discovered", "sys_created_on",  ]    
-    df = dataQualityUtils.clean_timestamp_fields(df, cols)
-
-    #Apply DQ3: Normalize boolean fields 
-    cols = [ "virtual" ]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["sys_id", "name"]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = ["sys_id"]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    # #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
-
-
-    logger.info("Loading processed data to destination...")
-    load_to_processed(
-            bucket_name=bucket_name, 
-            dataset=dataset, clean_df=df, 
-            quarantine_df=quarantine_df, 
-            backfill_date=backfill_date
-        )
-
-    # #....for testing only ... #
-    # load_to_test(
-    #         bucket_name=bucket_name, 
-    #         dataset=dataset, clean_df=df, 
-    #         quarantine_df=quarantine_df, 
-    #         backfill_date=backfill_date
-    #      )
-    # ##
-
-def process_cmdb_ci_database(bucket_name: str, backfill_date: Optional[str] = None) -> None:
-    """
-    Handles  data cleaning and enrichment of the  cmdb_ci_server  dataset 
-    
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix.
-    
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-
-    Returns:
-        None
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "CMDB_CI_DATABASE"
-    prefix = "raw_data/CMDB/"
-    base_name = prefix + "CRMA_HIVE_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Total records retrieved: {len(df)}")
-    
-    target_columns = [
+                        "ip_address", "model_id", "u_active_directory_ou", "category"            
+                    ],   
+        },  
+        {
+          "name": "cmdb_ci_server", 
+          "output_filename": "CRMA_HIVE_CMDB_CI_SERVER",
+          "fields": [
+                        "operational_status", "sys_updated_on", "first_discovered", "sys_created_by", "object_id", "dns_domain", "short_description", "managed_by", 
+                        "last_discovered", "sys_class_name", "manufacturer", "u_last_login_user_account", "assigned_to", "os_version", "u_resourceid", 
+                        "x_g_dh5_axonius_in_axonius_id", "correlation_id", "asset", "u_username", "sys_created_on", "asset_tag", "fqdn", "u_fisma_id", "name", 
+                        "subcategory", "virtual", "sys_id", "os", "ip_address", "model_id", "u_active_directory_ou", "host_name",                        
+                    ],   
+        },   
+        {
+          "name": "cmdb_ci_database", 
+          "output_filename": "CRMA_HIVE_CMDB_CI_DATABASE",
+          "fields":[
                         "operational_status","sys_updated_on",  "type", "first_discovered", "sys_updated_by", "sys_created_on", "sys_created_by", "short_description", "asset_tag", "fqdn",
                         "u_fisma_id", "owned_by", "install_status", "name", "life_cycle_stage", "managed_by", "last_discovered", "sys_class_name", "manufacturer", "sys_id",
-                        "life_cycle_stage_status", "serial_number", "ip_address", "correlation_id",                                     
-                    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    #Rename fields:
-    map = {
-             "u_fisma_id":  "fisma_id"
-         }    
-    df = dataQualityUtils.rename_fields(df, map)
-
-    #Replace '', 'NULL', 'NA' values with null
-    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["sys_updated_on", "first_discovered", "last_discovered", "sys_created_on",  ]    
-    df = dataQualityUtils.clean_timestamp_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["sys_id", "name"]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = ["sys_id"]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    # #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
-
-
-    logger.info("Loading processed data to destination...")
-    load_to_processed(
-            bucket_name=bucket_name, 
-            dataset=dataset, clean_df=df, 
-            quarantine_df=quarantine_df, 
-            backfill_date=backfill_date
-        )
-
-    # #....for testing only ... #
-    # load_to_test(
-    #         bucket_name=bucket_name, 
-    #         dataset=dataset, clean_df=df, 
-    #         quarantine_df=quarantine_df, 
-    #         backfill_date=backfill_date
-    #      )
-    # ##
-
-def process_cmdb_ci_network(bucket_name: str, backfill_date: Optional[str] = None) -> None:
-    """
-    Handles  data cleaning and enrichment of the  cmdb_ci_network  dataset 
-    
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix.
-    
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-
-    Returns:
-        None
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "CMDB_CI_NETWORK"
-    prefix = "raw_data/CMDB/"
-    base_name = prefix + "CRMA_HIVE_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Total records retrieved: {len(df)}")
-    
-    target_columns = [
+                        "life_cycle_stage_status", "serial_number", "ip_address", "correlation_id",                                               
+                    ],     
+        },
+        { 
+          "name": "cmdb_ci_network", 
+          "output_filename": "CRMA_HIVE_CMDB_CI_NETWORK",
+          "fields": [
                         "operational_status", "sys_updated_on", "first_discovered", "state", "sys_created_by", "sys_created_on", "owned_by", "object_id", "short_description", "last_discovered", "sys_class_name",
-                         "manufacturer", "life_cycle_stage_status", "cidr", "serial_number", "is_dhcp_enabled", "correlation_id", "asset", "asset_tag",  "fqdn", "u_fisma_id",
-                         "broadcast_address", "install_status", "name", "default_gateway", "sys_id", "netmask", "mac_address", "ip_address", "model_id", "sys_tags",                                 
-                    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    #Rename fields:
-    map = {
-            "u_fisma_id": "fisma_id",
-         }    
-    df = dataQualityUtils.rename_fields(df, map)
-
-    #Replace '', 'NULL', 'NA' values with null
-    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["sys_updated_on", "first_discovered", "last_discovered", "sys_created_on",  ]    
-    df = dataQualityUtils.clean_timestamp_fields(df, cols)
-
-      #Apply DQ3: Normalize boolean fields 
-    cols = [ "is_dhcp_enabled" ]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["sys_id", "name"]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = ["sys_id"]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    # #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
-
-
-    logger.info("Loading processed data to destination...")
-    load_to_processed(
-            bucket_name=bucket_name, 
-            dataset=dataset, clean_df=df, 
-            quarantine_df=quarantine_df, 
-            backfill_date=backfill_date
-        )
-
-    # #....for testing only ... #
-    # load_to_test(
-    #         bucket_name=bucket_name, 
-    #         dataset=dataset, clean_df=df, 
-    #         quarantine_df=quarantine_df, 
-    #         backfill_date=backfill_date
-    #      )
-    # ##
-
-def process_cmdb_ci_vm_instance(bucket_name: str, backfill_date: Optional[str] = None) -> None:
-    """
-    Handles  data cleaning and enrichment of the  cmdb_ci_vm_instance  dataset 
-    
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix.
-    
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-
-    Returns:
-        None
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "CMDB_CI_VM_INSTANCE"
-    prefix = "raw_data/CMDB/"
-    base_name = prefix + "CRMA_HIVE_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Total records retrieved: {len(df)}")
-    
-    target_columns = [
+                        "manufacturer", "life_cycle_stage_status", "cidr", "serial_number", "is_dhcp_enabled", "correlation_id", "asset", "asset_tag",  "fqdn", "u_fisma_id",
+                        "broadcast_address", "install_status", "name", "default_gateway", "sys_id", "netmask", "mac_address", "ip_address", "model_id", "sys_tags",
+                                         
+                    ],    
+        },  
+        {
+          "name": "cmdb_ci_vm_instance", 
+          "output_filename": "CRMA_HIVE_CMDB_CI_VM_INSTANCE",
+          "fields": [
                         "operational_status", "sys_updated_on",  "first_discovered", "vm_inst_id", "state", "sys_created_by", "sys_created_on", "owned_by", "object_id", "life_cycle_stage",
                         "short_description", "last_discovered", "sys_class_name", "manufacturer", "life_cycle_stage_status", "vendor", "serial_number",
                         "correlation_id", "asset", "sys_updated_by", "fqdn", "u_fisma_id", "install_status", "name", "sys_id", "ip_address", "sys_tags",                        
-                    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
+                    ],   
+        },  
+        {
+          "name": "cmdb_ci_service", 
+          "output_filename": "CRMA_HIVE_CMDB_CI_SERVICE",
+          "fields": [
+                        "operational_status", "u_application_criticality","sys_updated_on", "first_discovered", "number", "used_for", "u_description", "service_status", "portfolio_status", "u_test_environment_exists", 
+                        "busines_criticality", "u_fisma_id1", "last_discovered", "u_program_office", "sys_class_name", "u_fips_199_security_categorization_overall", "u_csam_id",
+                        "u_security_group", "u_number_of_users_supported", "sys_created_on", "u_fisma_id", "name", "sys_id", "u_asb_managed", "service_classification",                                                 
+                    ],   
+        },      
+    ]
 
-    #Rename fields:
-    map = {
-             "u_fisma_id":  "fisma_id"
-         }    
-    df = dataQualityUtils.rename_fields(df, map)
+    
+    for table in tables:
+        # Creating variable names
+        table_name = table["name"]
+        table_url = f"{base_url}/{table_name}"
+        output_filename = table["output_filename"]
+        fields = table["fields"]
 
-    #Replace '', 'NULL', 'NA' values with null
-    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["sys_updated_on", "first_discovered", "last_discovered", "sys_created_on",  ]    
-    df = dataQualityUtils.clean_timestamp_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["sys_id", "name"]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = ["sys_id"]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    # #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
-
-
-    logger.info("Loading processed data to destination...")
-    load_to_processed(
-            bucket_name=bucket_name, 
-            dataset=dataset, clean_df=df, 
-            quarantine_df=quarantine_df, 
-            backfill_date=backfill_date
+        df = fetch_cmdb_data(
+            user=user, 
+            password=password, 
+            url=table_url,
+            table_name=table_name,
         )
-
-    # #....for testing only ... #
-    # load_to_test(
-    #         bucket_name=bucket_name, 
-    #         dataset=dataset, clean_df=df, 
-    #         quarantine_df=quarantine_df, 
-    #         backfill_date=backfill_date
-    #      )
-    # ##
-def process_cmdb_ci_service(bucket_name: str, backfill_date: Optional[str] = None) -> None:
-    """
-    Handles  data cleaning and enrichment of the  cmdb_ci_service  dataset 
-    
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix.
-    
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-
-    Returns:
-        None
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "CMDB_CI_SERVICE"
-    prefix = "raw_data/CMDB/"
-    base_name = prefix + "CRMA_HIVE_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Total records retrieved: {len(df)}")
-    
-    target_columns = [
-                        "operational_status", "u_application_criticality","sys_updated_on", "first_discovered", "number", "used_for", "u_description", "service_status", "portfolio_status", 
-                        "u_test_environment_exists", "busines_criticality", "u_fisma_id1", "last_discovered", "u_program_office", "sys_class_name", "u_fips_199_security_categorization_overall", 
-                        "u_csam_id", "u_security_group", "u_number_of_users_supported", "sys_created_on", "u_fisma_id", "name", "sys_id", "u_asb_managed", "service_classification",
-                    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    #Rename fields:
-    map = {
-            "u_application_criticality":  "application_criticality", "u_description": "description", "u_test_environment_exists": "test_environment_exists", "u_fisma_id1": "fisma_id1",
-            "u_program_office": "program_office", "u_fips_199_security_categorization_overall": "fips_199_security_categorization_overall", "u_csam_id": "csam_id",
-            "u_security_group": "security_group", "u_number_of_users_supported": "number_of_users_supported", "u_fisma_id": "fisma_id", "u_asb_managed": "asb_managed"
-         }    
-    df = dataQualityUtils.rename_fields(df, map)
-
-    #Replace '', 'NULL', 'NA' values with null
-    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["sys_updated_on", "first_discovered", "last_discovered", "sys_created_on",  ]    
-    df = dataQualityUtils.clean_timestamp_fields(df, cols)
-
-    #Apply DQ3: Normalize boolean fields 
-    cols = ["test_environment_exists", "asb_managed" ]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-    #Apply DQ4: Convert numeric columns to Integer 
-    cols = ["csam_id", "number_of_users_supported"]
-    df = dataQualityUtils.clean_int_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["sys_id", "name"]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = ["sys_id"]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    # #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
-
-
-    logger.info("Loading processed data to destination...")
-    load_to_processed(
-            bucket_name=bucket_name, 
-            dataset=dataset, clean_df=df, 
-            quarantine_df=quarantine_df, 
-            backfill_date=backfill_date
-        )
-
-    # #....for testing only ... #
-    # load_to_test(
-    #         bucket_name=bucket_name, 
-    #         dataset=dataset, clean_df=df, 
-    #         quarantine_df=quarantine_df, 
-    #         backfill_date=backfill_date
-    #      )
-    # ##
-
-
-          
-def run_backfill_mode(bucket_name: str, hist_table_name: str, backfill_date: str, datasets: list) -> None:
-    """
-    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
-
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-        datasets (list): List of datsets upstream to a historical table
-    
-    Returns:
-        None
-    """
-    logger.info(f"Running in BACKFILL mode.")
-    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
-
-    # check valid backfill date format
-    if not utility.is_valid_backfill_date(backfill_date):
-        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
-        raise
-
-    if not datasets:
-        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
-        raise
-    
-    for dataset in datasets:
-        dataset_upper = dataset.upper().strip()
-
-        # call processors with backfill_date
-        if dataset_upper == "CMDB_CI_COMPUTER":
-            logger.info("Processing CMDB_CI_COMPUTER (in backfill mode)")
-            process_cmdb_ci_computer(bucket_name, backfill_date)
-            utility.log_memory_usage() 
-
-        if dataset_upper == "CMDB_CI_SERVER":
-            logger.info("Processing CMDB_CI_SERVER (in backfill mode)")
-            process_cmdb_ci_server(bucket_name, backfill_date)
-            utility.log_memory_usage() 
-
-        if dataset_upper == "CMDB_CI_DATABASE":
-            logger.info("Processing CMDB_CI_DATABASE (in backfill mode)")
-            process_cmdb_ci_database(bucket_name, backfill_date)
-            utility.log_memory_usage() 
-
-        if dataset_upper == "CMDB_CI_NETWORK":
-            logger.info("Processing CMDB_CI_NETWORK (in backfill mode)")
-            process_cmdb_ci_network(bucket_name, backfill_date)
-            utility.log_memory_usage() 
-
-        if dataset_upper == "CMDB_CI_VM_INSTANCE":
-            logger.info("Processing CMDB_CI_VM_INSTANCE (in backfill mode)")
-            process_cmdb_ci_vm_instance(bucket_name, backfill_date)
-            utility.log_memory_usage() 
-
-        if dataset_upper == "CMDB_CI_SERVICE":
-            logger.info("Processing CMDB_CI_SERVICE (in backfill mode)")
-            process_cmdb_ci_service(bucket_name, backfill_date)
-            utility.log_memory_usage() 
-
-def main():
-    start_time = time.time()
-    utility.log_memory_usage() 
-
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-
-    if not bucket_name:
-       raise ValueError("S3 bucket not found!")
-
-    # resolve workflow run properties
-    workflow_params = utility.get_workflow_props()
-    backfill_date = workflow_params.get("--backfill_date")
-    hist_table_name = workflow_params.get("--hist_table_name")
-    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
-
-    # run in backfill mode if all backfill properties are present
-    backfill_mode = bool(backfill_date and hist_table_name)
-
-    if backfill_mode:
-        run_backfill_mode(bucket_name, hist_table_name, backfill_date, datasets)
-    else:
-        logger.info(f"Running in Normal mode.")
-
-        logger.info("Processing CMDB_CI_COMPUTER")
-        process_cmdb_ci_computer(bucket_name)
-        utility.log_memory_usage() 
-
-        logger.info("Processing CMDB_CI_SERVER")
-        process_cmdb_ci_server(bucket_name)
-        utility.log_memory_usage() 
-
-        logger.info("Processing CMDB_CI_DATABASE")
-        process_cmdb_ci_database(bucket_name)
-        utility.log_memory_usage() 
-
-        logger.info("Processing CMDB_CI_NETWORK")
-        process_cmdb_ci_network(bucket_name)
-        utility.log_memory_usage() 
-
-        logger.info("Processing CMDB_CI_VM_INSTANCE")
-        process_cmdb_ci_vm_instance(bucket_name)
-        utility.log_memory_usage() 
-
-        logger.info("Processing CMDB_CI_SERVICE")
-        process_cmdb_ci_service(bucket_name)
-        utility.log_memory_usage() 
-
-    # log runtime 
-    elapsed_minutes = (time.time() - start_time)/60
-    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
-
-if __name__ == "__main__":
-    main()
-
-from typing import Optional
-import pandas as pd
-import urllib3
-from datetime import datetime
-import logging
-import time
-from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_connections import Connection
-from sqlalchemy.engine import Engine
-import re
-
-# Turning off warnings
-urllib3.disable_warnings()
-
-# Setting up logger
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Instantiate classes
-utility = Utility()
-rw_util = Read_Write_Utility()
-connection = Connection()
-
-# Define global vars
-MAIN_SCHEMA = rw_util.MAIN_SCHEMA
-BACKFILL_SCHEMA = rw_util.BACKFILL_SCHEMA
-TABLE_CRMA_HIVE_CMDB_CI_COMPUTER = "CMDB_CI_COMPUTER" 
-TABLE_CRMA_HIVE_CMDB_CI_SERVER = "CMDB_CI_SERVER" 
-TABLE_CRMA_HIVE_CMDB_CI_DATABASE = "CMDB_CI_DATABASE" 
-TABLE_CRMA_HIVE_CMDB_CI_NETWORK = "CMDB_CI_NETWORK" 
-TABLE_CRMA_HIVE_CMDB_CI_VM_INSTANCE = "CMDB_CI_VM_INSTANCE" 
-TABLE_CRMA_HIVE_CMDB_CI_SERVICE = "CMDB_CI_SERVICE" 
-
-
-VALID_TABLES = {
-TABLE_CRMA_HIVE_CMDB_CI_COMPUTER,
-TABLE_CRMA_HIVE_CMDB_CI_SERVER,
-TABLE_CRMA_HIVE_CMDB_CI_DATABASE,
-TABLE_CRMA_HIVE_CMDB_CI_NETWORK,
-TABLE_CRMA_HIVE_CMDB_CI_VM_INSTANCE,
-TABLE_CRMA_HIVE_CMDB_CI_SERVICE
-}
-
-
-def load_data_to_db(
-        engine: Engine,
-        bucket_name: str,
-        dataset: str,
-        schema: str,
-        backfill_date: Optional[str] = None        
-) -> None:
-    """
-    Loads data to desttination database
-    
-    Parameters:
-        engine (create_engine): Database connection engine
-        bucket (str): Name of the S3 bucket to fetch the data from
-        dataset (str): The dataset to store to database
-        schema(str): The database schema in which data is loaded.
-        backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525)        
-    """
-    logger.info(f"Preparing to load table '{dataset}' to '{schema}' schema")
-
-    classes = ["CLEAN", "QUARANTINE", "WARNING"]
-
-    for cls in classes:
-        prefix = f"processed/CMDB/{cls}/CRMA_HIVE"
-        base_name = f"{prefix}_{dataset}_{cls}"    
         
-        if backfill_date:
-            df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-            if df is not None:
-                df["etl_date"] = datetime.strptime(backfill_date, "%m%d%y").strftime("%Y-%m-%d")
-        else:
-            df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-            if df is not None:
-                logger.info(f"Total records retrieved: {len(df)}")
-                df["etl_date"] = datetime.now().date() 
+        #Select target columns, if specified 
+        if fields:
+            df = dataQualityUtils.select_fields(df, fields)
 
-        if cls == "CLEAN":
-            if df is None:
-                raise ValueError("Dataset not found")
-            table_name = f"crma_hive_{dataset.lower()}"
-            logger.info(f"Loading table '{table_name}' to '{schema}' schema")
-            rw_util.truncate_and_load_table(engine=engine, df=df, schema_name=schema, table_name=table_name, exist_type="append" )
-        else:
-            if df is not None:                    
-                table_name = f"crma_hive_{dataset.lower()}_{cls.lower()}"
-                logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-                rw_util.truncate_and_load_table(engine=engine, df=df, schema_name=schema, table_name=table_name, exist_type="append" )
+        # Store in S3 bucket
+        full_filename = "raw_data/CMDB/" + output_filename
+        rw_util.load_to_s3(bucket_name, df, full_filename, "PARQUET" )
 
-        if df is not None: 
-            logger.info(f"Perfomming post load validation on table '{table_name}' in '{schema}' schema")
-            if rw_util.post_load_validation(engine=engine, df=df, schema_name=schema, table_name=table_name):
-                logger.info(f"Post load validation check passed for table '{table_name}' in '{schema}' schema")
-
-                ##Parallel loading##
-                logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-                logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-                engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-                rw_util.truncate_and_load_table(engine=engine2, df=df, schema_name=schema, table_name=table_name, exist_type="append" )
-
-            else:
-                raise RuntimeError(f"Post load validation check failed for table '{table_name}' in '{schema}' schema")                      
-
-def run_backfill_mode(engine: Engine, schema: str, bucket_name: str, hist_table_name: str, backfill_date: str, datasets: list) -> None:
-    """
-    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
-
-    Parameters:
-        engine (str): SQLalchemy engine
-        schema (str): The database schema in which data is loaded.
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-        datasets (list): List of datsets upstream to a historical table
-    
-    Returns:
-        None
-    """
-    logger.info(f"Running in BACKFILL mode.")
-    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
-
-    # check valid backfill date format
-    if not utility.is_valid_backfill_date(backfill_date):
-        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
-        raise
-
-    if not datasets:
-        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
-        raise
-
-    # enforce valid tables in datasets list when running in backfill mode
-    valid_datasets = [t for t in datasets if t in VALID_TABLES]
-
-    if len(valid_datasets) != len(datasets):
-        invalid_tables = set(datasets) - set(valid_datasets)
-        logger.warning(f"Invalid tables ignored: {invalid_tables}. Valid tables used: {valid_datasets}")
-        datasets = valid_datasets
-    else:
-        logger.info(f"All {len(datasets)} tables in dataset are valid")
-
-    if not datasets:
-        logger.warning(F"No CMDB tables found!")
-
-    for dataset in datasets:
-        load_data_to_db(engine, bucket_name, dataset, schema, backfill_date)
-    
-
-def main():
-    start_time = time.time()
-
-    engine = connection.postgres_engine("edae-crma-hive")
-    
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-
-    if not bucket_name:
-       raise ValueError("S3 bucket not found!")
-    
-    schema = MAIN_SCHEMA
-
-    # resolve workflow run properties
-    workflow_params = utility.get_workflow_props()
-    backfill_date = workflow_params.get("--backfill_date")
-    hist_table_name = workflow_params.get("--hist_table_name")
-    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
-
-    # run in backfill mode if all backfill properties are present
-    backfill_mode = bool(backfill_date and hist_table_name)
-
-    if backfill_mode:
-        schema = BACKFILL_SCHEMA
-        run_backfill_mode(engine, schema, bucket_name, hist_table_name, backfill_date, datasets)     
-    else:
-        logger.info(f"Running in Normal mode.")  
-        datasets = [
-                    TABLE_CRMA_HIVE_CMDB_CI_COMPUTER, 
-                    TABLE_CRMA_HIVE_CMDB_CI_SERVER,
-                    TABLE_CRMA_HIVE_CMDB_CI_DATABASE,
-                    TABLE_CRMA_HIVE_CMDB_CI_NETWORK,
-                    TABLE_CRMA_HIVE_CMDB_CI_VM_INSTANCE,
-                    TABLE_CRMA_HIVE_CMDB_CI_SERVICE
-                ]
-
-        for dataset in datasets:
-            load_data_to_db(engine = engine, bucket_name = bucket_name, dataset=dataset, schema=schema, backfill_date=backfill_date)
+        # # store csv - for testing purposes only 
+        # temp_filename = "test/raw/CMDB/" + output_filename
+        # rw_util.load_to_s3(bucket_name, df, temp_filename, "CSV")
         
-    utility.log_memory_usage() 
+        # # save json file locally for data profiling 
+        # json_file =f"{output_filename}.json"
+        # df.to_json(json_file, orient="records",indent=4)
 
-    elapsed_minutes = (time.time() - start_time)/60
-    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+        utility.log_memory_usage() 
+
+    elapsed_minutes = (time.time() - start_time) / 60
+    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+
 
 
 if __name__ == "__main__":
     main()
-

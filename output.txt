@@ -1,1451 +1,256 @@
 import io
+import smtplib
 import logging
 import pandas as pd
-import boto3
 
-from datetime import date
-from datetime import datetime, timezone
-from typing import Optional
-from sqlalchemy.engine import Engine
-from sqlalchemy import text
-from crma_hive_audit_report_models import ReportQuery
-from crma_hive_utilities import Utility, Read_Write_Utility
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-utility = Utility()
-rw_util = Read_Write_Utility()
 
-
-def fetch_single_report(
-    engine: Engine,
-    sql_statment: str,
-    query_params: Optional[dict] = None,
-) -> pd.DataFrame:
+def format_sync_summary_for_email(
+    sync_summary_dataframe: pd.DataFrame,
+) -> str:
     """
-    Executes one SQL query against the CRMA HIVE database and returns the result as a pandas DataFrame.
+    Formats the normalized sync_summary dataframe as a plain-text bullet list
+    for inclusion in the audit report email body.
+
+    Expected normalized input columns:
+        aggregate_name
+        count
 
     Parameters:
-        engine: Active SQLAlchemy database engine.
-        sql_statment: SQL statement text to execute.
-        query_params: Optional dictionary of query parameters to pass into the database query utility.
+        sync_summary_dataframe: DataFrame containing sync summary rows.
 
     Returns:
-        pd.DataFrame: Query results as a DataFrame. Returns an empty DataFrame if the query utility returns None.
+        str: Plain-text formatted sync summary.
     """
-    logger.info("Executing database query to fetch a single data report.")
-
-    dataframe = rw_util.query_postgres_to_dataframe(
-        engine=engine,
-        sql_query=sql_statment,
-        params=query_params,
-    )
-
-    if dataframe is None:
-        dataframe = pd.DataFrame()
-
-    logger.info(f"Database query completed. Returned {len(dataframe)} row(s).")
-
-    return dataframe
-
-def fetch_all_reports(
-    engine: Engine,
-    report_queries: list[ReportQuery],
-    query_params: Optional[dict] = None,
-) -> dict[str, pd.DataFrame]:
-    """
-    Executes multiple configured report queries and returns a dictionary of worksheet names mapped to DataFrames.
-
-    Parameters:
-        engine: Active SQLAlchemy database engine.
-        report_queries: List of ReportQuery objects containing worksheet names and SQL statements.
-        query_params: Optional query parameters to pass into each database query.
-
-    Returns:
-        dict[str, pd.DataFrame]: Dictionary keyed by worksheet name, with each value containing the corresponding query result DataFrame.
-    """
-    reports = {}
-
-    for report_query in report_queries:
-        logger.info(f"Fetching report worksheet: {report_query.worksheet_name}")
-
-        reports[report_query.worksheet_name] = fetch_single_report(
-            engine=engine,
-            sql_statment=report_query.sql,
-            query_params=query_params,
-        )
-
-    return reports
-
-def evaluate_sync_status(
-    count_dataframe: pd.DataFrame,
-    health_check: list[str],
-    exclude_columns: Optional[list[str]] = None
-) -> bool:
-    """
-    Evaluates a health-check DataFrame using a caller-provided list of count columns.
-    The report is considered healthy only when all configured health-check count columns are zero.
-
-    Parameters:
-        count_dataframe: DataFrame containing one or more count columns used for health evaluation.
-        health_check: List of column names to inspect. Each column should contain a numeric count where zero
-                      means no discrepancy and any value greater than zero means maintenance is required.
-        exclude_columns: Optional list of column names to exclude from health evaluation.             
-
-    Returns:
-        bool: True if all configured health-check values are zero.
-              False if any configured health-check value is greater than zero.
-    """
-    logger.info("Evaluating health check metrics.")
-
-    if count_dataframe is None or count_dataframe.empty:
-        raise ValueError("Health check dataframe is empty.")
-
-    if not health_check:
-        raise ValueError("health_check must contain at least one column name.")
-
-    exclude_columns = exclude_columns or []
-    exclude_columns_set = set(exclude_columns)
-
-    filtered_health_check = [
-        column for column in health_check
-        if column not in exclude_columns_set
-    ]
-
-    if not filtered_health_check:
-        raise ValueError(
-            "No health-check columns remain after applying exclude_columns."
-        )
-
-    missing_columns = [
-        column for column in filtered_health_check
-        if column not in count_dataframe.columns
-    ]
-
-    if missing_columns:
-        raise ValueError(
-            f"Health check dataframe is missing required column(s): {missing_columns}"
-        )
-
-    counts = count_dataframe.loc[:, filtered_health_check].iloc[0]
-    counts = pd.to_numeric(counts, errors="coerce").fillna(0)
-
-    is_in_sync = not (counts > 0).any()
-
-    logger.info(f"Evaluated health check columns: {filtered_health_check}")
-    logger.info(f"Excluded health check columns: {exclude_columns}")    
-    logger.info(f"Health check counts: {counts.to_dict()}")
-    logger.info(f"In-sync status: {is_in_sync}")
-
-    return bool(is_in_sync)
-
-def normalize_sync_summary(
-    count_dataframe: pd.DataFrame,
-    health_check: list[str],
-) -> pd.DataFrame:
-    """
-    Converts a single-row health-check DataFrame into a normalized two-column summary format.
-    Output columns: aggregate_name, count
-
-    Parameters:
-        count_dataframe: DataFrame containing the health-check count columns.
-        health_check: List of health-check column names to include in the normalized output.
-
-    Returns:
-        pd.DataFrame: Normalized DataFrame with columns aggregate_name and count.
-    """
-    logger.info("Normalizing health check summary.")
-
-    if count_dataframe is None or count_dataframe.empty:
-        return pd.DataFrame(columns=["aggregate_name", "count"])
-
-    if not health_check:
-        raise ValueError("health_check must contain at least one column name.")
-
-    missing_columns = [
-        column for column in health_check
-        if column not in count_dataframe.columns
-    ]
-
-    if missing_columns:
-        raise ValueError(
-            f"Cannot normalize sync summary. Missing column(s): {missing_columns}"
-        )
-
-    row = count_dataframe.loc[:, health_check].iloc[0]
-    row = pd.to_numeric(row, errors="coerce").fillna(0)
-
-    return pd.DataFrame(
-        {
-            "aggregate_name": health_check,
-            "count": [int(row[column]) for column in health_check],
-        }
-    )
-
-def create_in_memory_excel(dataframes_dict: dict[str, pd.DataFrame]) -> io.BytesIO:
-    """
-    Creates a multi-tab Excel workbook in memory. Each dictionary item is written to one worksheet.
-
-    Parameters:
-        dataframes_dict: Dictionary where each key is a worksheet name and each value is the DataFrame to write to that worksheet.
-
-    Returns:
-        io.BytesIO: Binary stream containing the generated Excel workbook.
-    """
-    logger.info("Starting generation of multi-tab Excel workbook.")
-
-    excel_stream = io.BytesIO()
-
-    with pd.ExcelWriter(excel_stream, engine="xlsxwriter") as writer:
-        for worksheet_name, dataframe in dataframes_dict.items():
-            safe_sheet_name = str(worksheet_name)[:31]
-
-            if dataframe is None:
-                dataframe = pd.DataFrame()
-
-            dataframe.to_excel(
-                writer,
-                sheet_name=safe_sheet_name,
-                index=False,
-            )
-
-    excel_stream.seek(0)
-
-    logger.info("Multi-tab Excel workbook generated successfully.")
-
-    return excel_stream
-
-def upload_report_to_s3(
-    excel_stream: io.BytesIO,
-    bucket_name: str,
-    file_name: str,
-) -> None:
-    """
-    Uploads the generated multi-tab Excel workbook to S3.
-
-    Parameters:
-        excel_stream: Binary stream containing the Excel workbook.
-        bucket_name: S3 bucket name.
-        file_name: Target file name for the archived report.
-
-    Returns:
-        None: Does not return a value. Raises an exception if the S3 upload fails.
-    """
-    logger.info("Uploading audit report to S3.")
-
-    if not bucket_name:
-        raise ValueError("bucket_name is required.")
-
-    if not file_name:
-        raise ValueError("file_name is required.")
-
-    s3_prefix = "processed/AUDIT_REPORTS/"
-    timestamp = f"_{datetime.now(timezone.utc).strftime('%m%d%y_%H%M%S')}"
-    s3_key = f"{s3_prefix}{file_name}{timestamp}"
-    # debug: save to test path in S3
-    # s3_key = f"test/AUDIT_REPORTS/{file_name}{timestamp}"
-
-    # upload to s3
-    excel_stream.seek(0)
-    s3_client = boto3.client("s3")
-    s3_client.upload_fileobj(
-        Fileobj=excel_stream,
-        Bucket=bucket_name,
-        Key=s3_key,
-        ExtraArgs={
-            "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        },
-    )
-
-    # debug: local file save
-    # excel_file =f"{file_name}.xlsx"
-    # with open(excel_file, "wb") as f:
-    #     f.write(excel_stream.getvalue())
-
-    logger.info(f"Audit report uploaded to S3. Bucket: {bucket_name}, File: {file_name}")
-
-def upload_audit_records_to_s3(
-    records: pd.DataFrame,
-    bucket_name: str,
-    file_name: str,
-) -> None:
-    """
-    Uploads the audit records into S3 to archive records loaded into table.
-
-    Parameters:
-        records: Audit records loaded into table.
-        bucket_name: S3 bucket name.
-        file_name: Target name of file archived into s3.
-
-    Returns:
-        None: Does not return a value. Raises an exception if the S3 upload fails.
-    """    
-    logger.info("Upload audit records into S3.")
-
-    if not bucket_name:
-        raise ValueError("bucket_name is required.")
-
-    if not file_name:
-        raise ValueError("file_name is required.")
-    
-    s3_prefix = "processed/AUDIT_REPORTS/"
-    s3_key = f"{s3_prefix}{file_name}"    
-    rw_util.load_to_s3(
-        bucket_name=bucket_name,
-        df=records,
-        output_filename=s3_key,
-        file_type="PARQUET"
-    )
-
-    logger.info(f"Completed upload of '{s3_key}' into S3.")
-
-def _extract_history_records(
-    dataframe: pd.DataFrame,
-    source_column: str,
-    system_type: str,
-    change_type: str,
-    counter_column: str,
-    entity_column: str,
-) -> pd.DataFrame:
-    """
-    Extracts and normalizes one discrepancy DataFrame into the unified software
-    history format.
-
-    Parameters:
-        dataframe: Source discrepancy DataFrame.
-        source_column: Source software-name column to extract.
-        system_type: Target system type value.
-        change_type: Target change type value.
-        counter_column: Source column containing the calculated consecutive_weeks value.
-        entity_column: Target entity-name column in the history dataframe, such as software_name or os_name.
-
-    Returns:
-        pd.DataFrame: DataFrame with software_name, system_type, change_type, and consecutive_weeks.
-    """
-    if not entity_column or str(entity_column).strip() == "":
-        raise ValueError("entity_column is required.")
-
-    entity_column = str(entity_column).strip()
-
-    output_columns = [
-        entity_column,
-        "system_type",
-        "change_type",
-        "consecutive_weeks",
-    ]
-
-    if dataframe is None or dataframe.empty:
-        return pd.DataFrame(columns=output_columns)
+    if sync_summary_dataframe is None or sync_summary_dataframe.empty:
+        return "Sync Summary:\n- Not available"
 
     required_columns = [
-        source_column,
-        counter_column,
+        "aggregate_name",
+        "count",
     ]
 
     missing_columns = [
         column for column in required_columns
-        if column not in dataframe.columns
+        if column not in sync_summary_dataframe.columns
     ]
 
     if missing_columns:
-        raise ValueError(
-            f"Report dataframe is missing required column(s): {missing_columns}"
+        logger.warning(
+            f"Sync summary dataframe missing expected column(s): {missing_columns}"
         )
+        return "Sync Summary:\n- Not available due to unexpected format"
 
-    normalized_dataframe = dataframe.loc[:, [source_column, counter_column]].copy()
+    summary_dataframe = sync_summary_dataframe.loc[:, required_columns].copy()
 
-    normalized_dataframe = normalized_dataframe.rename(
-        columns={
-            source_column: entity_column,
-            counter_column: "consecutive_weeks",
-        }
-    )
-
-    normalized_dataframe[entity_column] = (
-        normalized_dataframe[entity_column]
+    summary_dataframe["aggregate_name"] = (
+        summary_dataframe["aggregate_name"]
         .astype("string")
+        .fillna("")
         .str.strip()
     )
 
-    normalized_dataframe = normalized_dataframe[
-        normalized_dataframe[entity_column].notna()
-        & (normalized_dataframe[entity_column] != "")
-    ]
-
-    normalized_dataframe["system_type"] = system_type
-    normalized_dataframe["change_type"] = change_type
-
-    normalized_dataframe["consecutive_weeks"] = pd.to_numeric(
-        normalized_dataframe["consecutive_weeks"],
+    summary_dataframe["count"] = pd.to_numeric(
+        summary_dataframe["count"],
         errors="coerce",
-    ).fillna(1).astype(int)
+    ).fillna(0).astype(int)
 
-    normalized_dataframe = normalized_dataframe.drop_duplicates(
-        subset=[entity_column, "system_type", "change_type"],
-        keep="first",
-    )
+    metric_labels = {
+        "new_tvm_software_count": "New TVM software",
+        "new_mobius_software_count": "New Mobius software",
+        "deleted_tvm_software_count": "Deleted TVM software",
+        "deleted_mobius_software_count": "Deleted Mobius software",
+        "new_axonius_os_count": "New Axonius OS",
+        "new_mobius_os_count": "New Mobius OS",
+        "deleted_axonius_os_count": "Deleted Axonius OS",
+        "deleted_mobius_os_count": "Deleted Mobius OS",
+    }
 
-    return normalized_dataframe.loc[:, output_columns]
+    rows = []
 
-def _validate_source_mappings(source_mappings: list[dict[str, str]]) -> None:
-    """
-    Validates configurable source mappings used for software audit history.
+    for _, row in summary_dataframe.iterrows():
+        aggregate_name = row["aggregate_name"]
+        label = metric_labels.get(aggregate_name, aggregate_name)
+        rows.append(f"- {label}: {row['count']}")
 
-    Each mapping must include:
-        worksheet_name: Key in the reports dictionary.
-        source_column: Source column containing the software name.
-        system_type: System type value to write to history.
-        change_type: Change type value to write to history.
-        counter_column: Source column containing the calculated consecutive_weeks value.
-
-    Parameters:
-        source_mappings: List of mapping dictionaries.
-
-    Returns:
-        None
-
-    Raises:
-        ValueError: If source_mappings is empty or malformed.
-    """
-    if not source_mappings:
-        raise ValueError("source_mappings must contain at least one mapping.")
-
-    required_mapping_keys = [
-        "worksheet_name",
-        "source_column",
-        "system_type",
-        "change_type",
-        "counter_column",
-    ]
-
-    for index, mapping in enumerate(source_mappings):
-        if not isinstance(mapping, dict):
-            raise ValueError(
-                f"source_mappings[{index}] must be a dictionary."
-            )
-
-        missing_keys = [
-            key for key in required_mapping_keys
-            if key not in mapping or mapping[key] is None or str(mapping[key]).strip() == ""
+    return "\n".join(
+        [
+            "Sync Summary:",
+            *rows,
         ]
+    )
 
-        if missing_keys:
-            raise ValueError(
-                f"source_mappings[{index}] is missing required key(s): {missing_keys}"
-            )
 
-def build_audit_report_dataframe(
-    reports: dict[str, pd.DataFrame],
-    source_mappings: list[dict[str, str]],
-    entity_column: str,
-) -> pd.DataFrame:
+def build_email_body(
+    is_in_sync: bool,
+    reference_map: str,
+    sync_summary_dataframe: pd.DataFrame = None,
+) -> str:
     """
-    Builds today's persistent audit report DataFrame from report outputs.
-    - Extracts the configured source entity-name column.
-    - Renames it to the configured entity_column.
-    - Adds configured system_type and change_type values.
-    - Extracts the configured counter_column as consecutive_weeks.
-    - Deduplicates by entity_column, system_type, change_type.
-    - Adds today's etl_date.
-
+    Builds a concise plain-text email body for a reference map audit notification.
 
     Parameters:
-        reports: Dictionary of report DataFrames from fetch_all_reports.
-        source_mappings: Configurable list describing how report worksheets map into software history records.
-        target_table: Name of target table dataframe will be loaded into
-        entity_column: Target entity-name column for the output dataframe. Examples: software_name, os_name.
+        is_in_sync: True if the reference map is healthy and in-sync. False if discrepancies were found and maintenance is required.
+        reference_map: Human-readable name of the audited reference map, for example "Software Map" or "OS Map".
+        sync_summary_dataframe: Optional normalized sync summary DataFrame with aggregate_name and count columns.
 
     Returns:
-        pd.DataFrame: Today's history records ready for insertion.
+        str: Plain-text email body.
     """
-    logger.info("Building today's software audit history dataframe from report query counters.")
-
-    if reports is None:
-        raise ValueError("reports dictionary is required.")
-
-    if not entity_column or str(entity_column).strip() == "":
-        raise ValueError("entity_column is required.")
-
-    entity_column = str(entity_column).strip()    
-
-    _validate_source_mappings(source_mappings)
-
-    today = date.today()
-    history_frames = []
-
-    for mapping in source_mappings:
-        worksheet_name = mapping["worksheet_name"]
-        source_column = mapping["source_column"]
-        system_type = mapping["system_type"]
-        change_type = mapping["change_type"]
-        counter_column = mapping["counter_column"]
-
-        logger.info(
-            "Extracting software history records from worksheet "
-            f"{worksheet_name} using source column {source_column} "
-            f"and counter column {counter_column}, and entity column {entity_column}."
-        )
-
-        history_frames.append(
-            _extract_history_records(
-                dataframe=reports.get(worksheet_name),
-                source_column=source_column,
-                system_type=system_type,
-                change_type=change_type,
-                counter_column=counter_column,
-                entity_column=entity_column
-            )
-        )
-
-    expected_columns = [
-        entity_column,
-        "system_type",
-        "change_type",
-        "consecutive_weeks",
-        "etl_date",
-    ]
-
-    today_history_dataframe = pd.concat(
-        history_frames,
-        ignore_index=True,
-        sort=False,
+    status = "In Sync" if is_in_sync else "Maintenance Required"
+    action = (
+        "No maintenance is required."
+        if is_in_sync
+        else "Review the attached workbook and complete the required actions listed in each tab."
     )
 
-    if today_history_dataframe.empty:
-        logger.info("No unresolved software discrepancies found for today's run.")
-        return pd.DataFrame(columns=expected_columns)
-
-    today_history_dataframe = today_history_dataframe.drop_duplicates(
-        subset=[entity_column, "system_type", "change_type"],
-        keep="first",
+    sync_summary_text = format_sync_summary_for_email(
+        sync_summary_dataframe=sync_summary_dataframe,
     )
 
-    today_history_dataframe["etl_date"] = today
+    return (
+        f"CRMA Hive {reference_map} audit completed.\n\n"
+        f"Status: {status}\n\n"
+        f"{sync_summary_text}\n\n"
+        f"Action: {action}"
+    )
 
-    final_dataframe = today_history_dataframe.loc[:, expected_columns]
-
-    logger.info(f"Built {len(final_dataframe)} software audit history row(s).")
-
-    return final_dataframe
-
-def load_audit_report_with_overwrite(
-    engine: Engine,
-    audit_records: pd.DataFrame,
-    table_name: str,
-    schema_name: str,
-    entity_column: str
-) -> pd.DataFrame:
+def build_email_subject(
+    is_in_sync: bool,
+    reference_map: str,
+) -> str:
     """
-    Loads today's audit report records into HVIE with idempotent overwrite behavior(truncate and load).
+    Builds an email subject line for a reference map audit notification.
 
     Parameters:
-        engine: Active SQLAlchemy database engine.
-        audit_records: The audit records to load into table.
-        table_name: Name of table used to store hist audit records.
-        schema_name: Name of schema used to store hist audit records.
+        is_in_sync: True if the reference map is healthy and in-sync. False if discrepancies were found and maintenance is required.
+        reference_map: Human-readable name of the audited reference map.
 
     Returns:
-        pd.Dataframe: the audit report records loaded into table
+        str: Email subject line.
     """
-    logger.info("Loading audit history with idempotent overwrite logic.")
+    status = "In Sync" if is_in_sync else "Maintenance Required"
 
-    if not entity_column or str(entity_column).strip() == "":
-        raise ValueError("entity_column is required.")
+    return f"CRMA Hive {reference_map} Audit - {status}"
 
-    quoted_history_table = f"{schema_name}.{table_name}"
+def build_email_message(
+    excel_stream: io.BytesIO,
+    is_in_sync: bool,
+    attachment_filename: str,
+    email_from: str,
+    email_to: str,
+    reference_map: str,
+    sync_summary_dataframe: pd.DataFrame = None    
+) -> MIMEMultipart:
+    """
+    Constructs a multipart email message containing a dynamic audit status
+    body, sync summary results, and the generated Excel workbook as an attachment.
 
-    expected_columns = [
-        entity_column,
-        "system_type",
-        "change_type",
-        "consecutive_weeks",
-        "etl_date",
+    Parameters:
+        excel_stream: Binary stream containing the generated Excel workbook.
+        is_in_sync: True if the audited reference map is healthy and in-sync. False if maintenance is required.
+        attachment_filename: Filename displayed for the attached workbook.
+        email_from: Sender email address.
+        email_to: Recipient email address string. Multiple recipients can be provided as a comma-separated string.
+        reference_map: Human-readable reference map name to include in the email subject and body.
+        sync_summary_dataframe: Optional normalized sync summary DataFrame with aggregate_name and count columns.        
+
+    Returns:
+        MIMEMultipart: Fully constructed email message ready to send.
+    """
+    logger.info(f"Constructing email message. Reference map: {reference_map}. In-sync status: {is_in_sync}")
+
+    if not email_from:
+        raise ValueError("email_from is required.")
+
+    if not email_to:
+        raise ValueError("email_to is required.")
+
+    recipients = [
+        recipient.strip()
+        for recipient in email_to.split(",")
+        if recipient.strip()
     ]
 
-    if audit_records is None:
-        audit_records = pd.DataFrame(columns=expected_columns)
+    if not recipients:
+        raise ValueError("email_to must contain at least one valid recipient.")
 
-    missing_columns = [
-        column for column in expected_columns
-        if column not in audit_records.columns
-    ]
+    message = MIMEMultipart()
+    message["From"] = email_from
+    message["To"] = ", ".join(recipients)
+    message["Subject"] = build_email_subject(
+        is_in_sync=is_in_sync,
+        reference_map=reference_map,
+    )
 
-    if missing_columns:
-        raise ValueError(
-            f"Input dataframe is missing required column(s): {missing_columns}"
+    message.attach(
+        MIMEText(
+            build_email_body(
+                is_in_sync=is_in_sync,
+                reference_map=reference_map,
+                sync_summary_dataframe=sync_summary_dataframe
+            ),
+            "plain",
         )
-
-    audit_records = audit_records.loc[:, expected_columns].copy()
-
-    with engine.begin() as conn:
-        existing_count = conn.execute(
-            text(
-                f"""
-                SELECT COUNT(*) 
-                FROM {quoted_history_table}
-                WHERE etl_date = CURRENT_DATE
-                """
-            )
-        ).scalar()
-
-        existing_count = int(existing_count or 0)
-
-        if existing_count > 0:
-            logger.warning(f"Data already loaded for '{quoted_history_table}' where etl_date = '{audit_records['etl_date']}'. Executing overwrite.")
-
-            conn.execute(
-                text(
-                    f"""
-                    DELETE FROM {quoted_history_table}
-                    WHERE etl_date = CURRENT_DATE
-                    """
-                )
-            )
-        else:
-            logger.info(f"No existing data found for '{quoted_history_table}' where etl_date = '{audit_records['etl_date']}'. Proceeding with clean load.")
-
-        if audit_records.empty:
-            logger.info("No audit history rows to insert.")
-            return audit_records
-
-        audit_records.to_sql(
-            name=table_name,
-            con=conn,
-            schema=schema_name,
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=1000,
-        )
-
-    logger.info(
-        f"Completed loading audit records into '{quoted_history_table}'. Inserted {len(audit_records)} row(s)."
     )
-    return audit_records
 
-from dataclasses import dataclass
+    excel_stream.seek(0)
+    attachment_bytes = excel_stream.read()
+    excel_stream.seek(0)
 
-@dataclass(frozen=True)
-class ReportQuery:
+    attachment = MIMEBase(
+        "application",
+        "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    attachment.set_payload(attachment_bytes)
+
+    encoders.encode_base64(attachment)
+
+    attachment.add_header(
+        "Content-Disposition",
+        "attachment",
+        filename=attachment_filename,
+    )
+
+    message.attach(attachment)
+
+    logger.info("Email message packaged successfully.")
+
+    return message
+
+def send_email_via_relay(
+    email_message: MIMEMultipart,
+    smtp_hostname: str,
+    smtp_port: int,
+) -> None:
     """
-    Represents one SQL query and the worksheet name where the result should be written in an Excel workbook.
+    Sends a prepared email message through an internal unauthenticated SMTP
+    relay. This function intentionally does not use TLS or login credentials.
 
-    Paramters:
-        worksheet_name: Name of the Excel worksheet/tab.
-        sql: SQL statement to execute.
+    Parameters:
+        email_message: Fully constructed email message to send.
+        smtp_hostname: Hostname of the internal SMTP relay server.
+        smtp_port: Port number of the internal SMTP relay server.
+
+    Returns:
+        None: Does not return a value. Raises an exception if the SMTP connection or send operation fails.
     """
-    worksheet_name: str
-    sql: str
+    logger.info("Attempting connection to SMTP relay server.")
 
-import io
-import urllib3
-import logging
-from datetime import datetime
-from crma_hive_connections import Connection
-from crma_hive_utilities import Utility
-from crma_hive_audit_report_models import ReportQuery
-from crma_hive_audit_report_utils import (
-    fetch_all_reports,
-    evaluate_sync_status,
-    normalize_sync_summary,
-    create_in_memory_excel,
-    upload_report_to_s3,
-    upload_audit_records_to_s3,
-    build_audit_report_dataframe,
-    load_audit_report_with_overwrite,
-)
-from crma_hive_audit_email_utils import (
-    build_email_message,
-    send_email_via_relay,
-)
+    if not smtp_hostname:
+        raise ValueError("SMTP HOSTNAME required.")
 
-urllib3.disable_warnings()
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-connection = Connection()
-utility = Utility()
-
-HEALTH_CHECK_COLUMNS = [
-    "new_axonius_os_count",
-    "new_mobius_os_count",
-    "deleted_axonius_os_count",
-    "deleted_mobius_os_count",
-]
-
-EXCLUDED_HEALTH_CHECK_COLUMNS = [
-    "deleted_axonius_os_count",
-]
-
-SYNC_SUMMARY_QUERY = """
-WITH  
-    normalized_distinct_axonius_os_names AS (  
-        SELECT distinct LOWER(preferred_os) as os_name  
-        FROM crma_hive.crma_hive_fismascorecard_input_devices  
-    ),  
-    eligible_os_names AS (  
-        SELECT *  
-        FROM normalized_distinct_axonius_os_names          
-    ), 
-    new_axonius_os_count AS( 
-        SELECT count(distinct s.os_name) as cnt 
-        FROM eligible_os_names s  
-        LEFT JOIN crma_hive.crma_hive_device_to_mobius_os_map m  
-        ON s.os_name = m.device_os  
-        WHERE m.device_os is NULL    
-    ), 
-    deleted_axonius_os_count AS( 
-        SELECT count(distinct m.device_os) as cnt 
-        FROM crma_hive.crma_hive_device_to_mobius_os_map m  
-        LEFT JOIN eligible_os_names s  
-        ON s.os_name = m.device_os  
-        WHERE s.os_name is NULL      
-    ), 
-    unmapped_mobius AS (  
-        SELECT distinct mns.mobius_id
-        FROM crma_hive.crma_hive_mobius_normalized_softwares mns  
-        LEFT JOIN crma_hive.crma_hive_device_to_mobius_os_map dm  
-        ON mns.mobius_id = dm.mobius_id
-        WHERE dm.mobius_id is NULL  
-    ),   
-    new_mobius_os_count AS ( 
-        SELECT count(distinct um.mobius_id) as cnt 
-        FROM unmapped_mobius um  
-        LEFT JOIN crma_hive.crma_hive_known_mobius_os kmo  
-        ON um.mobius_id = kmo.mobius_id WHERE kmo.mobius_id is NULL       
-    ), 
-    deleted_mobius_os_count AS( 
-        SELECT count(distinct dm.mobius_id) as cnt 
-        FROM crma_hive.crma_hive_device_to_mobius_os_map dm  
-        LEFT JOIN crma_hive.crma_hive_mobius_normalized_softwares mns  
-        ON mns.mobius_id = dm.mobius_id 
-        WHERE mns.mobius_id is NULL and dm.mobius_id is NOT NULL 
-    ) 
-    SELECT  
-        nat.cnt as new_axonius_os_count, 
-        dat.cnt as deleted_axonius_os_count, 
-        nmo.cnt as new_mobius_os_count, 
-        dmo.cnt as deleted_mobius_os_count 
-    FROM new_axonius_os_count nat 
-    CROSS JOIN deleted_axonius_os_count dat 
-    CROSS JOIN new_mobius_os_count nmo 
-    CROSS JOIN deleted_mobius_os_count dmo 
-"""
-
-NEW_AXONIUS_OS_QUERY = """
-WITH 
-    previous_run AS (
-        SELECT MAX(etl_date) AS previous_etl_date
-        FROM crma_hive.crma_hive_os_map_audit_hist
-        WHERE etl_date < CURRENT_DATE
-    ),
-    previous_history AS (
-        SELECT
-            hist.map_id,
-            hist.system_type,
-            hist.change_type,
-            hist.consecutive_weeks
-        FROM crma_hive.crma_hive_os_map_audit_hist hist
-        INNER JOIN previous_run prev
-            ON hist.etl_date = prev.previous_etl_date
-    ),
-    normalized_distinct_axonius_os_names AS ( 
-        SELECT distinct LOWER(preferred_os) as os_name 
-        FROM crma_hive.crma_hive_fismascorecard_input_devices 
-    ), 
-    eligible_os_names AS ( 
-        SELECT * 
-        FROM normalized_distinct_axonius_os_names 
-    ),
-    current_discrepancies AS (     
-        SELECT distinct s.os_name as axonius_os_name,
-        '' as mobius_os_name, 
-        '[MAP_AXONIUS_OS_TO_MOBIUS_TARGET, ADD_ROW_TO_OS_MAP]' as required_actions 
-        FROM eligible_os_names s 
-        LEFT JOIN crma_hive.crma_hive_device_to_mobius_os_map m 
-        ON s.os_name = m.device_os 
-        WHERE m.device_os is NULL AND s.os_name is NOT NULL
-    )
-    SELECT
-        curr.axonius_os_name,
-        curr.mobius_os_name,
-        curr.required_actions,
-        COALESCE(prev.consecutive_weeks, 0) + 1 AS consecutive_weeks
-    FROM current_discrepancies curr
-    LEFT JOIN previous_history prev
-        ON curr.axonius_os_name = prev.map_id
-    AND prev.system_type = 'axonius_os'
-    AND prev.change_type = 'new'    
-"""
-
-DELETED_AXONIUS_OS_QUERY = """
-WITH 
-    previous_run AS (
-        SELECT MAX(etl_date) AS previous_etl_date
-        FROM crma_hive.crma_hive_os_map_audit_hist
-        WHERE etl_date < CURRENT_DATE
-    ),
-    previous_history AS (
-        SELECT
-            hist.map_id,
-            hist.system_type,
-            hist.change_type,
-            hist.consecutive_weeks
-        FROM crma_hive.crma_hive_os_map_audit_hist hist
-        INNER JOIN previous_run prev
-            ON hist.etl_date = prev.previous_etl_date
-    ),
-    normalized_distinct_axonius_os_names AS ( 
-        SELECT distinct LOWER(preferred_os) as os_name 
-        FROM crma_hive.crma_hive_fismascorecard_input_devices 
-    ), 
-    eligible_os_names AS ( 
-        SELECT * 
-        FROM normalized_distinct_axonius_os_names       
-    ), 
-    current_discrepancies AS (  
-        SELECT distinct m.device_os as axonius_os_name, 
-        '[DELETE_ROW_IN_OS_MAP]' as required_actions
-        FROM crma_hive.crma_hive_device_to_mobius_os_map m 
-        LEFT JOIN eligible_os_names s 
-        ON s.os_name = m.device_os 
-        WHERE s.os_name is NULL 
-    )
-    SELECT
-        curr.axonius_os_name,
-        curr.required_actions,
-        COALESCE(prev.consecutive_weeks, 0) + 1 AS consecutive_weeks
-    FROM current_discrepancies curr
-    LEFT JOIN previous_history prev
-        ON curr.axonius_os_name = prev.map_id
-    AND prev.system_type = 'axonius_os'
-    AND prev.change_type = 'deleted'        
-"""
-
-NEW_MOBIUS_OS_QUERY = """
-WITH  
-    previous_run AS (
-        SELECT MAX(etl_date) AS previous_etl_date
-        FROM crma_hive.crma_hive_os_map_audit_hist
-        WHERE etl_date < CURRENT_DATE
-    ),
-    previous_history AS (
-        SELECT
-            hist.map_id,
-            hist.system_type,
-            hist.change_type,
-            hist.consecutive_weeks
-        FROM crma_hive.crma_hive_os_map_audit_hist hist
-        INNER JOIN previous_run prev
-            ON hist.etl_date = prev.previous_etl_date
-    ),
-    unmapped_mobius AS (  
-        SELECT distinct mns.mobius_id, mns.software_name, mns.version, mns.version_label, mns.status, mns.component
-        FROM crma_hive.crma_hive_mobius_normalized_softwares mns  
-        LEFT JOIN crma_hive.crma_hive_device_to_mobius_os_map dm  
-        ON mns.mobius_id=dm.mobius_id
-        WHERE dm.mobius_id is NULL  
-    ), 
-    current_discrepancies AS (
-        SELECT distinct um.mobius_id, um.software_name as mobius_os_name, um.version as mobius_os_version, um.version_label as mobius_os_version_2, um.status, um.component
-        FROM unmapped_mobius um  
-        LEFT JOIN crma_hive.crma_hive_known_mobius_os kmo  
-        ON um.mobius_id = kmo.mobius_id 
-        WHERE kmo.mobius_id is NULL    
-		ORDER by mobius_os_name 
-    )
-    SELECT
-        '' as axonius_os_name,
-        curr.mobius_os_name,
-		curr.mobius_os_version,
-		curr.mobius_os_version_2,
-        curr.component,
-		curr.status,
-        '' as governance_record_comments,
-        curr.mobius_id,
-        '[CHECK_MATCH, CONDITIONAL_ADD_MOBIUS_TO_OS_MAP]' as required_actions,
-        COALESCE(prev.consecutive_weeks, 0) + 1 AS consecutive_weeks
-    FROM current_discrepancies curr
-    LEFT JOIN previous_history prev
-        ON curr.mobius_os_name = prev.map_id
-    AND prev.system_type = 'mobius_os'
-    AND prev.change_type = 'new'       
-"""
-
-DELETED_MOBIUS_OS_QUERY = """
-WITH
-    previous_run AS (
-        SELECT MAX(etl_date) AS previous_etl_date
-        FROM crma_hive.crma_hive_os_map_audit_hist
-        WHERE etl_date < CURRENT_DATE
-    ),
-    previous_history AS (
-        SELECT
-            hist.map_id,
-            hist.system_type,
-            hist.change_type,
-            hist.consecutive_weeks
-        FROM crma_hive.crma_hive_os_map_audit_hist hist
-        INNER JOIN previous_run prev
-            ON hist.etl_date = prev.previous_etl_date
-    ),
-    current_discrepancies AS (    
-        SELECT distinct dm.mobius_id, dm.mobius_os_name, 
-        '[CLEAR_MOBIUS_IN_SOFTWARE_MAP]' as required_actions
-        FROM crma_hive.crma_hive_device_to_mobius_os_map dm  
-        LEFT JOIN crma_hive.crma_hive_mobius_normalized_softwares mns  
-        ON mns.mobius_id = dm.mobius_id 
-        WHERE mns.mobius_id is NULL and dm.mobius_id is NOT NULL 
-    )
-    SELECT
-        curr.mobius_id,
-        curr.mobius_os_name,
-        curr.required_actions,
-        COALESCE(prev.consecutive_weeks, 0) + 1 AS consecutive_weeks
-    FROM current_discrepancies curr
-    LEFT JOIN previous_history prev
-        ON curr.mobius_os_name = prev.map_id
-    AND prev.system_type = 'mobius_os'
-    AND prev.change_type = 'deleted'          
-"""
-
-REPORT_QUERIES = [
-    ReportQuery("sync_summary", SYNC_SUMMARY_QUERY),
-    ReportQuery("new_axonius_os", NEW_AXONIUS_OS_QUERY),
-    ReportQuery("deleted_axonius_os", DELETED_AXONIUS_OS_QUERY),
-    ReportQuery("new_mobius_os", NEW_MOBIUS_OS_QUERY),
-    ReportQuery("deleted_mobius_os", DELETED_MOBIUS_OS_QUERY),
-]
-
-OS_HISTORY_SOURCE_MAPPINGS = [
-    {
-        "worksheet_name": "new_axonius_os",
-        "source_column": "axonius_os_name",
-        "system_type": "axonius_os",
-        "change_type": "new",
-        "counter_column": "consecutive_weeks",
-    },
-    {
-        "worksheet_name": "deleted_axonius_os",
-        "source_column": "axonius_os_name",
-        "system_type": "axonius_os",
-        "change_type": "deleted",
-        "counter_column": "consecutive_weeks",
-    },
-    {
-        "worksheet_name": "new_mobius_os",
-        "source_column": "mobius_id",
-        "system_type": "mobius_os",
-        "change_type": "new",
-        "counter_column": "consecutive_weeks",
-    },
-    {
-        "worksheet_name": "deleted_mobius_os",
-        "source_column": "mobius_id",
-        "system_type": "mobius_os",
-        "change_type": "deleted",
-        "counter_column": "consecutive_weeks",
-    },
-]
-
-SMTP_HOST = "dc1-smtp.irmnet.ds2.dhs.gov"
-
-SMTP_PORT = 25
-
-EMAIL_FROM = "hive-audit-reports@associates.ice.dhs.gov"
-
-EMAIL_TO = "Yonathan.Tsehai@associates.ice.dhs.gov,Amlakawit.Medhin@associates.ice.dhs.gov"
-
-FILE_NAME = "crma_hive_audit_report_for_os_map"
-
-REFERENCE_MAP = "OS Map"
-
-MAIN_SCHEMA = "crma_hive"
-
-TABLE_AUDIT_OS_MAP = "crma_hive_os_map_audit_hist"
-
-
-def main() -> None:
-    logger.info("Starting CRMA Hive software map audit workflow.")
-
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    engine = connection.postgres_engine("edae-crma-hive","crmahivedb_fqt")
-    date_str = datetime.now().strftime("%Y%m%d") 
-    report_file_name = f"{FILE_NAME}_{date_str}.xlsx"
-
-    # build report on discrepencies between os refrence map and source systems.
-    reports = fetch_all_reports(
-        engine=engine,
-        report_queries=REPORT_QUERIES,
-        query_params=None,
-    )
-    utility.log_memory_usage()
-
-    is_in_sync = evaluate_sync_status(
-        count_dataframe=reports["sync_summary"], 
-        health_check=HEALTH_CHECK_COLUMNS,
-        exclude_columns=EXCLUDED_HEALTH_CHECK_COLUMNS
-    )
-
-    reports["sync_summary"] = normalize_sync_summary(
-        count_dataframe=reports["sync_summary"], 
-        health_check=HEALTH_CHECK_COLUMNS
-    )
-
-    # transforms all reports into single dataframe
-    os_history_dataframe = build_audit_report_dataframe(
-        reports=reports,
-        source_mappings=OS_HISTORY_SOURCE_MAPPINGS,
-        entity_column="map_id"
-    )
-    utility.log_memory_usage()
-
-    # loads dataframe into hist table.
-    audit_records = load_audit_report_with_overwrite(
-        engine=engine,
-        audit_records=os_history_dataframe,
-        table_name=TABLE_AUDIT_OS_MAP,
-        schema_name=MAIN_SCHEMA,
-        entity_column="map_id"
-    )
-    utility.log_memory_usage()
-
-    # upload loaded audit records to s3
-    upload_audit_records_to_s3(
-        records=audit_records,
-        bucket_name=bucket_name,
-        file_name=TABLE_AUDIT_OS_MAP
-    )
-
-    # create excel workbook
-    excel_stream = create_in_memory_excel(reports)
-    raw_excel_bytes = excel_stream.getvalue()
-    utility.log_memory_usage()
+    if not smtp_port:
+        raise ValueError("SMTP PORT required.")
     
-    # upload excel workbook to s3    
-    upload_report_to_s3(
-        excel_stream=io.BytesIO(raw_excel_bytes),
-        bucket_name=bucket_name,
-        file_name=FILE_NAME,
-    )
+    with smtplib.SMTP(smtp_hostname, smtp_port) as smtp_connection:
+        smtp_connection.send_message(email_message)
 
-    # build email message and attach excel workbook
-    email_message = build_email_message(
-        excel_stream=io.BytesIO(raw_excel_bytes),
-        is_in_sync=is_in_sync,
-        attachment_filename=report_file_name,
-        email_from=EMAIL_FROM,
-        email_to=EMAIL_TO,
-        reference_map=REFERENCE_MAP,
-        sync_summary_dataframe=reports["sync_summary"]        
-    )
-    utility.log_memory_usage()
-
-    # send email to HIVE dev team
-    send_email_via_relay(
-        email_message=email_message,
-        smtp_hostname=SMTP_HOST,
-        smtp_port=SMTP_PORT
-    )
-
-    logger.info(f"Completed CRMA HIVE {REFERENCE_MAP} audit workflow.")
-
-if __name__ == "__main__":
-    main()
-
-import io
-import urllib3
-import logging
-from datetime import datetime
-from crma_hive_connections import Connection
-from crma_hive_utilities import Utility
-from crma_hive_audit_report_models import ReportQuery
-from crma_hive_audit_report_utils import (
-    fetch_all_reports,
-    evaluate_sync_status,
-    normalize_sync_summary,
-    create_in_memory_excel,
-    upload_report_to_s3,
-    upload_audit_records_to_s3,
-    build_audit_report_dataframe,
-    load_audit_report_with_overwrite,
-)
-from crma_hive_audit_email_utils import (
-    build_email_message,
-    send_email_via_relay,
-)
-
-urllib3.disable_warnings()
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-connection = Connection()
-utility = Utility()
-
-HEALTH_CHECK_COLUMNS = [
-    "new_tvm_software_count",
-    "new_mobius_software_count",
-    "deleted_tvm_software_count",
-    "deleted_mobius_software_count",
-]
-
-EXCLUDED_HEALTH_CHECK_COLUMNS = [
-    "deleted_tvm_software_count"
-]
-
-SYNC_SUMMARY_QUERY = """
-WITH 
-    unmapped_mobius AS ( 
-        SELECT distinct mns.mobius_product_id 
-        FROM crma_hive.crma_hive_mobius_normalized_softwares mns 
-        LEFT JOIN crma_hive.crma_hive_tvm_to_mobius_software_map rm 
-            ON mns.mobius_product_id  = rm.mobius_product_id  
-        WHERE rm.mobius_product_id is NULL 
-    ),
-    new_mobius_software_count AS ( 
-        SELECT count(distinct um.mobius_product_id) as cnt 
-        FROM unmapped_mobius um 
-        LEFT JOIN crma_hive.crma_hive_known_mobius_software kms 
-            ON um.mobius_product_id = kms.mobius_product_id 
-        WHERE kms.mobius_product_id is NULL
-    ), 
-    new_tvm_software_count AS ( 
-        SELECT count(distinct tns.software_name) as cnt 
-        FROM crma_hive.crma_hive_tvm_normalized_softwares tns 
-        LEFT JOIN crma_hive.crma_hive_tvm_to_mobius_software_map rm 
-            ON tns.software_name = rm.tvm_software_name 
-        WHERE rm.tvm_software_name is NULL 
-    ), 
-    deleted_tvm_software_count AS ( 
-        SELECT count(distinct rm.tvm_software_name) as cnt 
-        FROM crma_hive.crma_hive_tvm_to_mobius_software_map rm 
-        LEFT JOIN crma_hive.crma_hive_tvm_normalized_softwares tns 
-            ON tns.software_name = rm.tvm_software_name 
-        WHERE tns.software_name is NULL 
-    ), 
-    deleted_mobius_software_count AS ( 
-        SELECT count(distinct rm.mobius_product_id) as cnt 
-        FROM crma_hive.crma_hive_tvm_to_mobius_software_map rm  
-        LEFT JOIN crma_hive.crma_hive_mobius_normalized_softwares mns 
-            ON rm.mobius_product_id = mns.mobius_product_id 
-        WHERE mns.mobius_product_id is NULL 
-          AND rm.mobius_product_id is NOT NULL 
-    ) 
-SELECT  
-    utsc.cnt as new_tvm_software_count, 
-    umsc.cnt as new_mobius_software_count, 
-    dtsc.cnt as deleted_tvm_software_count, 
-    dmsc.cnt as deleted_mobius_software_count 
-FROM new_tvm_software_count utsc 
-CROSS JOIN new_mobius_software_count umsc 
-CROSS JOIN deleted_tvm_software_count dtsc 
-CROSS JOIN deleted_mobius_software_count dmsc
-"""
-
-NEW_TVM_SOFTWARE_QUERY = """
-WITH
-previous_run AS (
-    SELECT MAX(etl_date) AS previous_etl_date
-    FROM crma_hive.crma_hive_software_map_audit_hist
-    WHERE etl_date < CURRENT_DATE
-),
-previous_history AS (
-    SELECT
-        hist.map_id,
-        hist.system_type,
-        hist.change_type,
-        hist.consecutive_weeks
-    FROM crma_hive.crma_hive_software_map_audit_hist hist
-    INNER JOIN previous_run prev
-        ON hist.etl_date = prev.previous_etl_date
-),
-current_discrepancies AS (
-    SELECT distinct 
-        tns.software_name as tvm_software_name, 
-        '' as mobius_software_name, 
-        '[MAP_TVM_SOFTWARE_TO_MOBIUS_TARGET, ADD_ROW_TO_SOFTWARE_MAP]' as required_actions
-    FROM crma_hive.crma_hive_tvm_normalized_softwares tns 
-    LEFT JOIN crma_hive.crma_hive_tvm_to_mobius_software_map rm 
-        ON tns.software_name = rm.tvm_software_name 
-    WHERE rm.tvm_software_name is NULL
-)
-SELECT
-    curr.tvm_software_name,
-    curr.mobius_software_name,
-    curr.required_actions,
-    COALESCE(prev.consecutive_weeks, 0) + 1 AS consecutive_weeks
-FROM current_discrepancies curr
-LEFT JOIN previous_history prev
-    ON curr.tvm_software_name = prev.map_id
-   AND prev.system_type = 'tvm_software'
-   AND prev.change_type = 'new'
-"""
-
-DELETED_TVM_SOFTWARE_QUERY = """
-WITH
-previous_run AS (
-    SELECT MAX(etl_date) AS previous_etl_date
-    FROM crma_hive.crma_hive_software_map_audit_hist
-    WHERE etl_date < CURRENT_DATE
-),
-previous_history AS (
-    SELECT
-        hist.map_id,
-        hist.system_type,
-        hist.change_type,
-        hist.consecutive_weeks
-    FROM crma_hive.crma_hive_software_map_audit_hist hist
-    INNER JOIN previous_run prev
-        ON hist.etl_date = prev.previous_etl_date
-),
-current_discrepancies AS (
-    SELECT distinct 
-        rm.tvm_software_name, 
-        '[DELETE_ROW_IN_SOFTWARE_MAP]' as required_actions
-    FROM crma_hive.crma_hive_tvm_to_mobius_software_map rm 
-    LEFT JOIN crma_hive.crma_hive_tvm_normalized_softwares tns 
-        ON tns.software_name = rm.tvm_software_name 
-    WHERE tns.software_name is NULL
-)
-SELECT
-    curr.tvm_software_name,
-    curr.required_actions,
-    COALESCE(prev.consecutive_weeks, 0) + 1 AS consecutive_weeks
-FROM current_discrepancies curr
-LEFT JOIN previous_history prev
-    ON curr.tvm_software_name = prev.map_id
-   AND prev.system_type = 'tvm_software'
-   AND prev.change_type = 'deleted'
-"""
-
-NEW_MOBIUS_SOFTWARE_QUERY = """
-WITH 
-previous_run AS (
-    SELECT MAX(etl_date) AS previous_etl_date
-    FROM crma_hive.crma_hive_software_map_audit_hist
-    WHERE etl_date < CURRENT_DATE
-),
-previous_history AS (
-    SELECT
-        hist.map_id,
-        hist.system_type,
-        hist.change_type,
-        hist.consecutive_weeks
-    FROM crma_hive.crma_hive_software_map_audit_hist hist
-    INNER JOIN previous_run prev
-        ON hist.etl_date = prev.previous_etl_date
-),
-unmapped_mobius AS ( 
-    SELECT distinct mns.mobius_product_id, mns.software_name
-    FROM crma_hive.crma_hive_mobius_normalized_softwares mns 
-    LEFT JOIN crma_hive.crma_hive_tvm_to_mobius_software_map rm 
-        ON mns.mobius_product_id = rm.mobius_product_id 
-    WHERE rm.mobius_product_id is NULL 
-),
-current_discrepancies AS (
-    SELECT um.mobius_product_id, um.software_name as mobius_software_name
-    FROM unmapped_mobius um 
-    LEFT JOIN crma_hive.crma_hive_known_mobius_software kms 
-    ON um.mobius_product_id = kms.mobius_product_id
-    WHERE kms.mobius_product_id is NULL  
-)
-SELECT
-    '' as tvm_software_name,
-    curr.mobius_product_id,
-    curr.mobius_software_name,
-    '[CHECK_MATCH, CONDITIONAL_ADD_MOBIUS_TO_SOFTWARE_MAP]' as required_actions,
-    COALESCE(prev.consecutive_weeks, 0) + 1 AS consecutive_weeks
-FROM current_discrepancies curr
-LEFT JOIN previous_history prev
-    ON curr.mobius_product_id = prev.map_id
-   AND prev.system_type = 'mobius_software'
-   AND prev.change_type = 'new'
-"""
-
-DELETED_MOBIUS_SOFTWARE_QUERY = """
-WITH
-previous_run AS (
-    SELECT MAX(etl_date) AS previous_etl_date
-    FROM crma_hive.crma_hive_software_map_audit_hist
-    WHERE etl_date < CURRENT_DATE
-),
-previous_history AS (
-    SELECT
-        hist.map_id,
-        hist.system_type,
-        hist.change_type,
-        hist.consecutive_weeks
-    FROM crma_hive.crma_hive_software_map_audit_hist hist
-    INNER JOIN previous_run prev
-        ON hist.etl_date = prev.previous_etl_date
-),
-current_discrepancies AS (
-    SELECT distinct rm.mobius_product_id, 
-        rm.mobius_software_name,
-        '[CLEAR_MOBIUS_IN_SOFTWARE_MAP]' as required_actions
-    FROM crma_hive.crma_hive_tvm_to_mobius_software_map rm  
-    LEFT JOIN crma_hive.crma_hive_mobius_normalized_softwares mns 
-        ON rm.mobius_product_id = mns.mobius_product_id 
-    WHERE mns.mobius_product_id is NULL 
-      AND rm.mobius_product_id is NOT NULL
-)
-SELECT
-    curr.mobius_product_id,
-    curr.mobius_software_name,
-    curr.required_actions,
-    COALESCE(prev.consecutive_weeks, 0) + 1 AS consecutive_weeks
-FROM current_discrepancies curr
-LEFT JOIN previous_history prev
-    ON curr.mobius_product_id = prev.map_id
-   AND prev.system_type = 'mobius_software'
-   AND prev.change_type = 'deleted'
-"""
-
-REPORT_QUERIES = [
-    ReportQuery("sync_summary", SYNC_SUMMARY_QUERY),
-    ReportQuery("new_tvm_software", NEW_TVM_SOFTWARE_QUERY),
-    ReportQuery("deleted_tvm_software", DELETED_TVM_SOFTWARE_QUERY),
-    ReportQuery("new_mobius_software", NEW_MOBIUS_SOFTWARE_QUERY),
-    ReportQuery("deleted_mobius_software", DELETED_MOBIUS_SOFTWARE_QUERY),
-]
-
-
-SOFTWARE_HISTORY_SOURCE_MAPPINGS = [
-    {
-        "worksheet_name": "new_tvm_software",
-        "source_column": "tvm_software_name",
-        "system_type": "tvm_software",
-        "change_type": "new",
-        "counter_column": "consecutive_weeks",
-    },
-    {
-        "worksheet_name": "deleted_tvm_software",
-        "source_column": "tvm_software_name",
-        "system_type": "tvm_software",
-        "change_type": "deleted",
-        "counter_column": "consecutive_weeks",
-    },
-    {
-        "worksheet_name": "new_mobius_software",
-        "source_column": "mobius_product_id",
-        "system_type": "mobius_software",
-        "change_type": "new",
-        "counter_column": "consecutive_weeks",
-    },
-    {
-        "worksheet_name": "deleted_mobius_software",
-        "source_column": "mobius_product_id",
-        "system_type": "mobius_software",
-        "change_type": "deleted",
-        "counter_column": "consecutive_weeks",
-    },
-]
-
-SMTP_HOST = "dc1-smtp.irmnet.ds2.dhs.gov"
-
-SMTP_PORT = 25
-
-EMAIL_FROM = "hive-audit-reports@associates.ice.dhs.gov"
-
-EMAIL_TO = "Yonathan.Tsehai@associates.ice.dhs.gov,Amlakawit.Medhin@associates.ice.dhs.gov"
-
-FILE_NAME = "crma_hive_audit_report_for_software_map"
-
-REFERENCE_MAP = "Software Map"
-
-MAIN_SCHEMA = "crma_hive"
-
-TABLE_AUDIT_SOFTWARE_MAP = "crma_hive_software_map_audit_hist"
-
-
-def main() -> None:
-    logger.info("Starting CRMA Hive software map audit workflow.")
-
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    engine = connection.postgres_engine("edae-crma-hive","crmahivedb_fqt")
-    date_str = datetime.now().strftime("%Y%m%d")
-    report_file_name = f"{FILE_NAME}_{date_str}.xlsx"
-
-    # build report on discrepencies between software refrence map and source systems.
-    reports = fetch_all_reports(
-        engine=engine,
-        report_queries=REPORT_QUERIES,
-        query_params=None,
-    )
-    utility.log_memory_usage()
-
-    is_in_sync = evaluate_sync_status(
-        count_dataframe=reports["sync_summary"],
-        health_check=HEALTH_CHECK_COLUMNS,
-        exclude_columns=EXCLUDED_HEALTH_CHECK_COLUMNS
-    )
-
-    reports["sync_summary"] = normalize_sync_summary(
-        count_dataframe=reports["sync_summary"],
-        health_check=HEALTH_CHECK_COLUMNS
-    )
-
-    # transforms all reports into single dataframe
-    software_history_dataframe = build_audit_report_dataframe(
-        reports=reports,
-        source_mappings=SOFTWARE_HISTORY_SOURCE_MAPPINGS,
-        entity_column="map_id"
-    )
-    utility.log_memory_usage()
-
-    # loads dataframe into hist table.
-    audit_records = load_audit_report_with_overwrite(
-        engine=engine,
-        audit_records=software_history_dataframe,
-        table_name=TABLE_AUDIT_SOFTWARE_MAP,
-        schema_name=MAIN_SCHEMA,
-        entity_column="map_id"
-    )
-    utility.log_memory_usage()
-
-    # upload loaded audit records to s3
-    upload_audit_records_to_s3(
-        records=audit_records,
-        bucket_name=bucket_name,
-        file_name=TABLE_AUDIT_SOFTWARE_MAP
-    )
-
-    # create excel workbook
-    excel_stream = create_in_memory_excel(reports)
-    raw_excel_bytes = excel_stream.getvalue()
-    utility.log_memory_usage()
-
-    # upload excel workbook to s3
-    upload_report_to_s3(
-        excel_stream=io.BytesIO(raw_excel_bytes),
-        bucket_name=bucket_name,
-        file_name=FILE_NAME,
-    )
-
-    # build email message and attach excel workbook
-    email_message = build_email_message(
-        excel_stream=io.BytesIO(raw_excel_bytes),
-        is_in_sync=is_in_sync,
-        attachment_filename=report_file_name,
-        email_from=EMAIL_FROM,
-        email_to=EMAIL_TO,
-        reference_map=REFERENCE_MAP,
-        sync_summary_dataframe=reports["sync_summary"]
-    )
-    utility.log_memory_usage()
-
-    # send email to HIVE dev team
-    send_email_via_relay(
-        email_message=email_message,
-        smtp_hostname=SMTP_HOST,
-        smtp_port=SMTP_PORT
-    )
-
-    logger.info(f"Completed CRMA HIVE {REFERENCE_MAP} audit workflow.")
-
-
-if __name__ == "__main__":
-    main()
+    logger.info("Email message dispatched through SMTP relay.")

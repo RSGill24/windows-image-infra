@@ -1,1107 +1,510 @@
-#### SNOW Workflow Triggers ###
-resource "aws_glue_trigger" "crma_hive_fetch_snow_tables_trigger" {
-  name     = "crma_hive_fetch_snow_tables_trigger"
-  schedule = "cron(0 6 ? * SAT *)" # At 6:00AM UTC Every Saturday 
-  type     = "SCHEDULED"
 
-  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
 
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_snow_tables.name
-  }
+resource "aws_s3_object" "crma_hive_connections_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_connections.py"
+  source = "${var.local_script_path}/crma_hive_connections.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_connections.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_snow_process_data_trigger" {
-  name     = "crma_hive_snow_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_snow_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_data_quality_utilities_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_data_quality_utilities.py"
+  source = "${var.local_script_path}/crma_hive_data_quality_utilities.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_data_quality_utilities.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_snow_data_to_target_trigger" {
-  name     = "crma_hive_snow_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_snow_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_data_quality_utilities_spark_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_data_quality_utilities_spark.py"
+  source = "${var.local_script_path}/crma_hive_data_quality_utilities_spark.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_data_quality_utilities_spark.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_snow_downstream_jobs_trigger" {
-  name     = "crma_hive_snow_downstream_jobs_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_snow_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_snow_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_create_derived_tables.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_ucmm_integration.name
-  }
-}
-###
-
-### Mobius Workflow Triggers ############
-resource "aws_glue_trigger" "crma_hive_fetch_mobius_tables_trigger" {
-  name     = "crma_hive_fetch_mobius_tables_trigger"
-  schedule = "cron(0 6 * * ? *)" #Daily at 6am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_mobius_tables.name
-  }
+resource "aws_s3_object" "crma_hive_fetch_snow_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_fetch_snow_tables.py"
+  source = "${var.local_script_path}/crma_hive_fetch_snow_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_snow_tables.py")
 }
 
-
-resource "aws_glue_trigger" "crma_hive_mobius_process_data_trigger" {
-  name     = "crma_hive_mobius_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_mobius_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_mobius_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_snow_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_snow_process_data.py"
+  source = "${var.local_script_path}/crma_hive_snow_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_snow_process_data.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_mobius_data_to_target_trigger" {
-  name     = "crma_hive_mobius_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_mobius_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_snow_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_snow_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_snow_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_snow_data_to_target.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_normalize_mobius_softwares_trigger" {
-  name     = "crma_hive_normalize_mobius_softwares_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_mobius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_normalize_mobius_softwares.name
-  }
-}
-####
-
-#### CSAM Workflow Triggers #####
-resource "aws_glue_trigger" "crma_hive_fetch_csam_tables_trigger" {
-  name     = "crma_hive_fetch_csam_tables_trigger"
-  schedule = "cron(0 8 * * ? *)" #Daily at 8am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_csam_tables.name
-  }
+resource "aws_s3_object" "crma_hive_snow_create_derived_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_snow_create_derived_tables.py"
+  source = "${var.local_script_path}/crma_hive_snow_create_derived_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_snow_create_derived_tables.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_csam_process_data_trigger" {
-  name     = "crma_hive_csam_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_csam_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_csam_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_utilities_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_utilities.py"
+  source = "${var.local_script_path}/crma_hive_utilities.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_utilities.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_csam_data_to_target_trigger" {
-  name     = "crma_hive_csam_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_csam_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_csam_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_csam_data_to_target.name
-  }
-}
-####
-
-####  Audit Controls Workflow Triggers #####
-resource "aws_glue_trigger" "crma_hive_load_audit_controls_trigger" {
-  name     = "crma_hive_load_audit_controls_trigger"
-  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_audit_controls_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_load_audit_controls.name
-  }
-}
-##############
-
-
-####   AXONIUS Workflow Triggers
-
-resource "aws_glue_trigger" "crma_hive_fetch_axonius_tables_trigger" {
-  name     = "crma_hive_fetch_axonius_tables_trigger"
-  schedule = "cron(0 10 * * ? *)" #Daily at 10am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_axonius_tables.name
-  }
+resource "aws_s3_object" "crma_hive_utilities_spark_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_utilities_spark.py"
+  source = "${var.local_script_path}/crma_hive_utilities_spark.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_utilities_spark.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_axonius_process_data_trigger" {
-  name     = "crma_hive_axonius_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_axonius_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_axonius_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_snow_etl_manager_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_snow_etl_manager.py"
+  source = "${var.local_script_path}/crma_hive_snow_etl_manager.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_snow_etl_manager.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_axonius_data_to_target_trigger" {
-  name     = "crma_hive_axonius_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_axonius_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_axonius_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_fetch_mobius_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_fetch_mobius_tables.py"
+  source = "${var.local_script_path}/crma_hive_fetch_mobius_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_mobius_tables.py")
 }
 
-##############
-
-
-########  TVM Light Workflow Triggers ########
-
-resource "aws_glue_trigger" "crma_hive_fetch_tvm_light_tables_trigger" {
-  name     = "crma_hive_fetch_tvm_light_tables_trigger"
-  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_tvm_light_tables.name
-  }
+resource "aws_s3_object" "crma_hive_mobius_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_mobius_process_data.py"
+  source = "${var.local_script_path}/crma_hive_mobius_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_mobius_process_data.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_process_data_trigger" {
-  name     = "crma_hive_tvm_light_process_data_trigger"
-  type     = "CONDITIONAL"
+resource "aws_s3_object" "crma_hive_mobius_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_mobius_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_mobius_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_mobius_data_to_target.py")
+}
 
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
+resource "aws_s3_object" "crma_hive_fetch_csam_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_fetch_csam_tables.py"
+  source = "${var.local_script_path}/crma_hive_fetch_csam_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_csam_tables.py")
+}
 
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_tvm_light_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
+resource "aws_s3_object" "crma_hive_csam_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_csam_process_data.py"
+  source = "${var.local_script_path}/crma_hive_csam_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_csam_process_data.py")
+}
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_csam_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_csam_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_csam_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_csam_data_to_target.py")
+}
+
+resource "aws_s3_object" "crma_hive_load_audit_controls_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_load_audit_controls.py"
+  source = "${var.local_script_path}/crma_hive_load_audit_controls.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_load_audit_controls.py")
+}
+
+resource "aws_s3_object" "crma_hive_fetch_axonius_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_fetch_axonius_tables.py"
+  source = "${var.local_script_path}/crma_hive_fetch_axonius_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_axonius_tables.py")
+}
+
+resource "aws_s3_object" "crma_hive_axonius_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_axonius_process_data.py"
+  source = "${var.local_script_path}/crma_hive_axonius_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_axonius_process_data.py")
+}
+
+resource "aws_s3_object" "crma_hive_axonius_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_axonius_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_axonius_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_axonius_data_to_target.py")
+}
+
+resource "aws_s3_object" "crma_hive_tvm_utilities_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_tvm_utilities.py"
+  source = "${var.local_script_path}/crma_hive_tvm_utilities.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_utilities.py")
+}
+
+resource "aws_s3_object" "crma_hive_tvm_utilities_spark_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_tvm_utilities_spark.py"
+  source = "${var.local_script_path}/crma_hive_tvm_utilities_spark.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_utilities_spark.py")
+}
+
+resource "aws_s3_object" "crma_hive_rollback_backfill_orchestrator_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_rollback_backfill_orchestrator.py"
+  source = "${var.local_script_path}/crma_hive_rollback_backfill_orchestrator.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_rollback_backfill_orchestrator.py")
 }
 
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_target_trigger" {
-  name     = "crma_hive_tvm_light_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_fetch_tvm_light_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_fetch_tvm_light_tables.py"
+  source = "${var.local_script_path}/crma_hive_fetch_tvm_light_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_tvm_light_tables.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_tables_trigger" {
-  name     = "crma_hive_tvm_light_data_to_hist_tables_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_light_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_tvm_light_process_data.py"
+  source = "${var.local_script_path}/crma_hive_tvm_light_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_light_process_data.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_agg_table_trigger" {
-  name     = "crma_hive_tvm_light_data_to_hist_agg_table_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_light_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_tvm_light_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_tvm_light_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_light_data_to_target.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_normalize_tvm_softwares_trigger" {
-  name     = "crma_hive_normalize_tvm_softwares_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_normalize_tvm_softwares.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_light_data_to_hist_tables_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_tvm_light_data_to_hist_tables.py"
+  source = "${var.local_script_path}/crma_hive_tvm_light_data_to_hist_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_light_data_to_hist_tables.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_normalize_tvm_os_trigger" {
-  name     = "crma_hive_normalize_tvm_os_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_light_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_normalize_tvm_os.name
-  }
-}
-#################
-
-##### TVM Vunls Workflow Jobs Triggers ####
-resource "aws_glue_trigger" "crma_hive_fetch_tvm_vulns_tables_tables_trigger" {
-  name     = "crma_hive_fetch_tvm_vulns_tables_tables_trigger"
-  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
-
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_tvm_vulns_tables.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_light_data_to_hist_agg_table_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_tvm_light_data_to_hist_agg_table.py"
+  source = "${var.local_script_path}/crma_hive_tvm_light_data_to_hist_agg_table.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_light_data_to_hist_agg_table.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_process_data_data_trigger" {
-  name     = "crma_hive_tvm_vulns_process_data_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_tvm_vulns_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_vulns_data_to_hist_agg_table_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_tvm_vulns_data_to_hist_agg_table.py"
+  source = "${var.local_script_path}/crma_hive_tvm_vulns_data_to_hist_agg_table.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_vulns_data_to_hist_agg_table.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_target_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_data_aggregator_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_data_aggregator.py"
+  source = "${var.local_script_path}/crma_hive_data_aggregator.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_data_aggregator.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_tables_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_hist_tables_trigger"
-  type     = "CONDITIONAL"
 
-  workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
 
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
-  }
+
+resource "aws_s3_object" "crma_hive_fetch_process_load_nvd_and_cisa_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_fetch_process_load_nvd_and_cisa.py"
+  source = "${var.local_script_path}/crma_hive_fetch_process_load_nvd_and_cisa.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_process_load_nvd_and_cisa.py")
 }
 
-# resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_agg_table_trigger" {
-#   name     = "crma_hive_tvm_vulns_data_to_hist_agg_table_trigger"
-#   type     = "CONDITIONAL"
-
-#   workflow_name = aws_glue_workflow.crma_hive_tvm_vulns_workflow.name
-
-#   predicate {
-#       conditions {
-#         job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-#         state    = "SUCCEEDED"
-#       }
-#   }
-
-#   actions {
-#     job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_agg_table.name
-#   }
-# }
-
-############
-
-##### TVM Compliance Workflow Jobs Triggers ####
-resource "aws_glue_trigger" "crma_hive_fetch_tvm_compliance_tables_trigger" {
-  name     = "crma_hive_fetch_tvm_compliance_tables_trigger"
-  schedule = "cron(0 3 * * ? *)" #Daily at 3am UTC
-
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_tvm_compliance_tables.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_compute_vmscore_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_compute_vmscore.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_compute_vmscore.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_compute_vmscore.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_compliance_process_data_trigger" {
-  name     = "crma_hive_tvm_compliance_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_tvm_compliance_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_compute_cmscore_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_compute_cmscore.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_compute_cmscore.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_compute_cmscore.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_compliance_data_to_target_trigger" {
-  name     = "crma_hive_tvm_compliance_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_tvm_compliance_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_compute_security_authz_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_compute_security_authz_score.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_compute_security_authz_score.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_compute_security_authz_score.py")
 }
 
-#####
-
-
-####  FISMA Scorecard Workflow Jobs Triggers ######
-resource "aws_glue_trigger" "crma_hive_scorecard_input_devices_trigger" {
-  name     = "crma_hive_scorecard_input_devices_trigger"
-  schedule      = "cron(0 11 * * ? *)" # Daily at 11am UTC
-  type          = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_input_devices.name
-  }
+resource "aws_s3_object" "crma_hive_sscg_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_sscg_process_data.py"
+  source = "${var.local_script_path}/crma_hive_sscg_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_sscg_process_data.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_scorecard_scoring_jobs_trigger" {
-  name     = "crma_hive_scorecard_scoring_jobs_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_input_devices.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_vmscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_cmscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_swamscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_hwamscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_hbdscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_prohibited_osscore.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_security_authz_score.name
-  }  
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_compute_sc_score.name
-  } 
+resource "aws_s3_object" "crma_hive_sscg_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_sscg_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_sscg_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_sscg_data_to_target.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_scorecard_aggregate_score_and_impact_computation_trigger" {
-  name     = "crma_hive_scorecard_aggregate_score_and_impact_computation_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_fisma_scorecard_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_vmscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_cmscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_swamscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_hwamscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_hbdscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_prohibited_osscore.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_security_authz_score.name
-        state    = "SUCCEEDED"
-      }
-
-      conditions {
-        job_name = aws_glue_job.crma_hive_scorecard_compute_sc_score.name
-        state    = "SUCCEEDED"
-      }
-
-      logical = "AND"
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_aggregate_scores.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_scorecard_impact_computation.name
-  }
-
-}
-#############
-
-#######  NVD/CISA Workflow Jobs Triggers #####
-resource "aws_glue_trigger" "crma_hive_fetch_process_load_nvd_and_cisa_trigger" {
-  name     = "crma_hive_fetch_process_load_nvd_and_cisa_trigger"
-  schedule = "cron(0 6 * * ? *)" #Daily at 6am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_nvd_and_cisa_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_process_load_nvd_and_cisa.name
-  }
-}
-##############
-
-
-######## Reference Workflow Jobs Triggers ######
-resource "aws_glue_trigger" "crma_hive_references_workflow_trigger" {
-  name     = "crma_hive_references_workflow_trigger"
-  schedule = "cron(0 6 ? * MON *)" # Every Monday at at 6am UTC (2am EDT)
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_references_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_sscg_process_data.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_to_mobius_software_map.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_device_to_mobius_os_map.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_known_mobius_tables.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_to_mobius_software_map_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_tvm_to_mobius_software_map.py"
+  source = "${var.local_script_path}/crma_hive_tvm_to_mobius_software_map.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_to_mobius_software_map.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_sscg_data_to_target_trigger" {
-  name     = "crma_hive_sscg_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_references_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_sscg_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_sscg_data_to_target.name
-  }
-}
-#####
-
-#### CMDB Workflow Triggers ###
-resource "aws_glue_trigger" "crma_hive_fetch_cmdb_tables_trigger" {
-  name     = "crma_hive_fetch_cmdb_tables_trigger"
-  schedule = "cron(0 9 * * ? *)" #Daily at 9am UTC
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_fetch_cmdb_tables.name
-  }
+resource "aws_s3_object" "crma_hive_normalize_tvm_softwares_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_normalize_tvm_softwares.py"
+  source = "${var.local_script_path}/crma_hive_normalize_tvm_softwares.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_normalize_tvm_softwares.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_cmdb_process_data_trigger" {
-  name     = "crma_hive_cmdb_process_data_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_fetch_cmdb_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_cmdb_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_normalize_mobius_softwares_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_normalize_mobius_softwares.py"
+  source = "${var.local_script_path}/crma_hive_normalize_mobius_softwares.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_normalize_mobius_softwares.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_cmdb_data_to_target_trigger" {
-  name     = "crma_hive_cmdb_data_to_target_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_cmdb_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_cmdb_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_cmdb_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_compute_swamscore_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_compute_swamscore.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_compute_swamscore.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_compute_swamscore.py")
 }
 
-#### Entity Resolution Audit Report Workflow Triggers ###
-resource "aws_glue_trigger" "crma_hive_audit_report_trigger" {
-  name     = "crma_hive_audit_report_workflow_trigger"
-  schedule = "cron(0 12 ? * MON *)" # Every Monday at at 12pm UTC (8am EDT)
-  type     = "SCHEDULED"
-
-  workflow_name = aws_glue_workflow.crma_hive_audit_report_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_audit_report_software_map.name
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_audit_report_os_map.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_compute_hwamscore_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_compute_hwamscore.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_compute_hwamscore.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_compute_hwamscore.py")
 }
 
-####
-
-### Triggers for Rollback/Backfill Workflows ####
-resource "aws_glue_trigger" "crma_hive_snow_process_data_backfill_trigger" {
-  name     = "crma_hive_snow_process_data_backfill_trigger"
-  type     = "ON_DEMAND"
-  enabled  = false    // blocks auto trigger during jenkins deployment
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_compute_hbdscore_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_compute_hbdscore.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_compute_hbdscore.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_compute_hbdscore.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_csam_process_data_backfill_trigger" {
-  name     = "crma_hive_csam_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_snow_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_csam_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_fetch_tvm_vulns_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_fetch_tvm_vulns_tables.py"
+  source = "${var.local_script_path}/crma_hive_fetch_tvm_vulns_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_tvm_vulns_tables.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_mobius_process_data_backfill_trigger" {
-  name     = "crma_hive_mobius_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_csam_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_mobius_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_vulns_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_tvm_vulns_process_data.py"
+  source = "${var.local_script_path}/crma_hive_tvm_vulns_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_vulns_process_data.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_axonius_process_data_backfill_trigger" {
-  name     = "crma_hive_axonius_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_mobius_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_axonius_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_vulns_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_tvm_vulns_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_tvm_vulns_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_vulns_data_to_target.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_process_data_backfill_trigger" {
-  name     = "crma_hive_tvm_light_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_axonius_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_vulns_data_to_hist_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_tvm_vulns_data_to_hist_tables.py"
+  source = "${var.local_script_path}/crma_hive_tvm_vulns_data_to_hist_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_vulns_data_to_hist_tables.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_process_data_backfill_trigger" {
-  name     = "crma_hive_tvm_vulns_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_fetch_tvm_compliance_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_fetch_tvm_compliance_tables.py"
+  source = "${var.local_script_path}/crma_hive_fetch_tvm_compliance_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_tvm_compliance_tables.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_compliance_process_data_backfill_trigger" {
-  name     = "crma_hive_tvm_compliance_process_data_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_compliance_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_tvm_compliance_process_data.py"
+  source = "${var.local_script_path}/crma_hive_tvm_compliance_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_compliance_process_data.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_snow_data_to_target_backfill_trigger" {
-  name     = "crma_hive_snow_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_compliance_process_data.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_snow_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_compliance_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_tvm_compliance_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_tvm_compliance_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_tvm_compliance_data_to_target.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_csam_data_to_target_backfill_trigger" {
-  name     = "crma_hive_csam_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_snow_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_csam_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_normalize_tvm_os_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_normalize_tvm_os.py"
+  source = "${var.local_script_path}/crma_hive_normalize_tvm_os.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_normalize_tvm_os.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_mobius_data_to_target_backfill_trigger" {
-  name     = "crma_hive_mobius_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_csam_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_device_to_mobius_os_map_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_device_to_mobius_os_map.py"
+  source = "${var.local_script_path}/crma_hive_device_to_mobius_os_map.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_device_to_mobius_os_map.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_axonius_data_to_target_backfill_trigger" {
-  name     = "crma_hive_axonius_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_mobius_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_compute_prohibited_osscore_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_compute_prohibited_osscore.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_compute_prohibited_osscore.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_compute_prohibited_osscore.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_target_backfill_trigger" {
-  name     = "crma_hive_tvm_light_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_axonius_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_input_devices_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_input_devices.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_input_devices.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_input_devices.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_target_backfill_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_aggregate_scores_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_aggregate_scores.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_aggregate_scores.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_aggregate_scores.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_compliance_data_to_target_backfill_trigger" {
-  name     = "crma_hive_tvm_compliance_data_to_target_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_impact_computation_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_impact_computation.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_impact_computation.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_impact_computation.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_audit_controls_backfill_trigger" {
-  name     = "crma_hive_audit_controls_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_compliance_data_to_target.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_load_audit_controls.name
-  }
+resource "aws_s3_object" "crma_hive_scorecard_compute_sc_score_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_scorecard_compute_sc_score.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_compute_sc_score.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_compute_sc_score.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_tables_backfill_trigger" {
-  name     = "crma_hive_tvm_light_data_to_hist_tables_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_load_audit_controls.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
-  }
+resource "aws_s3_object" "crma_hive_fetch_cmdb_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_fetch_cmdb_tables.py"
+  source = "${var.local_script_path}/crma_hive_fetch_cmdb_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_fetch_cmdb_tables.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_tables_backfill_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_hist_tables_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
-  }
+resource "aws_s3_object" "crma_hive_cmdb_process_data_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_cmdb_process_data.py"
+  source = "${var.local_script_path}/crma_hive_cmdb_process_data.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_cmdb_process_data.py")
+}
+resource "aws_s3_object" "crma_hive_cmdb_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_cmdb_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_cmdb_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_cmdb_data_to_target.py")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_light_data_to_hist_agg_table_backfill_trigger" {
-  name     = "crma_hive_tvm_light_data_to_hist_agg_table_backfill_trigger"
-  type     = "CONDITIONAL"
-
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
-
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_tables.name
-        state    = "SUCCEEDED"
-      }
-  }
-
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
-  }
+resource "aws_s3_object" "crma_hive_tvm_to_mobius_software_map_static_file" {
+  bucket = var.s3_crma_hive_bucket 
+  key = "raw_data/SWAM/CRMA_HIVE_TVM_TO_MOBIUS_SOFTWARE_MAP_${formatdate("MMDDYY", timestamp())}_000000.csv"
+  source = "static_files/crma_hive_tvm_to_mobius_software_map.csv"
+  etag = filemd5("static_files/crma_hive_tvm_to_mobius_software_map.csv")
 }
 
-resource "aws_glue_trigger" "crma_hive_tvm_vulns_data_to_hist_agg_table_backfill_trigger" {
-  name     = "crma_hive_tvm_vulns_data_to_hist_agg_table_backfill_trigger"
-  type     = "CONDITIONAL"
+resource "aws_s3_object" "crma_hive_tvm_to_mobius_os_map_static_file" {
+  bucket = var.s3_crma_hive_bucket 
+  key = "raw_data/PROHIBITED_OS/CRMA_HIVE_DEVICE_TO_MOBIUS_OS_MAP_${formatdate("MMDDYY", timestamp())}_000000.csv"
+  source = "static_files/crma_hive_device_to_mobius_os_map.csv"
+  etag = filemd5("static_files/crma_hive_device_to_mobius_os_map.csv")
+}
 
-  workflow_name = aws_glue_workflow.crma_hive_rollback_backfill_workflow.name
+resource "aws_s3_object" "crma_hive_known_mobius_software_static_file" {
+  bucket = var.s3_crma_hive_bucket 
+  key = "raw_data/KNOWN_MOBIUS/CRMA_HIVE_KNOWN_MOBIUS_SOFTWARE_${formatdate("MMDDYY", timestamp())}_000000.csv"
+  source = "static_files/crma_hive_known_mobius_software.csv"
+  etag = filemd5("static_files/crma_hive_known_mobius_software.csv")
+}
 
-  predicate {
-      conditions {
-        job_name = aws_glue_job.crma_hive_tvm_light_data_to_hist_agg_table.name
-        state    = "SUCCEEDED"
-      }
-  }
+resource "aws_s3_object" "crma_hive_known_mobius_os_static_file" {
+  bucket = var.s3_crma_hive_bucket 
+  key = "raw_data/KNOWN_MOBIUS/CRMA_HIVE_KNOWN_MOBIUS_OS_${formatdate("MMDDYY", timestamp())}_000000.csv"
+  source = "static_files/crma_hive_known_mobius_os.csv"
+  etag = filemd5("static_files/crma_hive_known_mobius_os.csv")
+}
 
-  actions {
-    job_name = aws_glue_job.crma_hive_tvm_vulns_data_to_hist_agg_table.name
-  }
+
+resource "aws_s3_object" "crma_hive_known_mobius_tables_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_known_mobius_tables.py"
+  source = "${var.local_script_path}/crma_hive_known_mobius_tables.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_known_mobius_tables.py")
+}
+
+resource "aws_s3_object" "crma_hive_audit_report_software_map_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_audit_report_software_map.py"
+  source = "${var.local_script_path}/audit/crma_hive_audit_report_software_map.py"
+  etag = filemd5("${var.local_script_path}/audit/crma_hive_audit_report_software_map.py")
+}
+
+resource "aws_s3_object" "crma_hive_audit_report_os_map_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_audit_report_os_map.py"
+  source = "${var.local_script_path}/audit/crma_hive_audit_report_os_map.py"
+  etag = filemd5("${var.local_script_path}/audit/crma_hive_audit_report_os_map.py")
+}
+
+resource "aws_s3_object" "crma_hive_audit_report_models_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_audit_report_models.py"
+  source = "${var.local_script_path}/audit/crma_hive_audit_report_models.py"
+  etag = filemd5("${var.local_script_path}/audit/crma_hive_audit_report_models.py")
+}
+
+resource "aws_s3_object" "crma_hive_audit_report_utils_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_audit_report_utils.py"
+  source = "${var.local_script_path}/audit/crma_hive_audit_report_utils.py"
+  etag = filemd5("${var.local_script_path}/audit/crma_hive_audit_report_utils.py")
+}
+
+resource "aws_s3_object" "crma_hive_audit_email_utils_upload_bucket" {
+  bucket = var.s3_bucket 
+  key = "scripts/crma_hive_audit_email_utils.py"
+  source = "${var.local_script_path}/audit/crma_hive_audit_email_utils.py"
+  etag = filemd5("${var.local_script_path}/audit/crma_hive_audit_email_utils.py")
+}
+
+resource "aws_s3_object" "crma_hive_scorecard_utilities_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_scorecard_utilities.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_utilities.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_utilities.py")
+}
+
+resource "aws_s3_object" "crma_hive_ucmm_data_to_target_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_ucmm_data_to_target.py"
+  source = "${var.local_script_path}/crma_hive_ucmm_data_to_target.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_ucmm_data_to_target.py")
+}
+
+resource "aws_s3_object" "crma_hive_scorecard_ucmm_integration_upload_bucket" {
+  bucket = var.s3_bucket
+  key = "scripts/crma_hive_scorecard_ucmm_integration.py"
+  source = "${var.local_script_path}/crma_hive_scorecard_ucmm_integration.py"
+  etag = filemd5("${var.local_script_path}/crma_hive_scorecard_ucmm_integration.py")
 }

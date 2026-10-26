@@ -1,12 +1,19 @@
-import pandas as pd
 import logging
 import time
-import gc
-import urllib3
-from crma_hive_connections import Connection
-from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_tvm_utilities import TvmUtility
 from typing import Optional
+
+import urllib3
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+
+from crma_hive_connections import Connection
+from crma_hive_utilities import Utility
+from crma_hive_utilities_spark import Spark_Read_Write_Utility
+from crma_hive_data_quality_utilities_spark import SparkDfDataQualityUtilities
+from crma_hive_tvm_utilities import TvmUtility
+
+
 
 # Turning off warnings
 urllib3.disable_warnings()
@@ -16,63 +23,440 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Instantiate classes
-connection = Connection()
 utility = Utility()
-rw_util = Read_Write_Utility()
+spark_rw_util = Spark_Read_Write_Utility()
+connection = Connection()
+sparkDataQualityUtils = SparkDfDataQualityUtilities()
 tvmUtil = TvmUtility()
+    
+def process_compliance(
+        bucket_name: str,
+        spark: SparkSession,
+        backfill_date: Optional[str] = None
+        ) -> None:
+    """
+    Handles  data cleaning and enrichement of the TVM compliance dataset 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
 
+    Parameters:
+        bucket_name (str): Name of the s3 bucket
+        dataset (str): name of the dataset to be processed
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    """
+    logger.info(f"Fetching data from landing zone...")
+        
+    dataset = "CRMA_HIVE_TVM_COMPLIANCE"
+    base_name = f"raw_data/TVM/{dataset}"
+
+    if backfill_date:
+        df = spark_rw_util.fetch_spark_df_from_s3_by_date(
+            bucket_name=bucket_name,
+            base_folder=base_name,
+            spark=spark,
+            backfill_date=backfill_date
+        )
+    else:
+        df = spark_rw_util.fetch_spark_df_from_s3(
+            bucket_name=bucket_name,
+            base_folder=base_name,
+            spark=spark
+            )
+    if df is None:
+        raise ValueError("No data fetched from landing zone") 
+    
+    logger.info(f"Retrieve raw data, total records: {df.count()}")
+
+    logger.info("Selecting target columns...")
+    target_columns = [ "first_seen", "last_seen", "audit_file", "check_id", "check_name", "check_info", "expected_value", "actual_value", "status", "reference", "see_also", "plugin_id", "plugin_name", "state", 
+                      "compliance_benchmark_name", "compliance_benchmark_version", "compliance_full_id", "last_fixed", "last_observed", "indexed_at", "asset_id", "asset_name", "asset_system_type",
+                    ]
+    df = sparkDataQualityUtils.select_fields(df, target_columns)
+
+    #Parse Frameworks such as 'Rule-ID' and 'STIG-ID'  from 'reference' column
+    frameworks = ["Rule-ID", "STIG-ID"]
+    df = sparkDataQualityUtils.parse_framework_values(df, "reference", frameworks )
+    
+    #Convert columns containing array-like data (Spark ArrayType) to JSON strings to ensure SPARK JDBC bulk loading
+    df = sparkDataQualityUtils.convert_array_fields_to_json(df)    
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["first_seen", "last_seen", "last_fixed", "last_observed"]
+    df = sparkDataQualityUtils.clean_timestamp_fields(df, cols)
+   
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["plugin_id"]
+    df = sparkDataQualityUtils.clean_int_fields(df, cols)    
+ 
+    #Apply DQ1: Not nullabe, Quarantine
+    cols = ["first_seen", "last_seen", "state", "status", "compliance_full_id", "asset_id"]
+    df, quarantine_not_null = sparkDataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0: No duplicates & Quarantine
+    cols = ["asset_id", "compliance_full_id"]
+    if_dups_col = "last_seen"
+    df, quarantine_dups = sparkDataQualityUtils.dedup_by_composite_key_with_timestamp(df, cols, if_dups_col)
+  
+    #Merge quarantine dataframes
+    quarantine_df = quarantine_dups.unionByName(quarantine_not_null, allowMissingColumns=True)
+
+    # Load to destination 
+    logger.info("Loading processed data to destination...")
+    prefix = f"processed/TVM/"
+    spark_rw_util.load_processed_spark_df_to_s3(
+        bucket_name = bucket_name, 
+        spark=spark,
+        prefix=prefix,
+        dataset = dataset, 
+        clean_df=df, 
+        quarantine_df=quarantine_df,
+        backfill_date=backfill_date,
+        )
+
+def run_normal_mode(
+        bucket_name: str,
+        spark: SparkSession
+) -> None:
+    """
+    Executes TenableVM datasets processing.
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+    Returns:
+        None
+    """
+    logger.info("TVM data processing running in NORMAL mode.")
+
+    logger.info(f"Processing TenableVM compliance dataset")
+    process_compliance(bucket_name=bucket_name, spark=spark)
+    utility.log_memory_usage() 
+
+def run_backfill_mode(
+        bucket_name: str,
+        spark: SparkSession,
+        hist_table_name: str,
+        backfill_date: str,
+        datasets: list,
+) -> None:
+    """
+    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
+
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+        datasets (list): List of datsets upstream to a historical table
+    
+    Returns:
+        None
+    """
+    logger.info(f"TVM data processing running in BACKFILL mode.")
+    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
+
+    if not utility.is_valid_backfill_date(backfill_date):
+        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
+        raise
+
+    if not datasets:
+        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
+        raise
+
+    for dataset in datasets:
+        dataset_upper = dataset.upper().strip()
+
+        # call processors with backfill_date
+        if dataset_upper == "TVM_COMPLIANCE":
+            logger.info("Processing TVM compliance (in backfill mode)")
+            process_compliance(bucket_name, spark, backfill_date)
+            utility.log_memory_usage() 
+        
 
 def main():
     start_time = time.time()
+    utility.log_memory_usage() 
 
-    logger.info("Retrieving account credentials...")
-    ACCESS_KEY = connection.get_secret("edae-crma-hive")["tvm_access_key"]
-    SECRETE_SECRET = connection.get_secret("edae-crma-hive")["tvm_secrete_key"]
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    base_url ="https://fedcloud.tenable.com"
+    if not bucket_name:
+       raise ValueError("S3 bucket not found!")
+    try:    
+        spark= SparkSession.builder.getOrCreate()
+    except Exception as e:
+        logger.error(f"Error creaign spark session: {e}")
+        raise
+  
+    # resolve workflow run properties
+    workflow_params = utility.get_workflow_props()
+    backfill_date = workflow_params.get("--backfill_date")
+    hist_table_name = workflow_params.get("--hist_table_name")
+    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
 
-    # log memory usage
-    utility.log_memory_usage()
-    #setup
-    headers = {
-        'accept': 'application/json',
-        'content-type': 'application/json',
-        'X-ApiKeys': f'accessKey={ACCESS_KEY}; secretKey={SECRETE_SECRET}'
-    }
+    # run in backfill mode if all backfill properties are present
+    backfill_mode = bool(backfill_date and hist_table_name)
  
-    targets = [
-    {
-            "dataset": "compliance",
-            "output_filename": "CRMA_HIVE_TVM_COMPLIANCE",
-            "payload": {
-                "filters": {
-                    "state": ["OPEN", "REOPENED", "FIXED" ],
-                    "compliance_results": ["PASSED", "FAILED"]
-                },            
-            "num_findings": 10000
-            }        
-    }, 
+    if backfill_mode:
+        run_backfill_mode(
+            bucket_name=bucket_name, 
+            spark=spark,
+            hist_table_name=hist_table_name, 
+            backfill_date=backfill_date, 
+            datasets=datasets
+        ) 
 
-    ]
+    else:
+        run_normal_mode(
+            bucket_name=bucket_name,
+            spark=spark
+        )
 
-    for target in targets:    
+    elapsed_minutes = (time.time() - start_time)/60
+    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
 
-        output_filename = target["output_filename"]
-        dataset =   target["dataset"] 
+if __name__ == "__main__":
+    main()
 
-        logger.info(f"Fetching TenableVM {dataset} dataset using Tenable export API") 
-        if dataset=="compliance":
-            tvmUtil.setup_and_start_compliance__export(
-                base_url=base_url,
-                headers = headers,
-                target = target,
-                bucket_name=bucket_name,
-            )
+import urllib3
+from datetime import datetime
+import logging
+import time
+from typing import Optional
+
+from sqlalchemy.engine import Engine
+from pyspark.sql import SparkSession
+
+
+from crma_hive_utilities import Utility, Read_Write_Utility
+from crma_hive_connections import Connection
+from crma_hive_tvm_utilities_spark import SparkTvmUtility
+
+
+# Turning off warnings
+urllib3.disable_warnings()
+
+# Setting up logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Instantiate classes
+connection = Connection()
+utility = Utility()
+rw_util = Read_Write_Utility()
+sparkTvmUtil = SparkTvmUtility()
+
+# Define global vars
+MAIN_SCHEMA = rw_util.MAIN_SCHEMA
+BACKFILL_SCHEMA = rw_util.BACKFILL_SCHEMA
+TABLE_CRMA_HIVE_TVM_COMPLIANCE= "TVM_COMPLIANCE" 
+TABLE_CRMA_HIVE_TVM_VULNS= "TVM_VULNS"
+
+VALID_TABLES = {
+    TABLE_CRMA_HIVE_TVM_COMPLIANCE,    
+    TABLE_CRMA_HIVE_TVM_VULNS,
+}  
+
+
+def run_normal_mode(
+        engine: Engine,
+        spark: SparkSession,
+        jdbc_url: str,
+        user: str,
+        password: str, 
+        bucket_name: str, 
+        schema: str,      
+)->None:
+    """
+    Prepares input parametrs and calls utility function to load TVM data to target talbes in Normal mode.
+
+    Parameters:
+        engine (str): SQLalchemy engine
+        schema (str): The database schema in which data is loaded.
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files   
+    Returns:
+        None
+    """    
+    logger.info("TVM data to target loading running in NORMAL mode.")
+    # load_configs= [
+
+    #                 {
+    #                     "dataset": TABLE_CRMA_HIVE_TVM_COMPLIANCE, 
+    #                     "load_strategy": "stage", 
+    #                     "pk_columns": ["compliance_full_id", "asset_id"],
+    #                     "all_columns":  ["first_seen", "last_seen", "audit_file", "check_id", "check_name", "check_info", "expected_value", "actual_value", "status", "reference", "see_also", "plugin_id", "state",
+    #                       "compliance_benchmark_name", "compliance_benchmark_version", "compliance_full_id", "last_fixed", "last_observed", "indexed_at", "plugin_name", "asset_id", "asset_name",
+    #                       "asset_system_type", "rule_id", "stig_id", "etl_date"],
+    #                 },
+    #             ]      
+
+    load_configs= [
+            {"dataset": TABLE_CRMA_HIVE_TVM_COMPLIANCE, "load_strategy": "upsert", "pk_columns": ["compliance_full_id", "asset_id"]},
+        ]
+
+    for load_config in load_configs:
+        sparkTvmUtil.load_tvm_data_to_db(
+            engine=engine,
+            spark=spark,
+            jdbc_url=jdbc_url,
+            user=user,
+            password=password,
+            bucket_name=bucket_name,
+            load_config=load_config,
+            schema=schema
+        )
+        utility.log_memory_usage()  
+
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    jdbc_url2, user2, password2 = connection.parse_pg_uri_to_jdbc("edae-crma-hive", "crmahivedb_fqt")
+
+    for load_config in load_configs:
+        sparkTvmUtil.load_tvm_data_to_db(
+            engine=engine2,
+            spark=spark,
+            jdbc_url=jdbc_url2,
+            user=user2,
+            password=password2,
+            bucket_name=bucket_name,
+            load_config=load_config,
+            schema=schema
+        )
+
+def run_backfill_mode(
+        engine: Engine, 
+        spark: SparkSession,
+        jdbc_url: str,
+        user: str,
+        password: str, 
+        bucket_name: str, 
+        schema:str, 
+        hist_table_name: str, 
+        backfill_date: str, 
+        datasets: list, 
+)->None:
+    """
+    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
+
+    Parameters:
+        engine (str): SQLalchemy engine
+        schema (str): The database schema in which data is loaded.
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+        datasets (list): List of datsets upstream to a historical table
+    
+    Returns:
+        None
+    """
+
+    logger.info(f"Running in BACKFILL mode.")
+    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
+
+    if not utility.is_valid_backfill_date(backfill_date):
+        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
+        raise
+    
+    if not datasets:
+        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
+        raise
+
+    valid_datasets = [t for t in datasets if t in VALID_TABLES]
+
+    if len(valid_datasets) != len(datasets):
+        invalid_tables = set(datasets) - set(valid_datasets)
+        logger.warning(f"Invalid tables ignored: {invalid_tables}. Valid tables used: {valid_datasets}")
+        datasets = valid_datasets
+    else:
+        logger.info(f"All {len(datasets)} tables in dataset are valid")
+
+    if not datasets:
+        logger.warning(F"No TVM tables found!")
+
+    load_configs = []
+    for dataset in datasets:
+        dataset_upper = dataset.upper().strip()
+
+
+        if dataset_upper == "TVM_COMPLIANCE":
+            load_configs.append(
+                   {
+                        "dataset": TABLE_CRMA_HIVE_TVM_COMPLIANCE, 
+                        "load_strategy": "stage", 
+                        "pk_columns": ["compliance_full_id", "asset_id"],
+                        "all_columns": ["first_seen", "last_seen", "audit_file", "check_id", "check_name", "check_info", "expected_value", "actual_value", "status", "reference", "see_also", "plugin_id", "state",
+                                        "compliance_benchmark_name", "compliance_benchmark_version", "compliance_full_id", "last_fixed", "last_observed", "indexed_at", "plugin_name", "asset_id", "asset_name",
+                                        "asset_system_type", "rule_id", "stig_id", "etl_date"],
+                    },             
+                )          
+
+    for load_config in load_configs:
+        sparkTvmUtil.load_tvm_data_to_db(
+            engine=engine,
+            spark=spark,
+            jdbc_url=jdbc_url,
+            user=user,
+            password=password,
+            bucket_name=bucket_name,
+            load_config=load_config,
+            schema=schema,
+            backfill_date=backfill_date,
+        )
         utility.log_memory_usage() 
+    
 
-    elapsed_minutes = (time.time() - start_time) / 60 
-    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+def main():
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+
+    engine = connection.postgres_engine("edae-crma-hive")
+    jdbc_url, user, password = connection.parse_pg_uri_to_jdbc("edae-crma-hive")
+
+    try: 
+        bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]  
+    except Exception as e:
+       logger.error(f"Error retrieving bucket name:{e}")   
+       raise     
+    try: 
+        spark= SparkSession.builder.getOrCreate()
+    except Exception as e:
+       logger.error(f"Error creating spark session:{e}")   
+       raise  
+
+    logger.info("Extracting workflow run protperies.")
+    workflow_params = utility.get_workflow_props()
+    backfill_date = workflow_params.get("--backfill_date")
+    hist_table_name = workflow_params.get("--hist_table_name")
+    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
+    
+    backfill_mode = bool(backfill_date and hist_table_name)
+    if backfill_mode:
+        run_backfill_mode(
+            engine=engine, 
+            spark=spark,
+            jdbc_url=jdbc_url,
+            user=user,
+            password=password, 
+            bucket_name=bucket_name, 
+            schema=BACKFILL_SCHEMA, 
+            hist_table_name=hist_table_name, 
+            backfill_date=backfill_date, 
+            datasets=datasets,        
+        ) 
+    else:
+        run_normal_mode(
+            engine=engine,
+            spark=spark,
+            jdbc_url=jdbc_url,
+            user=user,
+            password=password, 
+            bucket_name = bucket_name, 
+            schema=MAIN_SCHEMA,
+        )    
+
+    elapsed_minutes = (time.time() - start_time)/60
+    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
 
 
 if __name__ == "__main__":
     main()
+

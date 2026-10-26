@@ -26,110 +26,119 @@ connection = Connection()
 rw_util = Read_Write_Utility()
 fismaScorecardUtility = FismaScorecardUtility()
 
-def build_fisma_hwam_score_sql() -> str:
+def build_device_hbd_score_sql() -> str:
     """
-    Build the HWAM Score per device data preparation SQL Command using CTEs.
+    Build the HBD Score per device data preparation SQL Command using CTEs.
     """
 
     sql = f"""
-        WITH
-        -- Step 1: Select eligible devices 
-        eligible_devices AS(
+        WITH 
+        -- Step 1: Select eligible devices
+        eligible_devices AS (
             SELECT 
                 device_id,
-                fisma_id, 
-                devicetype,
-                preferred_hostname,
-                preferred_ipv4,
-                os,
-                device_last_seen
-            FROM crma_hive.crma_hive_fismascorecard_input_devices
-            WHERE fisma_id iLIKE 'ICE-%%'
+                preferred_hostname AS hostname, 
+                preferred_ipv4  AS ip,
+                fisma_id,
+                adapters,
+                device_last_seen,
+                devicerole,
+                crowd_strike_last_seen,
+                edr_enabled
+            FROM  crma_hive.crma_hive_fismascorecard_input_devices
+            WHERE devicerole = 'ENDPOINT'
+                AND fisma_id iLIKE 'ICE-%%'
         ),
-        -- Step 2: Apply identification rule
-        asset_identification_status AS (
-        SELECT
-                *,
-                CASE
-                    WHEN devicetype IS NOT NULL
-                    AND preferred_ipv4 IS NOT NULL
-                    AND preferred_hostname IS NOT NULL
-                    AND (
-                        -- If device_type is 'server', 'workstation', or 'laptop', device_os must NOT be null
-                        (
-                            devicetype IN ('ENDPOINT - SERVER', 'ENDPOINT - WORKSTATION', 'ENDPOINT - LAPTOP')
-                            AND os IS NOT NULL
-                        )
-                        OR
-                        (
-                            devicetype NOT IN ('ENDPOINT - SERVER', 'ENDPOINT - WORKSTATION', 'ENDPOINT - LAPTOP')
-                        )
-                    )
-                    AND (
-                        -- If device_type is 'workstation' or 'laptop', hostname cannot be an IP address
-                        (
-                            devicetype IN ('ENDPOINT - WORKSTATION', 'ENDPOINT - LAPTOP')
-                            AND preferred_hostname !~ '^\d{1,3}(\.\d{1,3}){3}$'
-                        )
-                        OR
-                        (
-                            devicetype NOT IN ('ENDPOINT - WORKSTATION', 'ENDPOINT - LAPTOP')
-                        )
-                    )
-                    THEN TRUE
-                    ELSE FALSE
-                END AS is_identified
+        -- Step 2: Add a flag to indicate if a device is associated with CrowdStrike adapter or not
+        device_crowd_strike_adapter_association AS(
+            SELECT
+                device_id,
+                hostname, 
+                ip,
+                fisma_id,
+                adapters,
+                device_last_seen,
+                crowd_strike_last_seen,
+                edr_enabled,
+                ARRAY_POSITION(adapters, 'crowd_strike_adapter') IS NOT NULL AS crowd_strike_adapter
             FROM eligible_devices
         ),
-        -- Step 3:  Count assets by catagory
-        asset_counts AS (
+        -- Step 3: Add EDR and AV compliance field
+        device_edr_and_av_compliance AS (
             SELECT
+                device_id,
+                hostname, 
+                ip,
                 fisma_id,
-                COUNT(*) FILTER (WHERE is_identified = TRUE) AS identified_and_managed_assets,
-                COUNT(*) AS managed_assets,
-                COUNT(*) AS total_assets
-            FROM asset_identification_status
-            GROUP BY fisma_id
+                adapters,
+                device_last_seen,
+                crowd_strike_last_seen,
+                edr_enabled,
+                crowd_strike_adapter,
+                CASE 
+                    WHEN crowd_strike_last_seen >= current_date - INTERVAL '15' DAY THEN 1
+                    ELSE 0
+                END AS av_compliance,
+                CASE 
+                    WHEN edr_enabled IS True THEN 1
+                    ELSE 0
+                END AS edr_compliance
+            FROM device_crowd_strike_adapter_association
         ),
         -- Step 4: Score
-        scores AS (
+        device_hbd_score AS(
             SELECT
+                device_id,
+                hostname, 
+                ip,
                 fisma_id,
-                identified_and_managed_assets,
-                managed_assets,
-                total_assets,
+                device_last_seen,
+                adapters,
+                crowd_strike_last_seen,
+                edr_enabled,
+                crowd_strike_adapter,
+                av_compliance,
+                edr_compliance,
                 CASE
-                    WHEN managed_assets = 0 OR total_assets = 0 THEN NULL
-                    ELSE ROUND(
-                        (identified_and_managed_assets::float / managed_assets) * 100
-                    )::int
-                END AS hwam_score
-            FROM asset_counts
+                    WHEN crowd_strike_adapter IS NOT TRUE THEN 0
+                    ELSE ROUND(((0.5 * av_compliance) + (0.5 * edr_compliance)) * 100)::int
+                END AS hbd_score
+            FROM device_edr_and_av_compliance
         ),
-        --  Step 6: Enrich with fisma details
-        fisma_hwam_scores_enriched AS (
+        -- Step 5: Enrich with FISMA system information
+        device_hbd_scores_enriched AS (
             SELECT 
-                f.fisma_id,
-                f.fisma_name,
-                f.security_support_portfolio AS portfolio,
-                f.dhs_hva,
-                f.public_facing,
-                f.cfo_designated,
-                f.fips_199_security_categorization_overall,
-                f.active,
-                f.iscm_waiver, 
-                f.fisma_reportable,
-                f.fisma_inventory_selc_status,
-                f.fisma_category,
-                s.identified_and_managed_assets,
-                s.managed_assets,
-                s.total_assets,
-                s.hwam_score    
-            FROM crma_hive.crma_hive_snow_fismadetails f 
-            LEFT JOIN scores s
-                ON s.fisma_id = f.fisma_id
+                dhs.device_id,
+                dhs.hostname, 
+                dhs.ip,
+                dhs.fisma_id,
+                fd.fisma_name,
+                fd.security_support_portfolio AS portfolio,
+                fd.dhs_hva,
+                fd.public_facing,
+                fd.cfo_designated,
+                fd.fips_199_security_categorization_overall,
+                fd.active,
+                fd.iscm_waiver, 
+                fd.fisma_reportable,
+                fd.fisma_inventory_selc_status,
+                fd.fisma_category,
+                dhs.adapters,
+                dhs.device_last_seen,
+                dhs.crowd_strike_last_seen,
+                dhs.edr_enabled,
+                dhs.crowd_strike_adapter,
+                dhs.av_compliance,
+                dhs.edr_compliance,
+                dhs.hbd_score		 
+            FROM device_hbd_score dhs
+            LEFT JOIN crma_hive.crma_hive_snow_fismadetails fd
+                ON dhs.fisma_id = fd.fisma_id
         )
         SELECT 
+            device_id,
+            hostname, 
+            ip,
             fisma_id,
             fisma_name,
             portfolio,
@@ -142,141 +151,61 @@ def build_fisma_hwam_score_sql() -> str:
             fisma_reportable,
             fisma_inventory_selc_status,
             fisma_category,
-            identified_and_managed_assets,
-            managed_assets,
-            total_assets,
-            hwam_score 
-        FROM fisma_hwam_scores_enriched
-
+            adapters,
+            device_last_seen,
+            crowd_strike_last_seen,
+            edr_enabled,
+            crowd_strike_adapter,
+            av_compliance,
+            edr_compliance,
+            hbd_score		 
+        FROM device_hbd_scores_enriched
+      
     """
 
     return sql
 
-def build_component_hwam_score_sql() -> str:
+def build_fisma_hbd_score_sql() -> str:
     """
-    Build the HWAM Score for component(ICE) System data preparation SQL Command using CTEs. 
+    Build the HBD Score per FISMA System data preparation SQL Command using CTEs.
     """
     sql = f"""
-        WITH
-        -- Step 1: Select eligible devices 
-        eligible_devices AS(
-            SELECT 
-                d.device_id,
-                d.fisma_id, 
-                d.devicetype,	
-				d.asset_auth_status,
-                d.preferred_hostname,
-                d.preferred_ipv4,
-                d.os,
-                d.device_last_seen,
-                f.fisma_reportable,
-                f.iscm_waiver,
-                f.fisma_inventory_selc_status,
-                f.fisma_category
-            FROM  crma_hive.crma_hive_fismascorecard_input_devices  d
-            LEFT JOIN crma_hive.crma_hive_snow_fismadetails f
-                ON d.fisma_id=f.fisma_id
-        ),
-        eligible_fisma AS(
-            SELECT 
-                *
-            FROM  eligible_devices		
-            WHERE ((fisma_reportable iLike 'yes'
-                AND fisma_category in ('MAJ', 'GSS')
-                AND fisma_inventory_selc_status iLike 'Operational'
-                AND COALESCE(iscm_waiver, '') not ILIKE 'yes'
-                ) 
-                OR fisma_id is null
-            )
-        ),
-        -- Step 2: Get asset managment status
-        asset_management_status AS (
+        WITH 
+        fisma_hbd_score AS (
             SELECT
-                *,
-                CASE
-                    WHEN asset_auth_status IS NOT NULL THEN 'managed'
-                    ELSE 'unauthorized'
-                END AS asset_status
-            FROM eligible_fisma
-        ),
-        -- Step 3: Apply identification rule
-        asset_identification_status AS (
-        SELECT
-                *,
-                CASE
-                    WHEN devicetype IS NOT NULL
-                    AND preferred_ipv4 IS NOT NULL
-                    AND preferred_hostname IS NOT NULL
-                    AND (
-                        -- If devicetype is 'server', 'workstation', or 'laptop', device os must NOT be null
-                        (
-                            devicetype IN ('ENDPOINT - SERVER', 'ENDPOINT - WORKSTATION', 'ENDPOINT - LAPTOP')
-                            AND os IS NOT NULL
-                        )
-                        OR
-                        (
-                            devicetype NOT IN ('ENDPOINT - SERVER', 'ENDPOINT - WORKSTATION', 'ENDPOINT - LAPTOP')
-                        )
-                    )
-                    AND (
-                        -- If devicetype is 'workstation' or 'laptop', hostname cannot be an IP address
-                        (
-                            devicetype IN ('ENDPOINT - WORKSTATION', 'ENDPOINT - LAPTOP')
-                            AND preferred_hostname !~ '^\d{1,3}(\.\d{1,3}){3}$'
-                        )
-                        OR
-                        (
-                            devicetype NOT IN ('ENDPOINT - WORKSTATION', 'ENDPOINT - LAPTOP')
-                        )
-                    )
-                    THEN TRUE
-                    ELSE FALSE
-                END AS is_identified
-            FROM asset_management_status
-        ),
-        -- Step 4:  Count assets by catagory
-        component_asset_counts AS (
-            SELECT
-                'ICE' AS component,
-                COUNT(*) FILTER (WHERE is_identified = TRUE AND asset_status = 'managed') AS identified_and_managed_assets,
-                COUNT(*) FILTER (WHERE asset_status = 'managed') AS managed_assets,
-                COUNT(*) FILTER (WHERE asset_status = 'unauthorized') AS unauthorized_assets,
-                (SELECT COUNT(*) FROM eligible_devices) AS total_assets	
-            FROM asset_identification_status
-        ),
-        componenet_hwan_score AS (
-            SELECT
-                component,
-                identified_and_managed_assets,
-                managed_assets,
-                unauthorized_assets,
-                total_assets,
-                CASE
-                    WHEN managed_assets = 0 OR total_assets = 0 THEN NULL
-                    ELSE ROUND(
-                        ((identified_and_managed_assets::float / managed_assets) - (unauthorized_assets::float / total_assets)) * 100
-                    )::int
-                END AS hwam_score
-            FROM component_asset_counts
+                fisma_id,
+                ROUND(AVG(hbd_score))::integer AS  hbd_score
+            FROM crma_hive.crma_hive_fismascorecard_device_hbd_score
+            WHERE etl_date = %(etl_date)s
+            GROUP BY fisma_id
         )
         SELECT 
-            component,
-            identified_and_managed_assets,
-            managed_assets,
-            unauthorized_assets,
-            total_assets,
-            hwam_score
-        FROM componenet_hwan_score
+            a.fisma_id,
+            a.fisma_name,
+            a.security_support_portfolio AS portfolio,
+            a.dhs_hva,
+            a.public_facing,
+            a.cfo_designated,
+            a.fips_199_security_categorization_overall,
+            a.active,
+            a.iscm_waiver,
+            a.fisma_reportable,
+            a.fisma_inventory_selc_status,
+            a.fisma_category,
+            b.hbd_score
+        FROM crma_hive.crma_hive_snow_fismadetails a
+        LEFT JOIN fisma_hbd_score b
+            ON a.fisma_id = b.fisma_id
+    """
 
-            """
     return sql
 
-def run_hwam_score_workflow(
+def run_hbd_score_workflow(
         engine: Engine,
         bucket_name: str
     )->None:
     """
-    Execute the Software Assets Management(HWAM) score workflow, including building query, 
+    Execute the Configration Management score workflow, including building query, 
     param preparation, execute query, store output.
 
     Parameters:
@@ -287,24 +216,23 @@ def run_hwam_score_workflow(
         None
     """
     etl_date= date.today()
-    logger.info(f"Computing Scorecard HWAM Score for : {etl_date}") 
+    logger.info(f"Computing Scorecard HBD Score for : {etl_date}") 
+
+    logger.info("Build Device HBD score query.")
+    sql = build_device_hbd_score_sql()
 
 
-    logger.info("Build FISMA Systems HWAM score query.")
-    sql = build_fisma_hwam_score_sql()
-
-
-    logger.info("Excecute FISMA Systems HWAM score query.")
+    logger.info("Excecute Device HBD score query.")
     df = rw_util.query_postgres_to_dataframe(
         engine=engine,
         sql_query=sql,
     )
     
     if df is not None:
-        logger.info(f"Per FISMA System HWAM score received. Total records: {len(df)}")         
-        logger.info(f"Load fisma system score dataset to target table.")
+        logger.info(f"Per device hbd score received. Total number of devices: {len(df)}")         
+        logger.info(f"Load device score dataset to target table.")
         df["etl_date"] = etl_date
-        dataset = "crma_hive_fismascorecard_fisma_system_hwam_score"
+        dataset = "crma_hive_fismascorecard_device_hbd_score"
         fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
             engine=engine,
             df=df,
@@ -322,19 +250,20 @@ def run_hwam_score_workflow(
         logger.warning("Query returned no data")   
         return 
 
-    logger.info("Build Component HWAM score query.")
-    sql = build_component_hwam_score_sql()
+    logger.info("Build FISMA System HBD score query.")
+    sql = build_fisma_hbd_score_sql()
 
-    logger.info("Excecute Componenet HWHM score query.")
+    logger.info("Excecute FISMA System HBD score query.")
     df = rw_util.query_postgres_to_dataframe(
         engine=engine,
         sql_query=sql,
+        params={"etl_date": etl_date}
     )
 
     if df is not None:       
-        logger.info(f"Load Component HWAM score dataset to target table and save a copy to S3 for archival.")
+        logger.info(f"Load FISMA System HBD score dataset to target table and save a copy to S3 for archival.")
         df["etl_date"] = etl_date 
-        dataset='crma_hive_fismascorecard_component_hwam_score'
+        dataset='crma_hive_fismascorecard_fisma_system_hbd_score'
         fismaScorecardUtility.load_to_db_and_perform_post_load_validation(
             engine=engine,
             df=df,
@@ -360,8 +289,7 @@ def main():
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
     engine = connection.postgres_engine("edae-crma-hive") 
 
-
-    run_hwam_score_workflow(engine=engine, bucket_name=bucket_name)       
+    run_hbd_score_workflow(engine=engine, bucket_name=bucket_name)       
       
     utility.log_memory_usage() 
     elapsed_minutes = (time.time() - start_time) / 60 

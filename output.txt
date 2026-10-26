@@ -1,13 +1,19 @@
 import logging
-import json
-import time
+
 import pandas as pd
-import requests
+import numpy as np
+import time
+from datetime import datetime, date
+import re
+from typing import List, Tuple
+
 import urllib3
+
+from crma_hive_data_quality_utilities import DataQualityUtilities
 from crma_hive_connections import Connection
 from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_tvm_utilities import TvmUtility
-from typing import Optional
+
+from sqlalchemy.engine import Engine
 
 # Turning off warnings
 urllib3.disable_warnings()
@@ -16,166 +22,235 @@ urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Instantiate classes
-connection = Connection()
 utility = Utility()
+connection = Connection()
 rw_util = Read_Write_Utility()
-tvmUtil = TvmUtility()
+dataQualityUtils = DataQualityUtilities()
 
-def store_data(
-        bucket_name: str,
+MAIN_SCHEMA = rw_util.MAIN_SCHEMA
+
+
+def load_to_db_and_perform_post_load_validation(
+        engine: Engine,
         df: pd.DataFrame,
-        output_filename: str,        
-)-> None:
-    logger.info("Load data to S3 bucket")
-    filename = "raw_data/TVM/" + output_filename
-    rw_util.load_to_s3(
-        bucket_name=bucket_name, 
-        df=df, 
-        output_filename=filename, 
-        file_type="PARQUET"
+        table: str, 
+) -> None:
+    """
+    Loads data to desttination database
+    
+    Parameters:
+        engine (create_engine): Database connection engine
+        df (pd.DataFrame):
+        schema (str):
+        table (str):
+        load_control_table (str):
+    """
+    logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")
+
+    rw_util.bulk_truncate_and_load_with_copy(
+        engine=engine,
+        df=df,
+        schema=MAIN_SCHEMA,
+        target_table=table
+    )
+    logger.info(f"Perfomming post load validation on table '{table}' in '{MAIN_SCHEMA}' schema")
+    if rw_util.post_load_validation(
+            engine=engine,
+            df=df,
+            schema_name=MAIN_SCHEMA,
+            table_name=table
+        ): 
+        logger.info(f"Post load validation check passed for table '{table}' in '{MAIN_SCHEMA}' schema")
+
+        ##Parallel loading##
+        logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+        logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")     
+        engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+        rw_util.bulk_truncate_and_load_with_copy(
+            engine=engine2,
+            df=df,
+            schema=MAIN_SCHEMA,
+            target_table=table
+         )
+         
+    else:
+        raise RuntimeError(f"Post load validation check failed for {table} in '{MAIN_SCHEMA}' schema")
+        
+def archive_to_s3(
+        df: pd.DataFrame,
+        bucket_name: str,
+        dataset: str
+)->None:
+    """
+    Load dataset to s3
+    params:
+        df: dataset to store
+        bucket_name: s3 bucket name
+        dataset: dataset name
+    return:
+        None
+    """
+    logger.info("Load device score copy for to S3 for archival")
+    filename = f"processed/TVM/{dataset.upper()}"
+    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET") 
+
+    # # **Uncomment the following to save as CSV for testing**
+    # filename = f"test/raw/SCORECARD/{dataset.upper()}"
+    # rw_util.load_to_s3(bucket_name ,df, filename, "CSV")
+    # ## 
+
+CORPORATE_SUFFIXES = [
+    'inc', 'corp', 'llc', 'ltd', 'co', 'company', 'corporation', 'plc', 'gmbh', 'ag', 'sa', 'bv', 'sarl', 'oy', 'pte', 'limited'
+]
+
+def build_cpe_parse_query() -> str:
+    """
+    Build query to parse softeare manafucturer, product and version from tvm assets installed_software field
+    """
+    sql = f"""
+        WITH 
+        installed_software AS (
+            SELECT DISTINCT
+                id AS asset_id,
+                split_part(cpe, ':', 3) AS manufacturer,
+                split_part(cpe, ':', 4) AS product,
+                split_part(cpe, ':', 5) AS version,
+                timestamps_last_seen AS last_seen
+            FROM (
+                SELECT id, timestamps_last_seen, unnest(installed_software) AS cpe
+                FROM crma_hive.crma_hive_tvm_assets   
+            ) AS software
+        )
+
+        SELECT 
+            asset_id, 
+            manufacturer, 
+            product, 
+            version,
+            last_seen 
+        FROM installed_software;             
+    """
+    return sql
+
+def execute_workflow(
+        engine: Engine,
+        bucket_name: str,
+    ) -> None:
+    """
+    Run the TVM  software normalization workflow.
+
+    - Query CPE/software data from the source database.
+    - Normalize software name and version fields.
+    - De-duplicate, add ETL date, and load into target table.
+    - Archive the normalized dataset to S3.
+    - Derive unique software names and upsert into target tvm unique softwares
+    table and archive to S3.
+
+    Args:
+        engine: SQLAlchemy Engine for Postgres database.
+        bucket_name: S3 bucket used for archival copies.
+    """
+
+    logger.info("Build query.")
+    sql = build_cpe_parse_query()
+
+    logger.info("Excecute query.")
+    df= rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql
     )
 
-    # # *Uncomment this to save as csv for testing.*
-    # filename = "test/raw/TVM/" + output_filename
-    # rw_util.load_to_s3(bucket_name, df, filename, "CSV")   
+    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan', 'None', 'none' ], np.nan)
 
-def fetch_non_exportable_datasets(base_url, headers, dataset, bucket_name, output_filename):
+    logger.info("Normalize softeware_name")
+    df['software_name'] = df.apply(
+        lambda row: dataQualityUtils.normalize_software_name(row['manufacturer'], row['product']), axis=1
+    )
 
-    url = f"{base_url}/{dataset}"
-    logger.info(f"Fetching TVM {dataset} from {url}")
+    logger.info("Normalize version")
+    df['software_version'] = df['version'].apply(dataQualityUtils.normalize_version)
+    df = df.drop(columns=['version'])
+    df = df.drop_duplicates()
+    df["etl_date"] = datetime.now().date() 
+
+    logger.info("Load to database")
+    table="crma_hive_tvm_normalized_softwares"
+    rw_util.bulk_truncate_and_load_with_copy(
+            engine=engine,
+            df=df,
+            schema=MAIN_SCHEMA,
+            target_table=table,
+        )
     
-    try:
-        response = requests.get(url, headers=headers, timeout=720)
-        status = response.status_code
-        logger.info(f"Status code: {status} ")
-        if status == 200:
-            json_response = response.json()
-            data = json_response.get(dataset, [])                             
-            df = pd.json_normalize(data)
-            store_data(bucket_name=bucket_name, df=df, output_filename=output_filename)      
-        response.raise_for_status()
-    except Exception as e:
-        logger.error(f"Error fetching data: {e}")
-        raise
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    rw_util.bulk_truncate_and_load_with_copy(
+        engine=engine2,
+        df=df,
+        schema=MAIN_SCHEMA,
+        target_table=table
+        )
 
+    logger.info(f"Total records loaded to DB : {len(df)}")
+
+    logger.info("Save a copy to S3 for archival")
+    archive_to_s3(
+        df=df,
+        bucket_name=bucket_name,
+        dataset=table
+    )
+
+    logger.info("Identify unique TVM Softwares")
+    unique_softwares_df = df[["software_name", "etl_date"]].drop_duplicates().reset_index(drop=True)
+
+    logger.info("Update TVM unique softwares table")
+    table="crma_hive_tvm_unique_softwares"
+    rw_util.bulk_upsert_with_copy(
+        engine=engine,
+        df=unique_softwares_df,
+        schema=MAIN_SCHEMA,
+        target_table=table,
+        pk_columns=["software_name"]
+    )
+
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")  
+    logger.info(f"Total records loaded to DB : {len(df)}")
+    rw_util.bulk_upsert_with_copy(
+        engine=engine2,
+        df=unique_softwares_df,
+        schema=MAIN_SCHEMA,
+        target_table=table,
+        pk_columns=["software_name"]
+    )
+
+    logger.info(f"Total records loaded to DB : {len(unique_softwares_df)}")
+
+    logger.info("Save a copy to S3 for archival")
+    archive_to_s3(
+        df=unique_softwares_df,
+        bucket_name=bucket_name,
+        dataset=table
+    )
+
+        
 
 def main():
+
     start_time = time.time()
+    utility.log_memory_usage() 
 
-    logger.info("Retrieving account credentials...")
-    ACCESS_KEY = connection.get_secret("edae-crma-hive")["tvm_access_key"]
-    SECRETE_SECRET = connection.get_secret("edae-crma-hive")["tvm_secrete_key"]
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    base_url ="https://fedcloud.tenable.com"
+    engine = connection.postgres_engine("edae-crma-hive") 
 
-    # log memory usage
-    utility.log_memory_usage()
-    #setup
-    headers = {
-        'accept': 'application/json',
-        'content-type': 'application/json',
-        'X-ApiKeys': f'accessKey={ACCESS_KEY}; secretKey={SECRETE_SECRET}'
-    }
- 
-    targets = [
-    # {
-    #     "dataset": "scans",
-    #     "output_filename": "CRMA_HIVE_TVM_SCANS",
-    #     "exportable": False
-    # },  
-    {
-        "dataset": "policies",
-        "output_filename": "CRMA_HIVE_TVM_POLICIES",
-        "exportable": False
-    }, 
-    {
-        "dataset": "assets",
-        "output_filename": "CRMA_HIVE_TVM_ASSETS",
-        "exportable": True,
-        "payload": {
-                "filters": {},
-                "chunk_size": 10000
-            }
-    },
-    {
-            "dataset": "vulns",
-            "output_filename": "CRMA_HIVE_TVM_CISCO_VULNS",
-            "exportable": True,
-            "payload": {
-                "filters": {
-                    "severity": ["low", "medium", "high", "critical"],
-                    "state": ["OPEN", "REOPENED", "FIXED" ],
-                    "tag.AXONIUS FISMA ID": ["ICE-06560-GSS-06560", "ICE-07999-SUB-06560", 
-                        "ICE-08002-SUB-06560", "ICE-08004-SUB-06560", "ICE-08006-SUB-06560", "ICE-08007-SUB-06560"],   # CISCO icon
-                },            
-            "num_assets": 2500
-            }        
-    },  
-    {
-            "dataset": "vulns",
-            "output_filename": "CRMA_HIVE_TVM_PLUGIN_19506_VULNS",
-            "exportable": True,
-            "payload": {
-                "filters": {
-                    "plugin_id": [19506]
-                },            
-            "num_assets": 2500
-            }        
-    }, 
-    ]
+    execute_workflow(engine=engine, bucket_name=bucket_name)
 
-    for target in targets:    
-
-        output_filename = target["output_filename"]
-        dataset =   target["dataset"] 
-        exportable = target["exportable"]
-
-        if exportable: 
-
-            logger.info(f"Fetching TenableVM {dataset} dataset using Tenable export API") 
-
-            if output_filename=="CRMA_HIVE_TVM_CISCO_VULNS":
-                df = tvmUtil.setup_and_start_tvm_cisco_vulns_export(
-                    base_url=base_url,
-                    headers = headers,
-                    target = target,
-                )
-            elif output_filename=="CRMA_HIVE_TVM_PLUGIN_19506_VULNS":
-                df = tvmUtil.setup_and_start_tvm_plugin_19506_vulns_export(
-                    base_url=base_url,
-                    headers = headers,
-                    target = target,
-                )   
-            elif output_filename=="CRMA_HIVE_TVM_ASSETS":
-                df = tvmUtil.setup_and_start_tvm_assets_export(
-                    base_url=base_url,
-                    headers = headers,
-                    target = target,
-                )   
-            else:
-                logger.info(f"Fetching TenableVM {dataset} dataset using REST Endpoint") 
-                df = tvmUtil.fetch_exportable_datasets(
-                    base_url=base_url,
-                    headers=headers,
-                    target=target,
-                )
-            if df is not None:
-                store_data(bucket_name=bucket_name, df=df, output_filename=output_filename)
-        else:
-            fetch_non_exportable_datasets(
-                base_url=base_url,
-                headers=headers,
-                dataset=dataset,
-                bucket_name=bucket_name,
-                output_filename = output_filename,
-            )
-   
-        
-            
-
-        utility.log_memory_usage() 
-
+      
+    utility.log_memory_usage() 
     elapsed_minutes = (time.time() - start_time) / 60 
     logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
 
@@ -183,20 +258,32 @@ def main():
 if __name__ == "__main__":
     main()
 
-import re
+
+
+
 import pandas as pd
+import numpy as np
 import urllib3
+from datetime import datetime
+import boto3
 import logging
+from io import StringIO
 import time
 from crma_hive_utilities import Utility, Read_Write_Utility
 from crma_hive_data_quality_utilities import DataQualityUtilities
-from crma_hive_tvm_utilities import TvmUtility
 from crma_hive_connections import Connection
-from typing import Optional
+from sqlalchemy.engine.base import Engine
+import pyarrow
+import re
+import json
+import ast
+from typing import Tuple, Optional
 
 
 # Turning off warnings
 urllib3.disable_warnings()
+
+from sqlalchemy.engine import Engine
 
 # Setting up logger
 logger = logging.getLogger(__name__)
@@ -207,827 +294,396 @@ utility = Utility()
 rw_util = Read_Write_Utility()
 connection = Connection()
 dataQualityUtils = DataQualityUtilities()
-tvmUtil = TvmUtility()
 
-MAIN_SCHEMA = rw_util.MAIN_SCHEMA
- 
-def process_cisco_vulns(
-        bucket_name: str,
-        backfill_date: Optional[str] = None
-        ) -> None:
+
+def process_and_load_tvm_to_mobius_software_map(bucket_name: str, engine: Engine ) -> None:
     """
-    Handles  data cleaning and enrichement of the TVM vulns dataset 
-    
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix.
+    Load the TVM-to-Mobius software mapping from S3 into Postgres.
 
-    Parameters:
-        bucket_name (str): Name of the s3 bucket
-        dataset (str): name of the dataset to be processed
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+    Steps:
+      - Read the XLSX mapping file from the landing zone in S3.
+      - Select relevant mapping columns and standardize null-like values.
+      - Archive a processed copy to S3 in Parquet format.
+      - Add ETL date and load the data into the target table in the primary DB.
+      - Load the same data into the corresponding table in the secondary DB.
 
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    dataset = "CISCO_VULNS"
-    prefix = "raw_data/TVM/"
-    base_name = prefix + "CRMA_HIVE_TVM_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Retrieve rase data, total records: {len(df)}")
-    target_columns = [   
-        "finding_id" , "severity", "severity_id", "state", "first_found", "last_found", "last_fixed", "indexed", "resurfaced_date", "time_taken_to_fix", "asset_uuid", "asset_operating_system", "asset_hostname", "asset_ipv4", "plugin_id", "plugin_name", "plugin_cvss3_base_score",
-        "plugin_cvss3_temporal_score", "plugin_cvss3_temporal_vector", "plugin_epss_score", "plugin_exploit_available", "plugin_exploitability_ease", "plugin_family", "plugin_cve", "plugin_xrefs", "port_port",
-        "port_protocol", "scan_uuid", "source",    
-    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    df['is_kev_tenable'] = df['plugin_xrefs'].astype(str).str.contains('CISA-KNOWN-EXPLOITED', case=False, na=False)
-
-
-    logger.info("Exttract is_kev flag using the CISA KEV Catalog")
-
-    logger.info("1. Get CVE lookup")
-    engine = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    cve_table =f"{MAIN_SCHEMA}.crma_hive_cisa_kev_catalog" 
-    cve_lookup_query = f"""
-                        SELECT cve_id
-                        FROM {cve_table}
-                        """
-    cve_lookup_df = rw_util.query_postgres_to_dataframe(
-        engine=engine,
-        sql_query=cve_lookup_query,
-    )
-
-    logger.info("2. Flantten plugin_cve field and clean")
-    exploded_cves_df = (
-        df[["finding_id", "plugin_cve"]]
-        .explode("plugin_cve")
-        .rename(columns={"plugin_cve": "cve_id"})
-    )
-    exploded_cves_df["cve_id"] = (
-        exploded_cves_df["cve_id"]
-        .astype("string")
-        .str.strip()
-        .str.upper()
-    )
-    exploded_cves_df = (
-        exploded_cves_df
-        .dropna(subset=["cve_id"])
-        .reset_index(drop=True)
-    )
-
-    logger.info("3. Find rows where there is at least one match in cve lookup")
-    matched_df = (
-        exploded_cves_df
-        .merge(
-            cve_lookup_df[["cve_id"]].drop_duplicates(),
-            on="cve_id",
-            how="inner"
-        )[["finding_id"]]
-        .drop_duplicates()
-        .assign(is_kev=True)
-        .reset_index(drop=True)
-    )
-
-    logger.info("4. Add is_kev Columns to the Dataframe")
-    df = (
-        df
-        .merge(matched_df, on="finding_id", how="left")
-        .assign(is_kev=lambda x: x["is_kev"].fillna(False))
-    )
-
-    #Convert DataFrame columns containing lists or numpy arrays to PostgreSQL arrays
-    df = dataQualityUtils.convert_arrays_for_postgres(df) 
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["first_found", "last_found", "last_fixed", "indexed", "resurfaced_date", ]    
-    df = dataQualityUtils.clean_timestamp_fields_iso8601_format(df, cols)
-
-    #Apply DQ4: Convert numeric columns to Integer 
-    cols = ["severity_id", "plugin_id",  "port_port" ]
-    df = dataQualityUtils.clean_int_fields(df, cols)
-
-    #Apply DQ9: Convert columns to float/decimal 
-    cols = ["time_taken_to_fix", "plugin_cvss3_base_score", "plugin_cvss3_temporal_score", "plugin_epss_score"]
-    df = dataQualityUtils.clean_float_fields(df, cols)
-
-    #Apply DQ3: Normalize boolean fields 
-    cols = ["plugin_exploit_available"]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["finding_id", "state", "first_found","last_found", "indexed", "asset_uuid", "plugin_id", "port_port", "port_protocol", "scan_uuid" ]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = [ "finding_id",]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)  
- 
-    #Load to destination 
-    logger.info("Loading processed data to destination...")
-    tvmUtil.load_processed_tvm_datasets_to_s3_in_parquet(
-        bucket_name = bucket_name, 
-        dataset = dataset, 
-        clean_df=df, 
-        quarantine_df=quarantine_df,
-        backfill_date=backfill_date,
-        )
-
-    # #....**Uncomment this to save in csv for testing** ....
-    # tvmUtil.load_processed_tvm_datasets_to_s3_in_csv(
-    #     bucket_name = bucket_name, 
-    #     dataset = dataset, 
-    #     clean_df=df, 
-    #     quarantine_df=quarantine_df,
-    #     backfill_date=backfill_date,
-    # )
-    # ##
-def process_plugin_19506_vulns(
-        bucket_name: str,
-        backfill_date: Optional[str] = None
-        ) -> None:
-    """
-    Handles  data cleaning and enrichement of the TVM plugin 19506 vulns dataset 
-    
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix.
-
-    Parameters:
-        bucket_name (str): Name of the s3 bucket
-        dataset (str): name of the dataset to be processed
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    dataset = "PLUGIN_19506_VULNS"
-    prefix = "raw_data/TVM/"
-    base_name = prefix + "CRMA_HIVE_TVM_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Retrieve rase data, total records: {len(df)}")
-    target_columns = [   
-        "finding_id" , "asset_uuid", "output"
-    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["finding_id", "asset_uuid",  "output"]
-    df, _  = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = [ "finding_id",]
-    df, _  = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-
-    #Extract credential check and scan time from output cols
-    df = dataQualityUtils.extract_assest_credential_check(df, "output")
-
-    #Extract timestamp  
-    df = dataQualityUtils.extract_timestamp(df, "scan_start_date")
-    
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["scan_start_date"]    
-    df = dataQualityUtils.clean_timestamp_fields_iso8601_format(df, cols)
-
-    #If there are duplicate asset, keep one with most recent scan time
-    df = dataQualityUtils.dedup_records(df, "asset_uuid", "scan_start_date")
-
-    #Load to destination 
-    logger.info("Loading processed data to destination...")
-    tvmUtil.load_processed_tvm_datasets_to_s3_in_parquet(
-        bucket_name = bucket_name, 
-        dataset = dataset, 
-        clean_df=df, 
-        backfill_date=backfill_date,
-        )
-
-    # #....**Uncomment this to save in csv for testing** ....
-    # tvmUtil.load_processed_tvm_datasets_to_s3_in_csv(
-    #     bucket_name = bucket_name, 
-    #     dataset = dataset, 
-    #     clean_df=df, 
-    #     backfill_date=backfill_date,
-    # )
-    # ##
-
-def process_assets(
-        bucket_name: str,
-        backfill_date: Optional[str] = None
-        ) -> None:
-    """
-    Handles  data cleaning and enrichement of the TVM assets dataset 
-
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix. 
-
-    Parameters:
-        bucket_name (str): Name of the s3 bucket
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+    Args:
+        bucket_name: Name of the S3 bucket containing input and archive data.
+        engine: SQLAlchemy Engine connected to the primary Postgres database.
     """
     logger.info(f"Fetching data from landing zone...")
     
     # Creating variables and the dataframe
-    dataset = "ASSETS"
-    prefix = "raw_data/TVM/"
-    base_name = prefix + "CRMA_HIVE_TVM_" + dataset
+    dataset = "CRMA_HIVE_TVM_TO_MOBIUS_SOFTWARE_MAP"
+    prefix = "raw_data/SWAM/"
+    base_name = prefix + dataset
 
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "CSV")  
 
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
+    logger.info(f"Total records fetched: {len(df)}")
 
-    logger.info(f"Total records: {len(df)}")
-    target_columns = [ "id",  "network_hostnames", "network_ipv4s", "network_mac_addresses", "network_fqdns", "network_netbios_names", "network_ssh_fingerprints", "scan_first_scan_time", "scan_last_authenticated_scan_date", "scan_last_authentication_attempt_date",
-                      "scan_last_authentication_scan_status", "scan_last_authentication_success_date",	"scan_last_scan_id", "scan_last_scan_time", "timestamps_created_at", "timestamps_first_seen", "timestamps_last_seen",
-                      "timestamps_updated_at", "tags", "operating_systems",	"system_types", "installed_software", "agent_uuid", "agent_names", "has_agent", "has_plugin_results",	"is_licensed", "is_public",
-    ]
+    target_columns = [
+        "tvm_software_name", "mobius_software_name", "mobius_product_id"]
     logger.info("Selecting target columns...")
+    
     df = dataQualityUtils.select_fields(df, target_columns)
 
-    #Extract FISMA ID from `tag` field
-    logger.info("Extracting FISMA IDs from asset tags")
-    def _extract_fisma_id(s: str):
-        """Private helper function to extract FISMA_ID from asset tags"""
-        if s is None:
-                return None
+    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan' ], np.nan)
 
-        s = str(s)
-        if not s.strip() or s.strip().lower() == "null":
-            return None
 
-        matches = re.findall(
-            r"'key'\s*:\s*'AXONIUS FISMA ID'.*?'value'\s*:\s*'([^']+)'",
-            s,
-            flags=re.DOTALL,
-        )
+    logger.info("Storing a copy in S3 bucket for archival...")
+    filename =f"processed/SWAM/{dataset}" 
+    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
 
-        return matches or None
+    logger.info("Loading data to database...")
+    df["etl_date"] = datetime.now().date() 
+    schema="crma_hive"
+    table_name = f"{dataset.lower()}"
+    rw_util.truncate_and_load_table(
+           engine=engine, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
 
-    df["tags_fisma_id"] = df["tags"].apply(_extract_fisma_id)
-    
-
-    #Convert DataFrame columns containing lists or numpy arrays to PostgreSQL arrays
-    df = dataQualityUtils.convert_arrays_for_postgres(df)
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["scan_first_scan_time", "scan_last_authenticated_scan_date",  "scan_last_authentication_attempt_date", "scan_last_authentication_success_date", "scan_last_scan_time", "timestamps_created_at", "timestamps_first_seen", "timestamps_last_seen", "timestamps_updated_at",   ]    
-    df = dataQualityUtils.clean_timestamp_fields_iso8601_format(df, cols)
-
-    #Apply DQ3: Normalize boolean fields 
-    cols = ["has_agent", "has_plugin_results", "is_licensed", "is_public",  ]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["id",]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = [ "id",]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)  
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    rw_util.truncate_and_load_table(
+           engine=engine2, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
  
-    #Load to destination 
-    logger.info("Loading processed data to destination...")
-    tvmUtil.load_processed_tvm_datasets_to_s3_in_parquet(
-        bucket_name = bucket_name, 
-        dataset = dataset, 
-        clean_df=df, 
-        quarantine_df=quarantine_df,
-        backfill_date=backfill_date,
-        )
-
-    # #....**Uncomment this to save in csv for testing** ....
-    # tvmUtil.load_processed_tvm_datasets_to_s3_in_csv(
-    #     bucket_name = bucket_name, 
-    #     dataset = dataset, 
-    #     clean_df=df, 
-    #     quarantine_df=quarantine_df,
-    #     backfill_date=backfill_date,
-    # )
-    # ##  
-
-def process_scans(
-        bucket_name: str,
-        backfill_date: Optional[str] = None
-        ) -> None:
-    """
-    Handles  data cleaning and enrichement of the TVM scans dataset 
-
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix. 
-
-    Parameters:
-        bucket_name (str): Name of the s3 bucket
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "SCANS"
-    prefix = "raw_data/TVM/"
-    base_name = prefix + "CRMA_HIVE_TVM_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Total records: {len(df)}")
-    target_columns = ["control", "creation_date", "enabled", "id", "last_modification_date", "legacy", "name", "owner", "policy_id", "read", "rrules", "schedule_uuid", "shared", "starttime", "status",
-                      "template_uuid", "timezone", "has_triggers", "type", "permissions", "user_permissions", "uuid", "wizard_uuid", "progress", "total_targets", "status_times.initializing",	"status_times.pending",
-                      "status_times.processing", "status_times.publishing",	"status_times.running", "incomplete_targets", "agent_scan_launch_type", 
-    ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    #Replace '', 'NULL', 'NA' values with null
-    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
-
-    #Clean column names:
-    df = dataQualityUtils.clean_column_names(df)
-
-    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
-    cols = ["starttime",]    
-    df = dataQualityUtils.clean_timestamp_fields_iso8601_format(df, cols)
-
-    #Apply DQ3: Normalize boolean fields 
-    cols = ["control", "enabled", "legacy", "read", "shared",  "has_triggers"]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-
-    #Apply DQ4: Convert numeric columns to Integer 
-    cols = ["id", "creation_date", "last_modification_date", "policy_id", "permissions", "user_permissions", "total_targets", "status_times_initializing", "status_times_pending", "status_times_processing", "status_times_publishing",
-            "status_times_running",  "incomplete_targets",
-             ]
-    df = dataQualityUtils.clean_int_fields(df, cols)
-
-    #Apply DQ9: Convert columns to float/decimal 
-    cols = ["progress"]
-    df = dataQualityUtils.clean_float_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["id",]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = [ "id",]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)  
- 
-    #Load to destination 
-    logger.info("Loading processed data to destination...")
-    tvmUtil.load_processed_tvm_datasets_to_s3_in_parquet(
-        bucket_name = bucket_name, 
-        dataset = dataset, 
-        clean_df=df, 
-        quarantine_df=quarantine_df,
-        backfill_date=backfill_date,
-        )
-
-    # #....**Uncomment this to save in csv for testing** ....
-    # tvmUtil.load_processed_tvm_datasets_to_s3_in_csv(
-    #     bucket_name = bucket_name, 
-    #     dataset = dataset, 
-    #     clean_df=df, 
-    #     quarantine_df=quarantine_df,
-    #     backfill_date=backfill_date,
-    # )
-    # ##   
-def process_policies(
-        bucket_name: str,
-        backfill_date: Optional[str] = None
-        ) -> None:
-    """
-    Handles  data cleaning and enrichement of the TVM policies dataset 
-
-    In backfill mode, fetch the file whose name contains the backfill date and 
-    overwrite existing file in /processed prefix. 
-
-    Parameters:
-        bucket_name (str): Name of the s3 bucket
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "POLICIES"
-    prefix = "raw_data/TVM/"
-    base_name = prefix + "CRMA_HIVE_TVM_" + dataset
-
-    if backfill_date:
-        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-    else:
-        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-
-    if df is None:
-        raise ValueError("No data fetched from landing zone")
-
-    logger.info(f"Total records: {len(df)}")
-    target_columns = [ "no_target",	"template_uuid", "description", "name", "owner", "visibility", "shared", "user_permissions", "last_modification_date", "creation_date", "owner_id", "id" ]
-    logger.info("Selecting target columns...")
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    #Replace '', 'NULL', 'NA' values with null
-    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
-
-    #Apply DQ3: Normalize boolean fields 
-    cols = ["no_target", ]
-    df = dataQualityUtils.normalize_boolean_fields(df, cols)
-
-    # Converting Unix timestamp to ISO8601 format
-    cols = ["creation_date", "last_modification_date", ]
-    df = dataQualityUtils.convert_unix_timestamp_to_iso8601_format(df, cols)
-
-    #Apply DQ4: Convert numeric columns to Integer 
-    cols = ["id", "shared", "user_permissions", "owner_id" ]
-    df = dataQualityUtils.clean_int_fields(df, cols)
-
-    #Apply DQ1 & Q: Not nullabe, Quarantine
-    cols = ["id",]
-    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
-
-    #Apply DQ0 & Q: No duplicates & Quarantine
-    cols = [ "id",]
-    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
-
-    #Merge quarantine dataframes
-    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)  
- 
-    #Load to destination 
-    logger.info("Loading processed data to destination...")
-    tvmUtil.load_processed_tvm_datasets_to_s3_in_parquet(
-        bucket_name = bucket_name, 
-        dataset = dataset, 
-        clean_df=df, 
-        quarantine_df=quarantine_df,
-        backfill_date=backfill_date,
-        )
-
-    # #....**Uncomment this to save in csv for testing** ....
-    # tvmUtil.load_processed_tvm_datasets_to_s3_in_csv(
-    #     bucket_name = bucket_name, 
-    #     dataset = dataset, 
-    #     clean_df=df, 
-    #     quarantine_df=quarantine_df,
-    #     backfill_date=backfill_date,
-    # )
-    ##
-
-def run_normal_mode(
-        bucket_name: str,
-) -> None:
-    """
-    Executes TenableVM datasets processing.
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-    Returns:
-        None
-    """
-    logger.info("TVM data processing running in NORMAL mode.")
-
-    logger.info(f"Processing TenableVM Cisco Vulnerablities dataset")
-    process_cisco_vulns(bucket_name=bucket_name)
-    utility.log_memory_usage() 
-
-    logger.info(f"Processing TenableVM plugin 19506 Vulnerablities dataset")
-    process_plugin_19506_vulns(bucket_name=bucket_name)
-    utility.log_memory_usage() 
-
-    logger.info(f"Processing TenableVM Assets dataset")
-    process_assets(bucket_name=bucket_name)
-    utility.log_memory_usage() 
-
-    # logger.info(f"Processing TenableVM Scans dataset")
-    # process_scans(bucket_name=bucket_name)
-    # utility.log_memory_usage()
-
-    logger.info(f"Processing TenableVM Policies dataset")
-    process_policies(bucket_name=bucket_name)
-    utility.log_memory_usage()
-
-def run_backfill_mode(
-        bucket_name: str,
-        hist_table_name: str,
-        backfill_date: str,
-        datasets: list,
-) -> None:
-    """
-    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
-
-    Parameters:
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-        datasets (list): List of datsets upstream to a historical table
-    
-    Returns:
-        None
-    """
-    logger.info(f"TVM data processing running in BACKFILL mode.")
-    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
-
-    if not utility.is_valid_backfill_date(backfill_date):
-        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
-        raise
-
-    if not datasets:
-        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
-        raise
-
-    for dataset in datasets:
-        dataset_upper = dataset.upper().strip()
-
-        # call processors with backfill_date
-        if dataset_upper == "TVM_CISCO_VULNS":
-            logger.info("Processing TVM vulnerablities (in backfill mode)")
-            process_cisco_vulns(bucket_name, backfill_date)
-            utility.log_memory_usage() 
-
-        if dataset_upper == "TVM_PLUGIN_19506_VULNS":
-            logger.info("Processing TVM vulnerablities (in backfill mode)")
-            process_plugin_19506_vulns(bucket_name, backfill_date)
-            utility.log_memory_usage() 
-        if dataset_upper == "TVM_ASSETS":
-            logger.info("Processing TVM Assets (in backfill mode)")
-            process_assets(bucket_name, backfill_date)
-            utility.log_memory_usage()
-
-        # if dataset_upper == "TVM_SCANS":
-        #     logger.info("Processing TVM scans (in backfill mode)")
-        #     process_scans(bucket_name, backfill_date)
-        #     utility.log_memory_usage()
-
-        if dataset_upper == "TVM_POLICIES":
-            logger.info("Processing TVM policies (in backfill mode)")
-            process_policies(bucket_name, backfill_date)
-            utility.log_memory_usage()
 
 def main():
     start_time = time.time()
     utility.log_memory_usage() 
 
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    engine = connection.postgres_engine("edae-crma-hive") 
 
     if not bucket_name:
        raise ValueError("S3 bucket not found!")
-  
-    # resolve workflow run properties
-    workflow_params = utility.get_workflow_props()
-    backfill_date = workflow_params.get("--backfill_date")
-    hist_table_name = workflow_params.get("--hist_table_name")
-    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
 
-    # run in backfill mode if all backfill properties are present
-    backfill_mode = bool(backfill_date and hist_table_name)
- 
-    if backfill_mode:
-        run_backfill_mode(
-            bucket_name=bucket_name, 
-            hist_table_name=hist_table_name, 
-            backfill_date=backfill_date, 
-            datasets=datasets
-        )   
-        
-    else:
-        run_normal_mode(
-            bucket_name=bucket_name
-        )
+    
+    logger.info("Process and load to target TVM to Mobius software mapping")
+    process_and_load_tvm_to_mobius_software_map(
+        bucket_name=bucket_name,
+        engine=engine
+    )
 
+    
+    # log runtime 
     elapsed_minutes = (time.time() - start_time)/60
     logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
 
 if __name__ == "__main__":
     main()
 
-from typing import Optional
 import pandas as pd
+import numpy as np
 import urllib3
 from datetime import datetime
+import boto3
 import logging
+from io import StringIO
 import time
 from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_tvm_utilities import TvmUtility
+from crma_hive_data_quality_utilities import DataQualityUtilities
 from crma_hive_connections import Connection
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine.base import Engine
+import pyarrow
 import re
+import json
+import ast
+from typing import Tuple, Optional
+
 
 # Turning off warnings
 urllib3.disable_warnings()
 
+from sqlalchemy.engine import Engine
+
 # Setting up logger
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Instantiate classes
 utility = Utility()
 rw_util = Read_Write_Utility()
 connection = Connection()
-tvmUtil = TvmUtility()
+dataQualityUtils = DataQualityUtilities()
 
 
-# Define global vars
-MAIN_SCHEMA = rw_util.MAIN_SCHEMA
-BACKFILL_SCHEMA = rw_util.BACKFILL_SCHEMA
-TABLE_CRMA_HIVE_TVM_CISCO_VULNS= "TVM_CISCO_VULNS" 
-TABLE_CRMA_HIVE_TVM_PLUGIN_19506_VULNS= "TVM_PLUGIN_19506_VULNS" 
-TABLE_CRMA_HIVE_TVM_ASSETS= "TVM_ASSETS" 
-# TABLE_CRMA_HIVE_TVM_SCANS= "TVM_SCANS" 
-TABLE_CRMA_HIVE_TVM_POLICIES = "TVM_POLICIES"
-
-VALID_TABLES = {
-    TABLE_CRMA_HIVE_TVM_CISCO_VULNS,    
-    TABLE_CRMA_HIVE_TVM_PLUGIN_19506_VULNS,
-    TABLE_CRMA_HIVE_TVM_ASSETS,
-    # TABLE_CRMA_HIVE_TVM_SCANS,
-    TABLE_CRMA_HIVE_TVM_POLICIES
-}  
-
-def run_normal_mode(
-    engine: Engine,
-    bucket_name: str, 
-    schema: str,        
-)->None:
+def process_and_load_device_to_mobius_os_map(bucket_name: str, engine: Engine ) -> None:
     """
-    Prepares input parametrs and calls utility function to load TVM data to target talbes in Normal mode.
+    Load the device-to-mobius os mapping from S3 into Postgres.
 
-    Parameters:
-        engine (str): SQLalchemy engine
-        schema (str): The database schema in which data is loaded.
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files   
-    Returns:
-        None
-    """    
-    logger.info("TVM data to target loading running in NORMAL mode.")
-    load_configs= [
-            {"dataset": TABLE_CRMA_HIVE_TVM_CISCO_VULNS, "load_strategy": "upsert", "pk_columns": ["finding_id"]},
-            {"dataset": TABLE_CRMA_HIVE_TVM_ASSETS, "load_strategy": "upsert", "pk_columns": ["id"] },
-            # {"dataset": TABLE_CRMA_HIVE_TVM_SCANS, "load_strategy": "upsert", "pk_columns": ["id"] },
-            {"dataset": TABLE_CRMA_HIVE_TVM_POLICIES, "load_strategy": "upsert", "pk_columns": ["id"] },
-            {"dataset": TABLE_CRMA_HIVE_TVM_PLUGIN_19506_VULNS, "load_strategy": "truncate_and_load"},
+    Steps:
+      - Read the XLSX mapping file from the landing zone in S3.
+      - Select relevant mapping columns and standardize null-like values.
+      - Archive a processed copy to S3 in Parquet format.
+      - Add ETL date and load the data into the target table in the primary DB.
+      - Load the same data into the corresponding table in the secondary DB.
 
-        ]
+    Args:
+        bucket_name: Name of the S3 bucket containing input and archive data.
+        engine: SQLAlchemy Engine connected to the primary Postgres database.
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "CRMA_HIVE_DEVICE_TO_MOBIUS_OS_MAP"
+    prefix = "raw_data/PROHIBITED_OS/"
+    base_name = prefix + dataset
 
-    for load_config in load_configs:
-        tvmUtil.load_tvm_data_to_db(
-            engine= engine, 
-            bucket_name = bucket_name, 
-            load_config=load_config,
-            schema=schema
-            )
-        utility.log_memory_usage() 
+    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "CSV")
+  
+
+    logger.info(f"Total records fetched: {len(df)}")
+
+    target_columns = [
+        "device_os", "mobius_os_name", "mobius_os_version", "mobius_os_version_2", "component", "status", "mobius_id"]
+    logger.info("Selecting target columns...")
+    
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan' ], np.nan)
+
+
+    logger.info("Storing a copy in S3 bucket for archival...")
+    filename =f"processed/PROHIBITED_OS/{dataset}" 
+    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
+
+    logger.info("Loading data to database...")
+    df["etl_date"] = datetime.now().date() 
+    schema="crma_hive"
+    table_name = f"{dataset.lower()}"
+    rw_util.truncate_and_load_table(
+           engine=engine, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
 
     ##Parallel loading##
     logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")      
-    for load_config in load_configs:
-         tvmUtil.load_tvm_data_to_db(
-            engine= engine2, 
-            bucket_name = bucket_name, 
-            load_config=load_config,
-            schema=schema
-            )
-
-def run_backfill_mode(
-    engine: Engine,
-    schema: str, 
-    bucket_name: str, 
-    hist_table_name: str, 
-    backfill_date: str, 
-    datasets: list
-)->None:
-    """
-    Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
-
-    Parameters:
-        engine (str): SQLalchemy engine
-        schema (str): The database schema in which data is loaded.
-        bucket_name (str): Name of S3 bucket containing raw and processed integration files
-        hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
-        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
-        datasets (list): List of datsets upstream to a historical table
-    
-    Returns:
-        None
-    """
-
-    logger.info(f"Running in BACKFILL mode.")
-    logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
-
-    if not utility.is_valid_backfill_date(backfill_date):
-        logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
-        raise
-    
-    if not datasets:
-        logger.error(F"No dataset specified for backfill for {hist_table_name}!")
-        raise
-
-    valid_datasets = [t for t in datasets if t in VALID_TABLES]
-
-    if len(valid_datasets) != len(datasets):
-        invalid_tables = set(datasets) - set(valid_datasets)
-        logger.warning(f"Invalid tables ignored: {invalid_tables}. Valid tables used: {valid_datasets}")
-        datasets = valid_datasets
-    else:
-        logger.info(f"All {len(datasets)} tables in dataset are valid")
-
-    if not datasets:
-        logger.warning(F"No TVM tables found!")
-
-    load_configs = []
-    for dataset in datasets:
-        dataset_upper = dataset.upper().strip()
-
-        if dataset_upper == "TVM_CISCO_VULNS":
-            load_configs.append({"dataset": TABLE_CRMA_HIVE_TVM_CISCO_VULNS, "load_strategy": "upsert", "pk_columns": ["finding_id"]})
-        
-        if dataset_upper == "TVM_ASSETS":
-            load_configs.append({"dataset": TABLE_CRMA_HIVE_TVM_ASSETS, "load_strategy": "upsert", "pk_columns": ["id"] })
-
-        # if dataset_upper == "TVM_SCANS":
-        #     load_configs.append({"dataset": TABLE_CRMA_HIVE_TVM_SCANS, "load_strategy": "upsert", "pk_columns": ["id"] })
-
-        if dataset_upper == "TVM_POLICIES":
-            load_configs.append({"dataset": TABLE_CRMA_HIVE_TVM_POLICIES, "load_strategy": "upsert", "pk_columns": ["id"] })
-
-    for load_config in load_configs:
-        tvmUtil.load_tvm_data_to_db(
-            engine= engine, 
-            bucket_name = bucket_name, 
-            load_config=load_config,
-            schema=schema,
-            backfill_date=backfill_date,
-            )
-        utility.log_memory_usage() 
-
+    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    rw_util.truncate_and_load_table(
+           engine=engine2, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
+ 
 
 def main():
     start_time = time.time()
+    utility.log_memory_usage() 
 
-    engine = connection.postgres_engine("edae-crma-hive")
-    
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    engine = connection.postgres_engine("edae-crma-hive") 
 
     if not bucket_name:
        raise ValueError("S3 bucket not found!")
-    
-    logger.info("Extracting workflow run protperies.")
-    workflow_params = utility.get_workflow_props()
-    backfill_date = workflow_params.get("--backfill_date")
-    hist_table_name = workflow_params.get("--hist_table_name")
-    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
-    
-    backfill_mode = bool(backfill_date and hist_table_name)
-    if backfill_mode:
-        run_backfill_mode(
-            engine=engine, 
-            schema=BACKFILL_SCHEMA, 
-            bucket_name=bucket_name, 
-            hist_table_name=hist_table_name, 
-            backfill_date=backfill_date, 
-            datasets=datasets,        
-        ) 
 
-    else:
-        run_normal_mode(
-            engine=engine,
-            bucket_name = bucket_name, 
-            schema=MAIN_SCHEMA,
-        )
+    
+    logger.info("Process and load to target TVM to Mobius software mapping")
+    process_and_load_device_to_mobius_os_map(
+        bucket_name=bucket_name,
+        engine=engine
+    )
 
+    
+    # log runtime 
     elapsed_minutes = (time.time() - start_time)/60
     logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+
+if __name__ == "__main__":
+    main()
+
+import logging
+
+import pandas as pd
+import numpy as np
+import time
+from datetime import datetime, date
+import re
+from typing import List, Tuple
+
+import urllib3
+
+from crma_hive_data_quality_utilities import DataQualityUtilities
+from crma_hive_connections import Connection
+from crma_hive_utilities import Utility, Read_Write_Utility
+
+from sqlalchemy.engine import Engine
+
+# Turning off warnings
+urllib3.disable_warnings()
+
+# Setting up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+utility = Utility()
+connection = Connection()
+rw_util = Read_Write_Utility()
+dataQualityUtils = DataQualityUtilities()
+
+MAIN_SCHEMA = rw_util.MAIN_SCHEMA
+
+       
+def archive_to_s3(
+        df: pd.DataFrame,
+        bucket_name: str,
+        dataset: str
+)->None:
+    """
+    Load dataset to s3
+    params:
+        df: dataset to store
+        bucket_name: s3 bucket name
+        dataset: dataset name
+    return:
+        None
+    """
+    logger.info("Load device score copy for to S3 for archival")
+    filename = f"processed/TVM/{dataset.upper()}"
+    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET") 
+
+    # # **Uncomment the following to save as CSV for testing**
+    # filename = f"test/raw/SCORECARD/{dataset.upper()}"
+    # rw_util.load_to_s3(bucket_name ,df, filename, "CSV")
+    # ## 
+
+
+
+def build_select_query() -> str:
+    """
+    Build query to parse softeare manafucturer, product and version from tvm assets installed_software field
+    """
+    sql = f"""
+        SELECT 
+            hardware_software, 
+            manufacturer, 
+            product, 
+            version, 
+            version_label,
+            status, 
+            component,
+            status_date
+            manufacturer_id,
+            product_id,
+            version_id,
+            governance_id,
+            fisma_system_id,
+            CONCAT_WS('_',
+                COALESCE(manufacturer_id::text, '0'),
+                COALESCE(product_id::text, '0'),
+                COALESCE(version_id::text, '0'),
+                COALESCE(governance_id::text, '0'),
+                COALESCE(fisma_system_id::text, '0')				  
+            ) AS mobius_id,
+            CONCAT_WS('_',
+                COALESCE(manufacturer_id::text, '0'),
+                COALESCE(product_id::text, '0')		  
+            ) AS mobius_product_id                       
+        FROM crma_hive.crma_hive_mobius_trm_workbook
+        WHERE hardware_software = 'Software'
+            AND component IN ('ICE', 'MGMT')            
+    """
+    return sql
+
+
+def execute_workflow(
+        engine: Engine,
+        bucket_name: str,
+    ) -> None:
+    """
+    Run the Mobius  software normalization workflow.
+
+    - Query input data from the source database.
+    - Normalize software name and version fields.
+    - De-duplicate, add ETL date, and load into target table.
+    - Archive the normalized dataset to S3.
+
+    Args:
+        engine: SQLAlchemy Engine for Postgres database.
+        bucket_name: S3 bucket used for archival copies.
+    """
+
+    logger.info("Build query.")
+    sql = build_select_query()
+
+    logger.info("Excecute query.")
+    df= rw_util.query_postgres_to_dataframe(
+        engine=engine,
+        sql_query=sql
+    )
+    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan', 'None', 'none' ], np.nan)
+
+    logger.info("Normalize softeware_name")
+    df['software_name'] = df.apply(
+        lambda row: dataQualityUtils.normalize_software_name(row['manufacturer'], row['product']), axis=1
+    )
+
+    logger.info("Normalize version")
+    df['normalized_version'] = df['version'].apply(dataQualityUtils.normalize_version)
+    df['normalized_version_label'] = df['version_label'].apply(dataQualityUtils.normalize_version)
+
+    df = df.drop_duplicates()
+    df["etl_date"] = datetime.now().date() 
+
+    logger.info("Load to database")
+    table="crma_hive_mobius_normalized_softwares"
+    rw_util.bulk_truncate_and_load_with_copy(
+            engine=engine,
+            df=df,
+            schema=MAIN_SCHEMA,
+            target_table=table,
+        )
+    
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    logger.info(f"Loading table '{table}' to '{MAIN_SCHEMA}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    rw_util.bulk_truncate_and_load_with_copy(
+        engine=engine2,
+        df=df,
+        schema=MAIN_SCHEMA,
+        target_table=table
+        )
+
+    logger.info(f"Total records loaded to DB : {len(df)}")
+
+    logger.info("Save a copy to S3 for archival")
+    archive_to_s3(
+        df=df,
+        bucket_name=bucket_name,
+        dataset=table
+    )
+
+          
+
+def main():
+
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    engine = connection.postgres_engine("edae-crma-hive") 
+
+    execute_workflow(engine=engine, bucket_name=bucket_name)
+
+      
+    utility.log_memory_usage() 
+    elapsed_minutes = (time.time() - start_time) / 60 
+    logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
 
 
 if __name__ == "__main__":

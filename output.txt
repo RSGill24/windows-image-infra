@@ -1,180 +1,620 @@
-import pandas as pd
-import numpy as np
-import urllib3
-from datetime import datetime
-import logging
-import time
-from crma_hive_utilities import Utility, Read_Write_Utility
-from crma_hive_data_quality_utilities import DataQualityUtilities
-from crma_hive_connections import Connection
-from sqlalchemy.engine.base import Engine
 
-# Turning off warnings
-urllib3.disable_warnings()
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_input_devices(
+	device_id text,
+	fisma_id text,
+	device_last_seen timestamp,
+	device_type text,
+	devicerole text,
+	devicetype text,
+	asset_auth_status text,
+	asset_hosting text,
+    preferred_serial_number text,
+    mac text[],
+	preferred_hostname text,
+	preferred_ipv4 text,
+	preferred_os text,
+	os text[],
+	adapters text[],
+	crowd_strike_last_seen date,
+	crowd_strike_adapter_policies_policy_type text[],
+    crowd_strike_adapter_policies_applied text[],
+	edr_enabled boolean,
+	asset_id text,
+	asset_last_scan_time timestamp,	
+	last_authenticated_scan_date timestamp,
+	is_credentialed boolean,
+    etl_date date
+);
 
-from sqlalchemy.engine import Engine
+CREATE INDEX idx_fismascorecard_device_details_etl_date ON crma_hive.crma_hive_fismascorecard_input_devices USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_device_details_fisma_id ON crma_hive.crma_hive_fismascorecard_input_devices (fisma_id);
+CREATE INDEX idx_fismascorecard_device_details_asset_id_last_scan ON crma_hive.crma_hive_fismascorecard_input_devices (asset_id, asset_last_scan_time);
 
-# Setting up logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_cm_score(
+	device_id text,
+    hostname text,
+    ip text,
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+	active boolean,
+	iscm_waiver text, 
+	fisma_reportable text,
+	fisma_inventory_selc_status text,
+	fisma_category text,
+	device_last_seen timestamp,
+	asset_id text,
+	compliance_audit_file text,
+	reference_audit_file text,
+	is_credentialed boolean,
+	last_authenticated_scan_date timestamp,
+	expected_cat1 bigint,
+	expected_cat2 bigint,
+	expected_cat3 bigint,
+	passed_cat1 bigint,
+	passed_cat2 bigint,
+	passed_cat3 bigint,
+	failed_cat1 bigint,
+	failed_cat2 bigint,
+	failed_cat3 bigint,
+	not_evaluated_cat1 bigint,
+	not_evaluated_cat2 bigint,
+	not_evaluated_cat3 bigint,
+	cm_score bigint, 
+    etl_date date
+);
 
-# Instantiate classes
-utility = Utility()
-rw_util = Read_Write_Utility()
-connection = Connection()
-dataQualityUtils = DataQualityUtilities()
-
-def process_and_load_known_mobius_os(bucket_name: str, engine: Engine ) -> None:
-    """
-    Load the known software Mobius list (crma_hive_known_mobius_os) from S3 into Postgres to track new software names 
-    in mobius that have not been evaluated as targets for unmapped Axonius/TVM names 
-    in the OS reference map.
-
-    Steps:
-      - Read the CSV file from the landing zone in S3.
-      - Select relevant mapping columns and standardize null-like values.
-      - Archive a processed copy to S3 in Parquet format.
-      - Add ETL date and load the data into the target table in the primary DB.
-      - Load the same data into HIVE tb.
-
-    Args:
-        bucket_name: Name of the S3 bucket containing input and archive data.
-        engine: SQLAlchemy Engine connected to the primary Postgres database.
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "CRMA_HIVE_KNOWN_MOBIUS_OS"
-    prefix = "raw_data/KNOWN_MOBIUS/"
-    base_name = prefix + dataset
-
-    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "CSV") 
-
-    logger.info(f"Total records fetched: {len(df)}")
-
-    target_columns = ["software_name", "mobius_id"]
-    logger.info("Selecting target columns...")
-    
-    df = dataQualityUtils.select_fields(df, target_columns)
-
-    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan' ], np.nan)
-
-    logger.info("Storing a copy in S3 bucket for archival...")
-    filename =f"processed/MOBIUS/{dataset}" 
-    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
-
-    logger.info("Loading data to database...")
-    df["etl_date"] = datetime.now().date() 
-    schema="crma_hive"
-    table_name = f"{dataset.lower()}"
-    rw_util.truncate_and_load_table(
-           engine=engine, 
-           df=df, schema_name=schema, 
-           table_name=table_name, 
-           exist_type="append"            
-    )
-
-    ##Parallel loading##
-    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    rw_util.truncate_and_load_table(
-           engine=engine2, 
-           df=df, schema_name=schema, 
-           table_name=table_name, 
-           exist_type="append"            
-    )     
+CREATE INDEX idx_fismascorecard_device_cm_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_cm_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_device_cm_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_cm_score (fisma_id);
 
 
-def process_and_load_known_mobius_software(bucket_name: str, engine: Engine ) -> None:
-    """
-    Load the known software Mobius list (crma_hive_known_mobius_software) from S3 into Postgres to track new software names 
-    in mobius that have not been evaluated as targets for unmapped TVM names 
-    in the software reference map.
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_cm_score(
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+    active boolean,
+    iscm_waiver text,
+    fisma_reportable text,
+    fisma_inventory_selc_status text,
+    fisma_category text,
+	cm_score bigint,
+	etl_date date
+);
 
-    Steps:
-      - Read the CSV file from the landing zone in S3.
-      - Select relevant mapping columns and standardize null-like values.
-      - Archive a processed copy to S3 in Parquet format.
-      - Add ETL date and load the data into the target table in the primary DB.
-      - Load the same data into HIVE tb.
+CREATE INDEX idx_fismascorecard_system_cm_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_cm_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_system_cm_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_cm_score (fisma_id);
 
-    Args:
-        bucket_name: Name of the S3 bucket containing input and archive data.
-        engine: SQLAlchemy Engine connected to the primary Postgres database.
-    """
-    logger.info(f"Fetching data from landing zone...")
-    
-    # Creating variables and the dataframe
-    dataset = "CRMA_HIVE_KNOWN_MOBIUS_SOFTWARE"
-    prefix = "raw_data/KNOWN_MOBIUS/"
-    base_name = prefix + dataset
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_scan_compliance_score(
+	fisma_id text,
+    acronym text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+	active boolean,
+	iscm_waiver text, 
+	fisma_reportable text,
+	fisma_inventory_selc_status text,
+	fisma_category text,
+    total_credentialed_assets bigint,
+    total_assets bigint,	
+    scan_compliance_score  bigint,
+    etl_date date                        
+);
 
-    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "CSV")  
+CREATE INDEX idx_fismascorecard_system_sc_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_scan_compliance_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_system_sc_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_scan_compliance_score (fisma_id);
 
-    logger.info(f"Total records fetched: {len(df)}")
 
-    target_columns = ["software_name", "mobius_product_id"]
-    logger.info("Selecting target columns...")
-    
-    df = dataQualityUtils.select_fields(df, target_columns)
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_component_scan_compliance_score(
+	component text,
+    total_credentialed_assets bigint,
+    total_assets bigint,	
+    scan_compliance_score  bigint,
+	etl_date date
+);
 
-    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan' ], np.nan)
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_vm_score(
+    device_id text,
+    hostname text,
+    ip text,
+    fisma_id text,
+    fisma_name text,
+    portfolio text,
+    dhs_hva text,
+    public_facing text,
+    cfo_designated text,
+    fips_199_security_categorization_overall text,
+    active boolean,
+    iscm_waiver text, 
+    fisma_reportable text,
+    fisma_inventory_selc_status text,
+    fisma_category text,
+    device_last_seen timestamp,
+    asset_id text,
+    is_credentialed boolean,
+    last_authenticated_scan_date timestamp,
+    has_eligible_kev boolean,
+    eligible_kev_cve_count bigint,
+    eligible_kev_cves text[],
+    high_cves text[],
+    high_cve_count bigint,
+    critical_cves text[],
+    critical_cve_count bigint, 
+    finding_ids text[],
+    vm_score bigint,       
+    etl_date date
+);
 
-    logger.info("Storing a copy in S3 bucket for archival...")
-    filename =f"processed/MOBIUS/{dataset}" 
-    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
+CREATE INDEX idx_fismascorecard_device_vm_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_vm_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_device_vm_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_vm_score (fisma_id);
 
-    logger.info("Loading data to database...")
-    df["etl_date"] = datetime.now().date() 
-    schema="crma_hive"
-    table_name = f"{dataset.lower()}"
-    rw_util.truncate_and_load_table(
-           engine=engine, 
-           df=df, schema_name=schema, 
-           table_name=table_name, 
-           exist_type="append"            
-    )
 
-    ##Parallel loading##
-    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-    rw_util.truncate_and_load_table(
-           engine=engine2, 
-           df=df, schema_name=schema, 
-           table_name=table_name, 
-           exist_type="append"            
-    )
- 
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_vm_score(
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+    active boolean,
+    iscm_waiver text,
+    fisma_reportable text,
+    fisma_inventory_selc_status text,
+    fisma_category text,
+	vm_score bigint,
+	etl_date date
+);
 
-def main():
-    start_time = time.time()
-    utility.log_memory_usage() 
+CREATE INDEX idx_fismascorecard_system_vm_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_vm_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_system_vm_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_vm_score (fisma_id);
 
-    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
-    engine = connection.postgres_engine("edae-crma-hive") 
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_hbd_score(
+	device_id text,
+    hostname text,
+    ip text,
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+	active boolean,
+	iscm_waiver text, 
+	fisma_reportable text,
+	fisma_inventory_selc_status text,
+	fisma_category text,
+	adapters text[],
+	device_last_seen date,
+	crowd_strike_last_seen date,
+	edr_enabled boolean,
+	crowd_strike_adapter boolean,
+	av_compliance bigint,
+	edr_compliance bigint,
+	hbd_score bigint,
+    etl_date date
+);
 
-    if not bucket_name:
-       raise ValueError("S3 bucket not found!")
-    
-    logger.info("Process and load known mobius software")
-    process_and_load_known_mobius_software(
-        bucket_name=bucket_name,
-        engine=engine
-    )
-    utility.log_memory_usage() 
+CREATE INDEX idx_fismascorecard_device_hbd_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_hbd_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_device_hbd_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_hbd_score (fisma_id);
 
-    logger.info("Process and load known mobius os")
-    process_and_load_known_mobius_os(
-        bucket_name=bucket_name,
-        engine=engine
-    )
-    utility.log_memory_usage() 
 
-    # log runtime 
-    elapsed_minutes = (time.time() - start_time)/60
-    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_hbd_score(
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+    active boolean,
+    iscm_waiver text,
+    fisma_reportable text,
+    fisma_inventory_selc_status text,
+    fisma_category text,
+	hbd_score bigint,
+	etl_date date
+);
 
-if __name__ == "__main__":
-    main()
+CREATE INDEX idx_fismascorecard_system_hbd_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_hbd_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_system_hbd_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_hbd_score (fisma_id);
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_psw_impact(
+	device_id text,
+    hostname text,
+    ip text;
+	fisma_id text,
+	fisma_name text,
+	acronym text,
+	asset_id text,
+	software text,
+	version text,
+	status text,
+    device_nominal_impact double precision,
+    device_real_impact double precision,
+    fisma_nominal_impact double precision,
+    fisma_real_impact double precision,
+    component_nominal_impact double precision,
+    component_real_impact double precision,
+    etl_date date
+);
+
+GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_psw_impact TO crmahivedb_fqt_user_role;
+
+
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_cve_impact(
+    cve_id text,
+    asset_id text,
+    plugin_id text,	
+    state text,
+    device_id text,
+    hostname text,
+    ip text;
+    is_credentialed boolean,
+    fisma_id text,
+    fisma_name text,
+    acronym text,v
+    cvss_v3_score double precision,
+    cve_published_date date,
+    is_eligible_kev boolean,
+    kev_date_added date,
+    type text,
+    device_nominal_impact double precision,
+    device_real_impact double precision,
+    fisma_nominal_impact double precision,
+    fisma_real_impact double precision,
+    component_nominal_impact double precision,
+    component_real_impact double precision,
+    etl_date date
+);
+
+GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_cve_impact TO crmahivedb_fqt_user_role;
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_hwam_score(
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+	active boolean,
+	iscm_waiver text, 
+	fisma_reportable text,
+	fisma_inventory_selc_status text,
+	fisma_category text,
+	identified_and_managed_assets bigint,
+	managed_assets bigint,
+	unauthorized_assets bigint ,
+	total_assets bigint,
+	hwam_score bigint,
+    etl_date date                   
+);
+
+CREATE INDEX idx_fismascorecard_system_hwam_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_hwam_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_system_hwam_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_hwam_score (fisma_id);
+
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_component_hwam_score(
+	component text,
+	identified_and_managed_assets bigint,
+	managed_assets bigint,
+	unauthorized_assets bigint ,
+	total_assets bigint,
+	hwam_score bigint,
+	etl_date date
+);
+CREATE INDEX idx_component_hwam_score_etl_date ON crma_hive.crma_hive_fismascorecar_component_hwam_score USING BRIN (etl_date);
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_swam_score(
+    device_id text,
+    hostname text,
+    ip text,
+    fisma_id text,
+    fisma_name text,
+    portfolio text,
+    dhs_hva text,
+    public_facing text,
+    cfo_designated text,
+    fips_199_security_categorization_overall text,
+    active boolean,
+    iscm_waiver text, 
+    fisma_reportable text,
+    fisma_inventory_selc_status text,
+    fisma_category text,
+    device_last_seen timestamp,
+    asset_id text,
+    is_credentialed boolean,
+    last_authenticated_scan_date timestamp,
+	prohibited_sw_count bigint,
+	prohibited_softwares_list text,
+    total_sw_count bigint,
+	swam_score bigint, 
+    etl_date date                   
+);
+
+CREATE INDEX idx_fismascorecard_device_swam_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_swam_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_device_swam_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_swam_score (fisma_id);
+
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_swam_score(
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+    active boolean,
+    iscm_waiver text,
+    fisma_reportable text,
+    fisma_inventory_selc_status text,
+    fisma_category text,
+	swam_score bigint,
+	etl_date date
+);
+
+CREATE INDEX idx_fismascorecard_system_swam_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_swam_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_system_swam_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_swam_score (fisma_id);
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score (
+    acronym text,
+    ato_expiration date,
+    ato_type text,
+    auth_status_check boolean,
+    authorization_date date,    
+    cfo_designation text,
+    contingency_plan_check boolean,
+    contingency_plan_date date,
+    contingency_plan_test_check boolean,
+    contingency_plan_test_date date,
+    contractor_system text,
+    dhs_hva text,
+    document_review_check boolean,
+    document_review_date date,
+    etl_date date,
+    fips_199_security_categorization_overall text,
+    fisma_id text,
+    fisma_inventory_selc_status text,
+    iscm_waiver text,
+    iscm_waiver_exp_date date,
+    org text,
+    pia_required boolean,
+    pia_valid boolean,
+    portfolio text,
+    privacy_check boolean,
+    privacy_impact_assesment_date date,
+    privacy_threshold_analysis_date date,
+    pta_valid boolean,
+    security_authz_score bigint,
+    sorn_date date,
+    sorn_required boolean,
+    sorn_valid boolean,
+    system_name text,
+    fisma_reportable text,
+	fisma_category text 
+);
+
+CREATE INDEX idx_fismascorecard_system_security_authz_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_system_security_authz_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score (fisma_id);
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_ucmm_fisma_system_scores(
+	fisma_id text,
+	acronym text,
+	fisma_name text,
+	portfolio text,
+	iscm_waiver text,
+	fisma_reportable text,
+	fisma_category text,
+	fips_199_security_categorization_overall text,
+	fisma_inventory_selc_status text,
+	dhs_hva text,
+	cfo_designated text,
+	system_id bigint,
+	actual_maturity double precision,
+	notional_maturity double precision,
+	maturity_level_delta double precision,
+	absolute_maturity_delta double precision,
+	data_quality_threshold_met text,
+    etl_date date
+);
+
+GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_ucmm_fisma_system_scores TO crmahivedb_fqt_user_role;
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_prohibited_os_score(
+	device_id text,
+    hostname text,
+    ip text,
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+	active boolean,
+	iscm_waiver text, 
+	fisma_reportable text,
+	fisma_inventory_selc_status text,
+	fisma_category text,
+	device_last_seen timestamp,
+	asset_id text,
+	is_credentialed boolean,
+	last_authenticated_scan_date timestamp,
+	devicerole text,
+	device_os text,
+	mobius_os_name text,
+	mobius_os_version text,
+	mobius_os_version_2 text,
+	mobius_id text,
+	status text,
+	prohibited_os_score bigint,
+    etl_date date
+);
+
+CREATE INDEX idx_fismascorecard_device_prhbtd_os_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_prohibited_os_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_device_prhbtd_os_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_prohibited_os_score (fisma_id);
+
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_prohibited_os_score(
+	fisma_id text,
+	fisma_name text,
+	portfolio text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+    active boolean,
+    iscm_waiver text,
+    fisma_reportable text,
+    fisma_inventory_selc_status text,
+    fisma_category text,
+	prohibited_os_score bigint,
+	etl_date date
+);
+
+CREATE INDEX idx_fismascorecard_system_phbtd_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_prohibited_os_score USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_system_phbtd_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_prohibited_os_score (fisma_id);
+
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_all_metrics_scores(
+	fisma_id text,
+	fisma_name text,
+	acronym text,
+	portfolio text,
+	active boolean,
+	fisma_reportable text,
+	iscm_waiver text,
+	fisma_category text,
+	fisma_inventory_selc_status text,
+	dhs_hva text,
+	public_facing text,
+	cfo_designated text,
+	fips_199_security_categorization_overall text,
+	vm_score bigint,
+	cm_score bigint,
+	swam_score bigint,
+	hwam_score bigint,
+	hbd_score bigint,
+	prohibited_os_score bigint,
+	security_authz_score bigint,
+	ucmm_score bigint,
+	scan_compliance_score bigint,
+	ioc_score bigint,
+    etl_date date
+);
+
+CREATE INDEX idx_fismascorecard_fisma_all_metric_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_all_metrics_scores USING BRIN (etl_date);
+CREATE INDEX idx_fismascorecard_fisma_all_metric_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_all_metrics_scores (fisma_id);
+
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_component_scores(
+	component text,
+	vm_score bigint,
+	cm_score_hva bigint,
+	cm_score_other bigint,
+	swam_score bigint,
+	hwam_score bigint,
+	hbd_score bigint,
+	prohibited_os bigint,
+	security_authz_score_hva bigint,
+	security_authz_score_other bigint,
+	ucmm_score bigint,
+	scan_compliance_score bigint,
+	ioc_score bigint,
+    etl_date date
+);
+
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_scored_devices_summary(
+    fisma_id text,
+    acronym text,	
+    fisma_name text,
+    vm_scored_devices bigint,
+    vm_scored_percent_of_component double precision,
+    cm_scored_devices_hva bigint, 
+    cm_scored_hva_percent_of_component double precision,
+    cm_scored_devices_other bigint, 
+    cm_scored_other_percent_of_component double precision,
+    swam_scored_devices bigint, 
+    swam_scored_percent_of_component double precision,
+    hwam_scored_devices bigint,
+    hwam_scored_percent_of_component double precision,		 
+    pos_scored_devices bigint,
+    pos_scored_percent_of_component double precision,	
+    hbd_scored_devices bigint,
+    hbd_scored_percent_of_component double precision,
+    sc_scored_devices bigint,
+    sc_scored_percent_of_component 	double precision,
+    etl_date date
+);
+
+GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_scored_devices_summary TO crmahivedb_fqt_user_role;
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_ucmm_poam_impact_rankings(
+	poam_id text,
+	fisma_id text,
+	system_id bigint,
+	acronym text,
+	fisma_name text,
+	portfolio text,
+	iscm_waiver text,
+	fisma_reportable text,
+	fisma_category text,
+	fips_199_security_categorization_overall text,
+	fisma_inventory_selc_status text,
+	dhs_hva text,
+	cfo_designated text,
+	poam_creation_date date,
+	user_identified_criticality text, 
+	policy_waiver_expiration text, 
+	controls text,
+	poam_weakness_description text,
+	accepted_risk text,
+	policy_waiver_approved text,
+	scheduled_completion_date date,
+	poam_status text,
+	overdue boolean,
+	component_poam_impact bigint,
+	system_poam_impact bigint, 
+    etl_date date
+);
+
+GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_ucmm_poam_impact_rankings TO crmahivedb_fqt_user_role;
+
+
+
+CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_failed_compliace_check_impact(
+    rule_id text,
+    stig_id text,
+    device_id text,
+    hostname text,
+    ip text;
+    fisma_id text,
+    fisma_name text,
+    acronym text,
+    dhs_hva text,
+    asset_id text,
+    audit_file text,
+    sscg_os_version text,
+    severity text,
+    device_impact double precision,
+    fisma_impact  double precision,
+    component_impact_hva  double precision,
+    component_impact_other  double precision,
+    etl_date date
+);
+
+GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_failed_compliace_check_impact TO crmahivedb_fqt_user_role;

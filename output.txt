@@ -1,256 +1,180 @@
-import io
-import smtplib
-import logging
 import pandas as pd
+import numpy as np
+import urllib3
+from datetime import datetime
+import logging
+import time
+from crma_hive_utilities import Utility, Read_Write_Utility
+from crma_hive_data_quality_utilities import DataQualityUtilities
+from crma_hive_connections import Connection
+from sqlalchemy.engine.base import Engine
 
-from email import encoders
-from email.mime.base import MIMEBase
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+# Turning off warnings
+urllib3.disable_warnings()
 
+from sqlalchemy.engine import Engine
+
+# Setting up logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Instantiate classes
+utility = Utility()
+rw_util = Read_Write_Utility()
+connection = Connection()
+dataQualityUtils = DataQualityUtilities()
 
-def format_sync_summary_for_email(
-    sync_summary_dataframe: pd.DataFrame,
-) -> str:
+def process_and_load_known_mobius_os(bucket_name: str, engine: Engine ) -> None:
     """
-    Formats the normalized sync_summary dataframe as a plain-text bullet list
-    for inclusion in the audit report email body.
+    Load the known software Mobius list (crma_hive_known_mobius_os) from S3 into Postgres to track new software names 
+    in mobius that have not been evaluated as targets for unmapped Axonius/TVM names 
+    in the OS reference map.
 
-    Expected normalized input columns:
-        aggregate_name
-        count
+    Steps:
+      - Read the CSV file from the landing zone in S3.
+      - Select relevant mapping columns and standardize null-like values.
+      - Archive a processed copy to S3 in Parquet format.
+      - Add ETL date and load the data into the target table in the primary DB.
+      - Load the same data into HIVE tb.
 
-    Parameters:
-        sync_summary_dataframe: DataFrame containing sync summary rows.
-
-    Returns:
-        str: Plain-text formatted sync summary.
+    Args:
+        bucket_name: Name of the S3 bucket containing input and archive data.
+        engine: SQLAlchemy Engine connected to the primary Postgres database.
     """
-    if sync_summary_dataframe is None or sync_summary_dataframe.empty:
-        return "Sync Summary:\n- Not available"
-
-    required_columns = [
-        "aggregate_name",
-        "count",
-    ]
-
-    missing_columns = [
-        column for column in required_columns
-        if column not in sync_summary_dataframe.columns
-    ]
-
-    if missing_columns:
-        logger.warning(
-            f"Sync summary dataframe missing expected column(s): {missing_columns}"
-        )
-        return "Sync Summary:\n- Not available due to unexpected format"
-
-    summary_dataframe = sync_summary_dataframe.loc[:, required_columns].copy()
-
-    summary_dataframe["aggregate_name"] = (
-        summary_dataframe["aggregate_name"]
-        .astype("string")
-        .fillna("")
-        .str.strip()
-    )
-
-    summary_dataframe["count"] = pd.to_numeric(
-        summary_dataframe["count"],
-        errors="coerce",
-    ).fillna(0).astype(int)
-
-    metric_labels = {
-        "new_tvm_software_count": "New TVM software",
-        "new_mobius_software_count": "New Mobius software",
-        "deleted_tvm_software_count": "Deleted TVM software",
-        "deleted_mobius_software_count": "Deleted Mobius software",
-        "new_axonius_os_count": "New Axonius OS",
-        "new_mobius_os_count": "New Mobius OS",
-        "deleted_axonius_os_count": "Deleted Axonius OS",
-        "deleted_mobius_os_count": "Deleted Mobius OS",
-    }
-
-    rows = []
-
-    for _, row in summary_dataframe.iterrows():
-        aggregate_name = row["aggregate_name"]
-        label = metric_labels.get(aggregate_name, aggregate_name)
-        rows.append(f"- {label}: {row['count']}")
-
-    return "\n".join(
-        [
-            "Sync Summary:",
-            *rows,
-        ]
-    )
-
-
-def build_email_body(
-    is_in_sync: bool,
-    reference_map: str,
-    sync_summary_dataframe: pd.DataFrame = None,
-) -> str:
-    """
-    Builds a concise plain-text email body for a reference map audit notification.
-
-    Parameters:
-        is_in_sync: True if the reference map is healthy and in-sync. False if discrepancies were found and maintenance is required.
-        reference_map: Human-readable name of the audited reference map, for example "Software Map" or "OS Map".
-        sync_summary_dataframe: Optional normalized sync summary DataFrame with aggregate_name and count columns.
-
-    Returns:
-        str: Plain-text email body.
-    """
-    status = "In Sync" if is_in_sync else "Maintenance Required"
-    action = (
-        "No maintenance is required."
-        if is_in_sync
-        else "Review the attached workbook and complete the required actions listed in each tab."
-    )
-
-    sync_summary_text = format_sync_summary_for_email(
-        sync_summary_dataframe=sync_summary_dataframe,
-    )
-
-    return (
-        f"CRMA Hive {reference_map} audit completed.\n\n"
-        f"Status: {status}\n\n"
-        f"{sync_summary_text}\n\n"
-        f"Action: {action}"
-    )
-
-def build_email_subject(
-    is_in_sync: bool,
-    reference_map: str,
-) -> str:
-    """
-    Builds an email subject line for a reference map audit notification.
-
-    Parameters:
-        is_in_sync: True if the reference map is healthy and in-sync. False if discrepancies were found and maintenance is required.
-        reference_map: Human-readable name of the audited reference map.
-
-    Returns:
-        str: Email subject line.
-    """
-    status = "In Sync" if is_in_sync else "Maintenance Required"
-
-    return f"CRMA Hive {reference_map} Audit - {status}"
-
-def build_email_message(
-    excel_stream: io.BytesIO,
-    is_in_sync: bool,
-    attachment_filename: str,
-    email_from: str,
-    email_to: str,
-    reference_map: str,
-    sync_summary_dataframe: pd.DataFrame = None    
-) -> MIMEMultipart:
-    """
-    Constructs a multipart email message containing a dynamic audit status
-    body, sync summary results, and the generated Excel workbook as an attachment.
-
-    Parameters:
-        excel_stream: Binary stream containing the generated Excel workbook.
-        is_in_sync: True if the audited reference map is healthy and in-sync. False if maintenance is required.
-        attachment_filename: Filename displayed for the attached workbook.
-        email_from: Sender email address.
-        email_to: Recipient email address string. Multiple recipients can be provided as a comma-separated string.
-        reference_map: Human-readable reference map name to include in the email subject and body.
-        sync_summary_dataframe: Optional normalized sync summary DataFrame with aggregate_name and count columns.        
-
-    Returns:
-        MIMEMultipart: Fully constructed email message ready to send.
-    """
-    logger.info(f"Constructing email message. Reference map: {reference_map}. In-sync status: {is_in_sync}")
-
-    if not email_from:
-        raise ValueError("email_from is required.")
-
-    if not email_to:
-        raise ValueError("email_to is required.")
-
-    recipients = [
-        recipient.strip()
-        for recipient in email_to.split(",")
-        if recipient.strip()
-    ]
-
-    if not recipients:
-        raise ValueError("email_to must contain at least one valid recipient.")
-
-    message = MIMEMultipart()
-    message["From"] = email_from
-    message["To"] = ", ".join(recipients)
-    message["Subject"] = build_email_subject(
-        is_in_sync=is_in_sync,
-        reference_map=reference_map,
-    )
-
-    message.attach(
-        MIMEText(
-            build_email_body(
-                is_in_sync=is_in_sync,
-                reference_map=reference_map,
-                sync_summary_dataframe=sync_summary_dataframe
-            ),
-            "plain",
-        )
-    )
-
-    excel_stream.seek(0)
-    attachment_bytes = excel_stream.read()
-    excel_stream.seek(0)
-
-    attachment = MIMEBase(
-        "application",
-        "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    attachment.set_payload(attachment_bytes)
-
-    encoders.encode_base64(attachment)
-
-    attachment.add_header(
-        "Content-Disposition",
-        "attachment",
-        filename=attachment_filename,
-    )
-
-    message.attach(attachment)
-
-    logger.info("Email message packaged successfully.")
-
-    return message
-
-def send_email_via_relay(
-    email_message: MIMEMultipart,
-    smtp_hostname: str,
-    smtp_port: int,
-) -> None:
-    """
-    Sends a prepared email message through an internal unauthenticated SMTP
-    relay. This function intentionally does not use TLS or login credentials.
-
-    Parameters:
-        email_message: Fully constructed email message to send.
-        smtp_hostname: Hostname of the internal SMTP relay server.
-        smtp_port: Port number of the internal SMTP relay server.
-
-    Returns:
-        None: Does not return a value. Raises an exception if the SMTP connection or send operation fails.
-    """
-    logger.info("Attempting connection to SMTP relay server.")
-
-    if not smtp_hostname:
-        raise ValueError("SMTP HOSTNAME required.")
-
-    if not smtp_port:
-        raise ValueError("SMTP PORT required.")
+    logger.info(f"Fetching data from landing zone...")
     
-    with smtplib.SMTP(smtp_hostname, smtp_port) as smtp_connection:
-        smtp_connection.send_message(email_message)
+    # Creating variables and the dataframe
+    dataset = "CRMA_HIVE_KNOWN_MOBIUS_OS"
+    prefix = "raw_data/KNOWN_MOBIUS/"
+    base_name = prefix + dataset
 
-    logger.info("Email message dispatched through SMTP relay.")
+    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "CSV") 
+
+    logger.info(f"Total records fetched: {len(df)}")
+
+    target_columns = ["software_name", "mobius_id"]
+    logger.info("Selecting target columns...")
+    
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan' ], np.nan)
+
+    logger.info("Storing a copy in S3 bucket for archival...")
+    filename =f"processed/MOBIUS/{dataset}" 
+    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
+
+    logger.info("Loading data to database...")
+    df["etl_date"] = datetime.now().date() 
+    schema="crma_hive"
+    table_name = f"{dataset.lower()}"
+    rw_util.truncate_and_load_table(
+           engine=engine, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
+
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    rw_util.truncate_and_load_table(
+           engine=engine2, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )     
+
+
+def process_and_load_known_mobius_software(bucket_name: str, engine: Engine ) -> None:
+    """
+    Load the known software Mobius list (crma_hive_known_mobius_software) from S3 into Postgres to track new software names 
+    in mobius that have not been evaluated as targets for unmapped TVM names 
+    in the software reference map.
+
+    Steps:
+      - Read the CSV file from the landing zone in S3.
+      - Select relevant mapping columns and standardize null-like values.
+      - Archive a processed copy to S3 in Parquet format.
+      - Add ETL date and load the data into the target table in the primary DB.
+      - Load the same data into HIVE tb.
+
+    Args:
+        bucket_name: Name of the S3 bucket containing input and archive data.
+        engine: SQLAlchemy Engine connected to the primary Postgres database.
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    dataset = "CRMA_HIVE_KNOWN_MOBIUS_SOFTWARE"
+    prefix = "raw_data/KNOWN_MOBIUS/"
+    base_name = prefix + dataset
+
+    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "CSV")  
+
+    logger.info(f"Total records fetched: {len(df)}")
+
+    target_columns = ["software_name", "mobius_product_id"]
+    logger.info("Selecting target columns...")
+    
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    df = df.replace(['', 'NA', 'na', '#N/A', '#NA', 'N/A', 'null', 'Null', 'nan' ], np.nan)
+
+    logger.info("Storing a copy in S3 bucket for archival...")
+    filename =f"processed/MOBIUS/{dataset}" 
+    rw_util.load_to_s3(bucket_name, df, filename, "PARQUET")
+
+    logger.info("Loading data to database...")
+    df["etl_date"] = datetime.now().date() 
+    schema="crma_hive"
+    table_name = f"{dataset.lower()}"
+    rw_util.truncate_and_load_table(
+           engine=engine, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
+
+    ##Parallel loading##
+    logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
+    logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    rw_util.truncate_and_load_table(
+           engine=engine2, 
+           df=df, schema_name=schema, 
+           table_name=table_name, 
+           exist_type="append"            
+    )
+ 
+
+def main():
+    start_time = time.time()
+    utility.log_memory_usage() 
+
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    engine = connection.postgres_engine("edae-crma-hive") 
+
+    if not bucket_name:
+       raise ValueError("S3 bucket not found!")
+    
+    logger.info("Process and load known mobius software")
+    process_and_load_known_mobius_software(
+        bucket_name=bucket_name,
+        engine=engine
+    )
+    utility.log_memory_usage() 
+
+    logger.info("Process and load known mobius os")
+    process_and_load_known_mobius_os(
+        bucket_name=bucket_name,
+        engine=engine
+    )
+    utility.log_memory_usage() 
+
+    # log runtime 
+    elapsed_minutes = (time.time() - start_time)/60
+    logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
+
+if __name__ == "__main__":
+    main()

@@ -1,620 +1,234 @@
+import pandas as pd
+import numpy as np
+import re
+import math
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Tuple, Any, List, Union
+from pandas import Series
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_input_devices(
-	device_id text,
-	fisma_id text,
-	device_last_seen timestamp,
-	device_type text,
-	devicerole text,
-	devicetype text,
-	asset_auth_status text,
-	asset_hosting text,
-    preferred_serial_number text,
-    mac text[],
-	preferred_hostname text,
-	preferred_ipv4 text,
-	preferred_os text,
-	os text[],
-	adapters text[],
-	crowd_strike_last_seen date,
-	crowd_strike_adapter_policies_policy_type text[],
-    crowd_strike_adapter_policies_applied text[],
-	edr_enabled boolean,
-	asset_id text,
-	asset_last_scan_time timestamp,	
-	last_authenticated_scan_date timestamp,
-	is_credentialed boolean,
-    etl_date date
-);
+logger = logging.getLogger(__name__)
 
-CREATE INDEX idx_fismascorecard_device_details_etl_date ON crma_hive.crma_hive_fismascorecard_input_devices USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_device_details_fisma_id ON crma_hive.crma_hive_fismascorecard_input_devices (fisma_id);
-CREATE INDEX idx_fismascorecard_device_details_asset_id_last_scan ON crma_hive.crma_hive_fismascorecard_input_devices (asset_id, asset_last_scan_time);
+logger.setLevel(logging.INFO)
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_cm_score(
-	device_id text,
-    hostname text,
-    ip text,
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-	active boolean,
-	iscm_waiver text, 
-	fisma_reportable text,
-	fisma_inventory_selc_status text,
-	fisma_category text,
-	device_last_seen timestamp,
-	asset_id text,
-	compliance_audit_file text,
-	reference_audit_file text,
-	is_credentialed boolean,
-	last_authenticated_scan_date timestamp,
-	expected_cat1 bigint,
-	expected_cat2 bigint,
-	expected_cat3 bigint,
-	passed_cat1 bigint,
-	passed_cat2 bigint,
-	passed_cat3 bigint,
-	failed_cat1 bigint,
-	failed_cat2 bigint,
-	failed_cat3 bigint,
-	not_evaluated_cat1 bigint,
-	not_evaluated_cat2 bigint,
-	not_evaluated_cat3 bigint,
-	cm_score bigint, 
-    etl_date date
-);
+class DataAggregator:
 
-CREATE INDEX idx_fismascorecard_device_cm_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_cm_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_device_cm_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_cm_score (fisma_id);
+    def __init__(self):
+        self.logger = logger
 
+    def _is_array_column(self, series: pd.Series) -> bool:
+        """
+        Detect if column contains arrays/lists
+        """
+        if series.empty or series.isna().all():
+            return False
+        sample = series.dropna().iloc[0] 
+        return isinstance(sample, (list, np.ndarray)) or (sample is not None and hasattr(sample, '__iter__') and not isinstance(sample, str))
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_cm_score(
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-    active boolean,
-    iscm_waiver text,
-    fisma_reportable text,
-    fisma_inventory_selc_status text,
-    fisma_category text,
-	cm_score bigint,
-	etl_date date
-);
+    def _parse_wildcard_pattern(self, pattern: str) -> tuple[bool,bool,str]:
+        """
+        Convert wildcard pattern to flags and clean pattern
+        """
+        is_prefix = pattern.endswith('*')
+        is_suffix = pattern.startswith('*')
+        clean_pattern = pattern.strip('*')
+        return is_prefix, is_suffix, clean_pattern
+    
+    def _scalar_wildcard_filter(self, series: Series, pattern: Union[str, List[Any]]) -> Series:
+        """
+        Filter scalar column with wildcard support (eg,. state = '*open*') as well as multi-value support (eg., state = 'open' | state = 'reopened')
+        """
+        if isinstance(pattern,list):
+            masks = []
+            for p in pattern:
+                p_str = str(p) if p is not None else ''
 
-CREATE INDEX idx_fismascorecard_system_cm_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_cm_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_system_cm_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_cm_score (fisma_id);
+                # handle booleans
+                if series.dtype == 'bool':
+                    if p_str.lower() in ('true', '1', 'yes'):
+                        masks.append(series == True)
+                    elif p_str.lower() in ('false', '0', 'no'):
+                        masks.append(series == True)
+                    else:
+                        masks.append(pd.Series([False] * len(series), index=series.index))
+                # handle numerics
+                elif pd.api.types.is_numeric_dtype(series):
+                    try:
+                        p_num = pd.to_numeric(p)
+                        masks.append(series == p_num)
+                    except:
+                       masks.append(pd.Series([False] * len(series), index=series.index))
+                # string wildcard 
+                else:
+                    prefix_wild, suffix_wild, clean_pattern = self._parse_wildcard_pattern(p_str)
+                    series_str = series.astype(str).str.lower()
+                    clean_pattern_lower = clean_pattern.lower()
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_scan_compliance_score(
-	fisma_id text,
-    acronym text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-	active boolean,
-	iscm_waiver text, 
-	fisma_reportable text,
-	fisma_inventory_selc_status text,
-	fisma_category text,
-    total_credentialed_assets bigint,
-    total_assets bigint,	
-    scan_compliance_score  bigint,
-    etl_date date                        
-);
+                    if prefix_wild and suffix_wild:
+                        mask = series_str.str.contains(clean_pattern_lower, na=False, regex=False)
+                    elif prefix_wild:
+                        mask = series_str.str.fullmatch(f'^{re.escape(clean_pattern_lower)}.*', na=False)
+                    elif suffix_wild:
+                        mask = series_str.str.fullmatch( f'.*{re.escape(clean_pattern_lower)}$', na=False)
+                    else:
+                        mask = series_str == p_str.lower()     
+                    masks.append(mask.fillna(False).astype(bool))
 
-CREATE INDEX idx_fismascorecard_system_sc_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_scan_compliance_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_system_sc_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_scan_compliance_score (fisma_id);
+            # OR all masks togheter
+            combined_mask = pd.Series(np.logical_or.reduce(masks), index=series.index, dtype=bool)
+            return combined_mask
+        else:
+                        
+            # convert pattern to string
+            pattern_str = str(pattern) if pattern is not None else ''
 
+            # handle booleans explicitly
+            if series.dtype == 'bool':
+                if pattern_str.lower() in ('true', '1', 'yes'):
+                    return pd.Series(series == True, index=series.index, dtype=bool) #series == True
+                elif pattern_str.lower() in ('false', '0', 'no'):
+                    return pd.Series(series == False, index=series.index, dtype=bool) #return series == False
+                else:
+                    return pd.Series([False] * len(series), index=series.index, dtype=bool)
+            
+            # handle numeric columns
+            if pd.api.types.is_numeric_dtype(series):
+                try:
+                    pattern_num = pd.to_numeric(pattern)
+                    return pd.Series(series == pattern_num, index=series.index, dtype=bool)
+                except:
+                    return pd.Series([False] * len(series), index=series.index)
+                
+            # string columns with wildcard support
+            prefix_wild, suffix_wild, clean_pattern = self._parse_wildcard_pattern(pattern_str)
+            series_str = series.astype(str).str.lower()
+            clean_pattern_lower = clean_pattern.lower()
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_component_scan_compliance_score(
-	component text,
-    total_credentialed_assets bigint,
-    total_assets bigint,	
-    scan_compliance_score  bigint,
-	etl_date date
-);
+            if prefix_wild and suffix_wild:
+                mask = series_str.str.contains(clean_pattern_lower, na=False, regex=False)
+            
+            elif prefix_wild:
+                mask = series_str.str.fullmatch(f'^{re.escape(clean_pattern_lower)}.*', na=False)
+            elif suffix_wild:
+                mask = series_str.str.fullmatch( f'.*{re.escape(clean_pattern_lower)}$', na=False)
+            else:
+                mask = series_str == pattern_str.lower()
+            
+            return pd.Series(mask.fillna(False).astype(bool), index=series.index)
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_vm_score(
-    device_id text,
-    hostname text,
-    ip text,
-    fisma_id text,
-    fisma_name text,
-    portfolio text,
-    dhs_hva text,
-    public_facing text,
-    cfo_designated text,
-    fips_199_security_categorization_overall text,
-    active boolean,
-    iscm_waiver text, 
-    fisma_reportable text,
-    fisma_inventory_selc_status text,
-    fisma_category text,
-    device_last_seen timestamp,
-    asset_id text,
-    is_credentialed boolean,
-    last_authenticated_scan_date timestamp,
-    has_eligible_kev boolean,
-    eligible_kev_cve_count bigint,
-    eligible_kev_cves text[],
-    high_cves text[],
-    high_cve_count bigint,
-    critical_cves text[],
-    critical_cve_count bigint, 
-    finding_ids text[],
-    vm_score bigint,       
-    etl_date date
-);
+    def _array_wildcard_filter(self, series: Series, pattern: Union[str, List[Any]]) -> Series:
+        """
+        Filter array column with wildcard support (eg,. state && ['*open*']) as well as multi-value support (eg., state && ['open*', 'reopned'])
+        """
+        pattern_list = [pattern] if not isinstance(pattern, list) else pattern
 
-CREATE INDEX idx_fismascorecard_device_vm_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_vm_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_device_vm_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_vm_score (fisma_id);
+        
+
+        # def _check_array_match(arr: Any, pattern_str: str) -> bool:
+        def _check_array_match_any_values(arr: Any) -> bool:
+            # check if valid array
+            if arr is None or not isinstance(arr, (list, np.ndarray)) or len(arr) == 0:
+                return False
+            # convert ndarray -> list
+            arr_list = list(arr) if isinstance(arr, np.ndarray) else arr
+
+            # check if ANY pattern value matches this array
+            for pattern_val in pattern_list:
+                pattern_str = str(pattern_val) if pattern_val is not None else ''
 
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_vm_score(
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-    active boolean,
-    iscm_waiver text,
-    fisma_reportable text,
-    fisma_inventory_selc_status text,
-    fisma_category text,
-	vm_score bigint,
-	etl_date date
-);
+                prefix_wild, suffix_wild, clean_pattern = self._parse_wildcard_pattern(pattern_str)
+                clean_pattern_lower = clean_pattern.lower()
 
-CREATE INDEX idx_fismascorecard_system_vm_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_vm_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_system_vm_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_vm_score (fisma_id);
+                for item in arr_list:
+                    # handle boolean in arrays
+                    if isinstance(item, bool):
+                        item_str = 'true' if item else 'false'
+                    else:
+                        item_str = str(item).lower()
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_hbd_score(
-	device_id text,
-    hostname text,
-    ip text,
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-	active boolean,
-	iscm_waiver text, 
-	fisma_reportable text,
-	fisma_inventory_selc_status text,
-	fisma_category text,
-	adapters text[],
-	device_last_seen date,
-	crowd_strike_last_seen date,
-	edr_enabled boolean,
-	crowd_strike_adapter boolean,
-	av_compliance bigint,
-	edr_compliance bigint,
-	hbd_score bigint,
-    etl_date date
-);
+                    if prefix_wild and suffix_wild:
+                        if clean_pattern_lower in item_str:
+                            return True
+                    elif prefix_wild:
+                        if re.match(f'^{re.escape(clean_pattern_lower)}.*', item_str, re.IGNORECASE):   
+                            return True
+                    elif suffix_wild:
+                        if re.match(f'.*{re.escape(clean_pattern_lower)}$', item_str, re.IGNORECASE):
+                            return True
+                    else:
+                        if item_str == pattern_str.lower():
+                            return True
+            return False
+                
+        result = series.apply(_check_array_match_any_values)
+        return pd.Series(result.fillna(False).astype(bool), index=series.index)
+    
+    def filter_dataframe(self, df: pd.DataFrame, filter_conditions: List[Tuple[str,Union[str, List[Any]]]], dedup_on: Optional[str] = None) -> pd.DataFrame:
+        """
+        Apply multiple filter conditions, supports filters on array, and supports using wildcard expresions
 
-CREATE INDEX idx_fismascorecard_device_hbd_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_hbd_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_device_hbd_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_hbd_score (fisma_id);
+        Parameters:
+            df: Input dataframe to filter and count
+            filter_conditions: List of {column: value} filters
+        
+        Returns:
+            pd.DataFrame: Returns all records matching filter conditions
+        """
+        logger.info(f"Applying {len(filter_conditions)} filter conditions to {len(df)} records")
+        filtered = df.copy()
+        for col, val in filter_conditions:
+            if col not in filtered.columns:
+                logger.error(f"Column '{col}' not found")
+                raise KeyError("Missing column")
+            
+            val_display = str(val[:10] + ['...'] if isinstance(val, list) and len(val) > 3 else val)
+            logger.info(f"Filtering {len(filtered)} records on {col}='{val_display}'")
+            if self._is_array_column(filtered[col]):
+                logger.info(f"Detected array column '{col}'")
+                mask = self._array_wildcard_filter(filtered[col], val)
+            else:
+                mask = self._scalar_wildcard_filter(filtered[col], val)
+            prev_count = len(filtered)
+            filtered = filtered[mask]
+            retention = len(filtered) / prev_count * 100 if prev_count > 0 else 0
+            logger.info(f"Result: {len(filtered)} records returned ({retention:.1f}%)")
+        
+        # Deduplicate dataframe on dedup id
+        if dedup_on is not None:
+            if dedup_on not in filtered.columns:
+                logger.error(f"Dedup column '{dedup_on}' not found")
+                raise KeyError("Missing dedup column")
+            else:
+                logger.info(f"Deduplicating on '{dedup_on}' at the end")
+                filtered = filtered.drop_duplicates(subset=[dedup_on])
+        
+        logger.info(f"Final filtered dataframe: {len(filtered)} records")
+        return filtered
+    
+    def avg_time_days(self, df: pd.DataFrame, time_col: str = "time_taken_to_fix", conversion_factor: int = 86400) -> int:
+        """
+        Compute average time with optional filtering
 
+        Parameteres:
+            df: Input dataframe to filter and average
+            filter_conditions: Optional List of {column: value} filters
+            time_col: Time/duration column name 
+            conversion_factor: Conversion factor (86400=sec->days, 24=hours->days, 1440=min->days)
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_hbd_score(
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-    active boolean,
-    iscm_waiver text,
-    fisma_reportable text,
-    fisma_inventory_selc_status text,
-    fisma_category text,
-	hbd_score bigint,
-	etl_date date
-);
+        Returns:
+            int: Average time in target units (0 if no data)
+        """
+        logger.info(f"Computing average for '{time_col}' column for {len(df)} records (units: {conversion_factor})")
+        valid_times = df[time_col].dropna()
+        logger.info(f"Found {len(valid_times)} valid {time_col} values")
 
-CREATE INDEX idx_fismascorecard_system_hbd_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_hbd_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_system_hbd_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_hbd_score (fisma_id);
+        if len(valid_times) > 0:
+            avg_smallest_units = valid_times.mean()
+            avg_units = math.ceil(avg_smallest_units / conversion_factor)
 
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_psw_impact(
-	device_id text,
-    hostname text,
-    ip text;
-	fisma_id text,
-	fisma_name text,
-	acronym text,
-	asset_id text,
-	software text,
-	version text,
-	status text,
-    device_nominal_impact double precision,
-    device_real_impact double precision,
-    fisma_nominal_impact double precision,
-    fisma_real_impact double precision,
-    component_nominal_impact double precision,
-    component_real_impact double precision,
-    etl_date date
-);
-
-GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_psw_impact TO crmahivedb_fqt_user_role;
-
-
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_cve_impact(
-    cve_id text,
-    asset_id text,
-    plugin_id text,	
-    state text,
-    device_id text,
-    hostname text,
-    ip text;
-    is_credentialed boolean,
-    fisma_id text,
-    fisma_name text,
-    acronym text,v
-    cvss_v3_score double precision,
-    cve_published_date date,
-    is_eligible_kev boolean,
-    kev_date_added date,
-    type text,
-    device_nominal_impact double precision,
-    device_real_impact double precision,
-    fisma_nominal_impact double precision,
-    fisma_real_impact double precision,
-    component_nominal_impact double precision,
-    component_real_impact double precision,
-    etl_date date
-);
-
-GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_cve_impact TO crmahivedb_fqt_user_role;
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_hwam_score(
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-	active boolean,
-	iscm_waiver text, 
-	fisma_reportable text,
-	fisma_inventory_selc_status text,
-	fisma_category text,
-	identified_and_managed_assets bigint,
-	managed_assets bigint,
-	unauthorized_assets bigint ,
-	total_assets bigint,
-	hwam_score bigint,
-    etl_date date                   
-);
-
-CREATE INDEX idx_fismascorecard_system_hwam_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_hwam_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_system_hwam_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_hwam_score (fisma_id);
-
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_component_hwam_score(
-	component text,
-	identified_and_managed_assets bigint,
-	managed_assets bigint,
-	unauthorized_assets bigint ,
-	total_assets bigint,
-	hwam_score bigint,
-	etl_date date
-);
-CREATE INDEX idx_component_hwam_score_etl_date ON crma_hive.crma_hive_fismascorecar_component_hwam_score USING BRIN (etl_date);
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_swam_score(
-    device_id text,
-    hostname text,
-    ip text,
-    fisma_id text,
-    fisma_name text,
-    portfolio text,
-    dhs_hva text,
-    public_facing text,
-    cfo_designated text,
-    fips_199_security_categorization_overall text,
-    active boolean,
-    iscm_waiver text, 
-    fisma_reportable text,
-    fisma_inventory_selc_status text,
-    fisma_category text,
-    device_last_seen timestamp,
-    asset_id text,
-    is_credentialed boolean,
-    last_authenticated_scan_date timestamp,
-	prohibited_sw_count bigint,
-	prohibited_softwares_list text,
-    total_sw_count bigint,
-	swam_score bigint, 
-    etl_date date                   
-);
-
-CREATE INDEX idx_fismascorecard_device_swam_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_swam_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_device_swam_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_swam_score (fisma_id);
-
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_swam_score(
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-    active boolean,
-    iscm_waiver text,
-    fisma_reportable text,
-    fisma_inventory_selc_status text,
-    fisma_category text,
-	swam_score bigint,
-	etl_date date
-);
-
-CREATE INDEX idx_fismascorecard_system_swam_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_swam_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_system_swam_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_swam_score (fisma_id);
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score (
-    acronym text,
-    ato_expiration date,
-    ato_type text,
-    auth_status_check boolean,
-    authorization_date date,    
-    cfo_designation text,
-    contingency_plan_check boolean,
-    contingency_plan_date date,
-    contingency_plan_test_check boolean,
-    contingency_plan_test_date date,
-    contractor_system text,
-    dhs_hva text,
-    document_review_check boolean,
-    document_review_date date,
-    etl_date date,
-    fips_199_security_categorization_overall text,
-    fisma_id text,
-    fisma_inventory_selc_status text,
-    iscm_waiver text,
-    iscm_waiver_exp_date date,
-    org text,
-    pia_required boolean,
-    pia_valid boolean,
-    portfolio text,
-    privacy_check boolean,
-    privacy_impact_assesment_date date,
-    privacy_threshold_analysis_date date,
-    pta_valid boolean,
-    security_authz_score bigint,
-    sorn_date date,
-    sorn_required boolean,
-    sorn_valid boolean,
-    system_name text,
-    fisma_reportable text,
-	fisma_category text 
-);
-
-CREATE INDEX idx_fismascorecard_system_security_authz_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_system_security_authz_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_security_authz_score (fisma_id);
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_ucmm_fisma_system_scores(
-	fisma_id text,
-	acronym text,
-	fisma_name text,
-	portfolio text,
-	iscm_waiver text,
-	fisma_reportable text,
-	fisma_category text,
-	fips_199_security_categorization_overall text,
-	fisma_inventory_selc_status text,
-	dhs_hva text,
-	cfo_designated text,
-	system_id bigint,
-	actual_maturity double precision,
-	notional_maturity double precision,
-	maturity_level_delta double precision,
-	absolute_maturity_delta double precision,
-	data_quality_threshold_met text,
-    etl_date date
-);
-
-GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_ucmm_fisma_system_scores TO crmahivedb_fqt_user_role;
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_device_prohibited_os_score(
-	device_id text,
-    hostname text,
-    ip text,
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-	active boolean,
-	iscm_waiver text, 
-	fisma_reportable text,
-	fisma_inventory_selc_status text,
-	fisma_category text,
-	device_last_seen timestamp,
-	asset_id text,
-	is_credentialed boolean,
-	last_authenticated_scan_date timestamp,
-	devicerole text,
-	device_os text,
-	mobius_os_name text,
-	mobius_os_version text,
-	mobius_os_version_2 text,
-	mobius_id text,
-	status text,
-	prohibited_os_score bigint,
-    etl_date date
-);
-
-CREATE INDEX idx_fismascorecard_device_prhbtd_os_score_etl_date ON crma_hive.crma_hive_fismascorecard_device_prohibited_os_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_device_prhbtd_os_score_fisma_id ON crma_hive.crma_hive_fismascorecard_device_prohibited_os_score (fisma_id);
-
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_prohibited_os_score(
-	fisma_id text,
-	fisma_name text,
-	portfolio text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-    active boolean,
-    iscm_waiver text,
-    fisma_reportable text,
-    fisma_inventory_selc_status text,
-    fisma_category text,
-	prohibited_os_score bigint,
-	etl_date date
-);
-
-CREATE INDEX idx_fismascorecard_system_phbtd_score_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_prohibited_os_score USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_system_phbtd_score_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_prohibited_os_score (fisma_id);
-
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_fisma_system_all_metrics_scores(
-	fisma_id text,
-	fisma_name text,
-	acronym text,
-	portfolio text,
-	active boolean,
-	fisma_reportable text,
-	iscm_waiver text,
-	fisma_category text,
-	fisma_inventory_selc_status text,
-	dhs_hva text,
-	public_facing text,
-	cfo_designated text,
-	fips_199_security_categorization_overall text,
-	vm_score bigint,
-	cm_score bigint,
-	swam_score bigint,
-	hwam_score bigint,
-	hbd_score bigint,
-	prohibited_os_score bigint,
-	security_authz_score bigint,
-	ucmm_score bigint,
-	scan_compliance_score bigint,
-	ioc_score bigint,
-    etl_date date
-);
-
-CREATE INDEX idx_fismascorecard_fisma_all_metric_etl_date ON crma_hive.crma_hive_fismascorecard_fisma_system_all_metrics_scores USING BRIN (etl_date);
-CREATE INDEX idx_fismascorecard_fisma_all_metric_fisma_id ON crma_hive.crma_hive_fismascorecard_fisma_system_all_metrics_scores (fisma_id);
-
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_component_scores(
-	component text,
-	vm_score bigint,
-	cm_score_hva bigint,
-	cm_score_other bigint,
-	swam_score bigint,
-	hwam_score bigint,
-	hbd_score bigint,
-	prohibited_os bigint,
-	security_authz_score_hva bigint,
-	security_authz_score_other bigint,
-	ucmm_score bigint,
-	scan_compliance_score bigint,
-	ioc_score bigint,
-    etl_date date
-);
-
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_scored_devices_summary(
-    fisma_id text,
-    acronym text,	
-    fisma_name text,
-    vm_scored_devices bigint,
-    vm_scored_percent_of_component double precision,
-    cm_scored_devices_hva bigint, 
-    cm_scored_hva_percent_of_component double precision,
-    cm_scored_devices_other bigint, 
-    cm_scored_other_percent_of_component double precision,
-    swam_scored_devices bigint, 
-    swam_scored_percent_of_component double precision,
-    hwam_scored_devices bigint,
-    hwam_scored_percent_of_component double precision,		 
-    pos_scored_devices bigint,
-    pos_scored_percent_of_component double precision,	
-    hbd_scored_devices bigint,
-    hbd_scored_percent_of_component double precision,
-    sc_scored_devices bigint,
-    sc_scored_percent_of_component 	double precision,
-    etl_date date
-);
-
-GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_scored_devices_summary TO crmahivedb_fqt_user_role;
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_ucmm_poam_impact_rankings(
-	poam_id text,
-	fisma_id text,
-	system_id bigint,
-	acronym text,
-	fisma_name text,
-	portfolio text,
-	iscm_waiver text,
-	fisma_reportable text,
-	fisma_category text,
-	fips_199_security_categorization_overall text,
-	fisma_inventory_selc_status text,
-	dhs_hva text,
-	cfo_designated text,
-	poam_creation_date date,
-	user_identified_criticality text, 
-	policy_waiver_expiration text, 
-	controls text,
-	poam_weakness_description text,
-	accepted_risk text,
-	policy_waiver_approved text,
-	scheduled_completion_date date,
-	poam_status text,
-	overdue boolean,
-	component_poam_impact bigint,
-	system_poam_impact bigint, 
-    etl_date date
-);
-
-GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_ucmm_poam_impact_rankings TO crmahivedb_fqt_user_role;
-
-
-
-CREATE TABLE IF NOT EXISTS crma_hive.crma_hive_fismascorecard_failed_compliace_check_impact(
-    rule_id text,
-    stig_id text,
-    device_id text,
-    hostname text,
-    ip text;
-    fisma_id text,
-    fisma_name text,
-    acronym text,
-    dhs_hva text,
-    asset_id text,
-    audit_file text,
-    sscg_os_version text,
-    severity text,
-    device_impact double precision,
-    fisma_impact  double precision,
-    component_impact_hva  double precision,
-    component_impact_other  double precision,
-    etl_date date
-);
-
-GRANT SELECT ON TABLE crma_hive.crma_hive_fismascorecard_failed_compliace_check_impact TO crmahivedb_fqt_user_role;
+            logger.info(f"Average time: {avg_units} days ({avg_smallest_units:.0f})")
+            return avg_units
+        else:
+            logger.warning(f"No valid time values found, returning 0")
+            return None

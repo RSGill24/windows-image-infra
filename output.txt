@@ -1,104 +1,1450 @@
-from typing import Optional
-import pandas as pd
-import urllib3
-from datetime import datetime
+import boto3
 import logging
+import pandas as pd
+import requests
 import time
-from crma_hive_utilities import Utility, Read_Write_Utility
+import urllib3
 from crma_hive_connections import Connection
-from sqlalchemy.engine import Engine
-import re
+from crma_hive_utilities import Utility, Read_Write_Utility
+from datetime import datetime
+from io import StringIO
+from requests.auth import HTTPBasicAuth
+from typing import Optional, List
+import pyarrow
+
+
 
 # Turning off warnings
 urllib3.disable_warnings()
 
 # Setting up logger
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Instantiate classes
+connection = Connection()
+utility = Utility()
+rw_util = Read_Write_Utility()
+
+# Creating global variables
+failed_table_list = []
+
+class NonRetryableHTTPError(Exception):
+    pass
+
+def get_with_retries(
+        session: requests.Session,
+        url: str,
+        params: dict,
+        timeout: tuple,
+        max_retries: int,
+        backoff_factor: float,
+) -> List[dict]:
+    """
+    Get request with retries and exponential backoff
+    """
+    attempt = 0
+    retryable_status_codes = (429, 500, 502, 503, 504)  
+
+    while True:
+        try:
+            resp = session.get(url, params=params, timeout=timeout, verify=False)
+            
+            if resp.status_code == 200:
+                result = resp.json().get("result", [])
+                if not isinstance(result, list):
+                    raise ValueError("Unexpected response format: 'result' is not a list")
+                return result 
+            
+            if resp.status_code not in retryable_status_codes:
+                logger.error(f"Non-retryable status code {resp.status_code} received: {resp.text}")
+                raise NonRetryableHTTPError(f"Non-retryable status code: {resp.status_code}")
+                
+            resp.raise_for_status()  
+            
+        except ValueError as ve: 
+            logger.error(f"Rerutned invalid response format: {ve}")
+            raise
+
+        except NonRetryableHTTPError as nre: 
+            logger.error(f"Non-retryable HTTP error occurred: {nre}")
+            raise
+        
+        except Exception as e:
+            attempt +=1
+            if attempt > max_retries:
+                logger.error(f"Max retries exceeded: {e}")
+                raise
+
+            sleep = min(backoff_factor * (2 ** attempt), 60)  # Cap backoff at 60 seconds
+            logger.warning(f"Retry {attempt} for URL {url} with params {params} after error: {e}, sleeping for {sleep} seconds")
+            time.sleep(sleep)
+
+def fetch_snow_data(
+        user: str, 
+        password: str, 
+        url: str ,
+        table_name: str,
+        fields: Optional[List[str]]= None,
+        query: Optional[str] = None,
+    ) -> pd.DataFrame:
+    """
+    Fetches data from a SNOW table.
+
+    Parameters:
+        user (str): API username
+        password (str): API user password
+        url (str): Table url
+        table_name (str): Table name
+        fields(str): Fields to fetch
+        query(str): Query to filter records records to fetch
+    Returns:
+        Pandas dataframe of the data retrieved from the table
+    """
+    # Request params
+    page_size = 1500
+    timeout = (10, 60)
+    max_retries = 5
+    backoff_factor = 1.5
+
+    session = requests.Session()
+    session.auth = HTTPBasicAuth(user, password)
+    session.headers.update({
+        "Content-Type": "application/json", 
+        "Accept": "application/json",
+        "Connection": "keep-alive",
+    })
+
+    params = {
+        "sysparm_limit": page_size,
+        "sysparm_offset": 0,
+        "sysparm_display_value": "false",
+        "sysparm_exclude_reference_link": "true",
+        "sysparm_orderby": "sys_updated_on, sys_id",
+    }
+    if fields:
+        params["sysparm_fields"] = ",".join(fields)
+    if query:
+        params["sysparm_query"] = query
+
+    all_records = []
+    total_fetched = 0
+    logger.info(f"Fetching data from SNOW Tables API: {url}")
+
+    while True:
+
+        records = get_with_retries(session, url,params, timeout, max_retries, backoff_factor)
+
+        if not records:
+            logger.info(f"Completed fetching records for {table_name}. Total records fetched: {total_fetched}")
+            break
+
+        all_records.extend(records)
+        now_fetched = len(records)
+        total_fetched += now_fetched
+        params["sysparm_offset"] += now_fetched
+        logger.debug(f"Total records fetched so far: {total_fetched}")
+    
+    df = pd.DataFrame(all_records)
+    df = df.drop_duplicates(subset="sys_id", keep="first")
+
+    return df
+        
+def fetch_associations(session, base_url, batch_keys, query_field, sysparm_fields, table_name) -> list:
+    """
+    Fetch enrichment data from SNOW Table API for a batch of keys with parameterized field names.
+
+    Parameters:
+        session (requests.Session): Authenticated requests session for persistent connections.
+        base_url (str): Base URL of the SNOW instance and Table API endpoint
+        batch_keys (list): List of key values to query in SNOW.
+        query_field(str): Name of the field to be used in sysparm_query
+        sysparm_fields (list): List of fields to retreive in the response
+        table_name (str): SNOW table to query
+
+    Returns:
+        records: List of dicts representing the enriched records from API response.
+    """
+
+    logging.debug(f"Fetching {len(batch_keys)} records on field '{query_field}'")
+
+    # construct OR query string for multiple key_field values(eg., 'sys_id=123^ORsys_id=345')
+    query = "^OR".join([f"{query_field}={key}" for key in batch_keys])
+
+    # build url
+    url = f"{base_url}/{table_name}"
+
+    # request params
+    page_size= 20000 
+    timeout = (10, 60)
+    max_retries = 5
+    backoff_factor = 1.5
+
+    # query param
+    params = {
+        "sysparm_limit": page_size,
+        "sysparm_query": query,
+        "sysparm_display_value": "false",
+        "sysparm_exclude_reference_link": "true",
+    }
+
+    if sysparm_fields:
+        params["sysparm_fields"] = ",".join(sysparm_fields)
+
+    records = get_with_retries(session, url, params, timeout, max_retries, backoff_factor)
+    logger.debug(f"Succesfully fetched {len(records)} records for this batch")
+    return records
+
+def fetch_associations_in_bulk(df, user, password, base_url, key_field, query_field, batch_size, sysparam_fields, table_name) -> pd.DataFrame:
+    """
+    Enrich the oringial Dataframe by fetching enrichment data in batches with flexiblel field names.
+
+    Parameters:
+        df (pandas.Dataframe): Original Dataframe containing column matching key_field
+        user (str): username for basic authentication
+        password (str): password for basic authentication
+        base_url (str): URL for SNOW Table API
+        key_field (str): Name of the primary key field in the dataframe to be used as batch ids
+        query_field(str): Name of the field to be used in sysparm_query
+        batch_size (int): Number of keys to send per batch query.
+        sysparm_fields(list): List of fields to request from the API for enrichment
+        table_name (str): SNOW table to query
+
+    Returns:
+        aggregated_df: pandas dataframe containing fields returned from SNOW API.
+    """
+
+    associations= []
+    total_batches = (len(df) + batch_size - 1) // batch_size
+    logger.info(f"Fetching associations in {total_batches} batches with batch size {batch_size} for {table_name}")
+
+    # create persistent session for all batch requests
+    session = requests.Session()
+    session.auth = HTTPBasicAuth(user, password)
+    session.headers.update({
+        "Content-Type": "application/json", 
+        "Accept": "application/json",
+        "Connection": "keep-alive"
+    })
+
+    # process keys in batches
+    for i in range(0, len(df), batch_size):
+        batch_num = (i // batch_size) + 1
+        batch_keys = df[key_field].iloc[i:i+batch_size].tolist()
+        logger.debug(f"Fetch batch {batch_num}/{total_batches}: Keys {batch_keys}")
+        batch_result = fetch_associations(session, base_url, batch_keys, query_field, sysparam_fields, table_name)
+        associations.extend(batch_result)
+
+    # create df from associations
+    associations_df = pd.DataFrame(associations)
+    
+    if not associations_df.empty:
+        # aggregate by concatening all column values as comma sperated strings 
+        logger.info(f"Aggregating associations on {query_field}")
+        aggregated_df = associations_df.groupby(query_field, as_index=False).agg(lambda x: ", ".join(map(str,x)))
+    else:
+        aggregated_df = associations_df
+
+    logger.info(f"Completed fetching all associations in {table_name}: Orginal rows = {len(df)}, associations = {len(aggregated_df)}")
+
+    return aggregated_df
+
+
+def fetch_snow_data_router( user: str,  password: str,  bucket_name: str, base_url: str , table_name: str, fields: Optional[List[str]]= None, query: Optional[str] = None) -> pd.DataFrame:
+    """
+    Routes requests to fetch_associations_in_bulk or fetch_snow_data
+
+    Parameters:
+        user (str): username for basic authentication
+        password (str): password for basic authentication
+        bucket_name: Name of the s3 bucket 
+        base_url (str): URL for SNOW Table API
+        key_field (str): Name of the primary key field in the dataframe to be used as batch ids
+        query_field(str): Name of the field to be used in sysparm_query
+        batch_size (int): Number of keys to send per batch query.
+        sysparm_fields(list): List of fields to request from the API for enrichment
+        table_name (str): SNOW table to query
+
+    Returns:
+        Pandas dataframe containing fields returned from SNOW API.
+    """
+    if table_name == "cmdb_ci":
+        # fetch CHANGE_REQUEST_TO_CONFIGURATION_ITEM_ASSC file form s3
+        prefix = "raw_data/SNOW/"
+        s3_filename = prefix + "CRMA_HIVE_SNOW_" + "M2M_CHANGE_REQUEST_TO_CONFIGURATION_ITEM_ASSC"
+        logger.info(f"Fetching data from S3: {prefix}{s3_filename}")
+        file = rw_util.fetch_file_from_s3(bucket_name, prefix, s3_filename, "PARQUET")
+
+        # flatten ci_item (aggregate column) and drop duplicates
+        logger.info(f"{s3_filename} contains {len(file)} records before normalization process.")
+        file["ci_item"] = file["ci_item"].str.split(',')
+        file = file.explode("ci_item").reset_index(drop=True)
+        file = file.drop_duplicates(subset=["ci_item"])
+        logger.info(f"{s3_filename} contains {len(file)} records after normalization process.")
+
+        # return CI's associated with a change request
+        return fetch_associations_in_bulk(file, user, password, base_url, "ci_item", "sys_id", 100, fields, table_name)
+
+    else:
+        table_url = f"{base_url}/{table_name}"
+        return fetch_snow_data(user, password, table_url, table_name, fields, query)
+
+
+def main():
+    # Creating variables
+    global failed_table_list
+    start_time = time.time()
+
+    # Set the service account user and password credentials
+    user = connection.get_secret("edae-crma-hive")["snow_username"]
+    password = connection.get_secret("edae-crma-hive")["snow_password"]
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    base_url = "https://iceserviceportal.servicenowservices.com/api/now/table"
+
+    # log memory usage
+    utility.log_memory_usage()
+
+    tables = [
+        {
+            "name": "x_g_dh5_poam_csam_poam_data",
+            "output_filename": "CRMA_HIVE_SNOW_POAM_DATA",
+            "fields": None,
+            "query": None, 
+            "associations": None
+        },
+        {
+            "name": "x_g_dh5_poam_csam_poam_audit_types",
+            "output_filename": "CRMA_HIVE_SNOW_POAM_AUDIT",
+            "fields": None,
+            "query": None,
+            "associations": None
+        },
+        {
+            "name": "u_fisma_inventory", 
+            "output_filename": "CRMA_HIVE_SNOW_FISMADetails",
+            "fields": None,
+            "query": None,
+            "associations": None
+        },
+        {
+            "name": "u_program", 
+            "output_filename": "CRMA_HIVE_SNOW_PROGRAM",
+            "fields": None,
+            "query": None,
+            "associations": None
+        },
+        {
+            "name": "sys_user", 
+            "output_filename": "CRMA_HIVE_SNOW_SYS_USER",
+            "fields": ["sys_id", "name", "email"],
+            "query": None,
+            "associations": None
+        }, 
+        {
+          "name": "sc_request", 
+          "output_filename": "CRMA_HIVE_SNOW_REQUEST",
+          "fields": [
+                        "u_itsr_type", "requested_for", "sys_updated_on", "number", "price", "u_justification", "sys_created_by","u_requisition_number", "priority","approval_set",  "short_description",
+                        "stage", "delivery_address", "sys_created_on", "description", "sys_id", "urgency", "u_external_reference", "u_yn_associated_project", "due_date", "active", "approval", "approval_history", 
+                    ],
+          "query": None,
+          "associations": None
+        },
+        {
+          "name": "x_g_dh5_poam_weakness_tracking", 
+          "output_filename": "CRMA_HIVE_SNOW_WEAKNESS_TRACKING",
+          "fields": None,
+          "query": None,
+          "associations": None
+        },
+
+        {
+          "name": "x_g_dh5_poam_isvm", 
+          "output_filename": "CRMA_HIVE_SNOW_ISVM",
+          "fields": None,
+          "query": None,
+          "associations": None
+        },
+        {
+          "name": "change_request", 
+          "output_filename": "CRMA_HIVE_SNOW_CHANGE_REQUEST",
+          "fields": [
+                        "assigned_to","assignment_group","backout_plan","cab_date","cab_recommendation","close_code","close_notes","closed_at","conflict_last_run","conflict_status","contact_type",
+                        "description","end_date","impact","implementation_plan","justification","location","number","on_hold","opened_at","opened_by","priority","requested_by","risk","risk_impact_analysis",
+                        "short_description","start_date","state","sys_created_on","sys_created_by","sys_id","sys_updated_on","sys_updated_by","test_plan","type","u_application_release","u_approvap_path","u_communication_plan",
+                        "u_cots_version_upgrade_info","u_cots_version_upgrade","u_front_end","u_ic_notification","u_is_this_related_to_another_cr","u_isso_recommendation","u_justification","u_outage","u_post_implementation_test_plan",
+                        "u_staging_testing_environment_verified","u_submitted_date"
+                    ],   
+          "query": None,
+          "associations": [
+                            {
+                                "name": "u_m2m_fisma_invent_change_reque",
+                                "output_filename": "CRMA_HIVE_SNOW_M2M_CHANGE_REQUEST_TO_FISMADetails_ASSC",
+                                "key_field": "sys_id",
+                                "query_field": "u_change_request",
+                                "sysparm_fields": ["u_fisma_inventory", "u_change_request"],
+                                "batch_size": 100
+                            },
+                            {
+                                "name": "task_ci",
+                                "output_filename": "CRMA_HIVE_SNOW_M2M_CHANGE_REQUEST_TO_CONFIGURATION_ITEM_ASSC",
+                                "key_field": "sys_id",
+                                "query_field": "task",
+                                "sysparm_fields": ["ci_item", "task"],
+                                "batch_size": 100
+                            }
+              
+                          ]
+        },
+        {
+          "name": "cmdb_ci", 
+          "output_filename": "CRMA_HIVE_SNOW_CONFIGURATION_ITEM",
+          "fields": ["sys_id","name"],   
+          "query": None,
+          "associations": None
+        }        
+    ]
+
+    
+    for table in tables:
+        # Creating variable names
+        table_name = table["name"]
+        output_filename = table["output_filename"]
+        fields = table["fields"] 
+        query = table["query"]
+        associations = table["associations"]
+        collection = []
+
+        df = fetch_snow_data_router(user, password, bucket_name, base_url, table_name, fields, query)
+        collection.append({"df": df, "filename":output_filename})
+
+        if associations:
+            for association in associations:
+                assoc_table_name = association["name"]
+                assoc_output_filename = association["output_filename"]
+                assoc_key_field = association["key_field"]
+                assoc_query_field = association["query_field"]
+                assoc_sysparm_fields = association["sysparm_fields"]
+                batch_size = association["batch_size"]
+
+                association_df = fetch_associations_in_bulk(df, user, password, base_url, assoc_key_field, assoc_query_field, batch_size, assoc_sysparm_fields, assoc_table_name)
+                collection.append({"df": association_df, "filename": assoc_output_filename})
+
+        # Load the data into S3 Bucket if not in the failed_table_list
+        if table_name not in failed_table_list:
+            logger.info("Uploading to S3...")
+            for file in collection:
+                full_filename = "raw_data/SNOW/" + file["filename"]
+                rw_util.load_to_s3(bucket_name, file["df"], full_filename, "PARQUET" )
+
+                # store csv - for testing purposes only 
+                # temp_filename = "test/raw/SNOW/" + file["filename"]
+                # rw_util.load_to_s3(bucket_name, file["df"], temp_filename, "CSV")
+                
+                # # save json file locally for data profiling 
+                # json_file =f"{output_filename}.json"
+                # file["df"].to_json(json_file, orient="records",indent=4)
+
+            utility.log_memory_usage() 
+
+    elapsed_minutes = (time.time() - start_time) / 60
+
+    # Failing the job if any names in the list
+    if len(failed_table_list) != 0:
+        logger.info("Job failed due to a dataframe miscount with SNOW table")
+
+        for tbl_nm in failed_table_list:
+            logger.error(f"{tbl_nm} has a miscount")
+
+        assert False
+    else:
+        logger.info(f"Complete. Total elapsed time : {elapsed_minutes}")
+
+
+
+if __name__ == "__main__":
+    main()
+
+import pandas as pd
+import urllib3
+from datetime import datetime
+import boto3
+import logging
+from io import StringIO
+import time
+from crma_hive_utilities import Utility, Read_Write_Utility
+from crma_hive_data_quality_utilities import DataQualityUtilities
+from crma_hive_connections import Connection
+from sqlalchemy.engine.base import Engine
+import pyarrow
+import re
+import json
+import ast
+from typing import Tuple, Optional
+
+
+# Turning off warnings
+urllib3.disable_warnings()
+
+# Setting up logger
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Instantiate classes
 utility = Utility()
 rw_util = Read_Write_Utility()
 connection = Connection()
+dataQualityUtils = DataQualityUtilities()
 
-# Define global vars
-MAIN_SCHEMA = rw_util.MAIN_SCHEMA
-BACKFILL_SCHEMA = rw_util.BACKFILL_SCHEMA
-TABLE_CRMA_HIVE_AXONIUS_DEVICES = "AXONIUS_DEVICES" 
-TABLE_CRMA_HIVE_AXONIUS_SOFTWARE = "AXONIUS_SOFTWARE" 
-
-VALID_TABLES = {
-TABLE_CRMA_HIVE_AXONIUS_DEVICES,
-TABLE_CRMA_HIVE_AXONIUS_SOFTWARE
-}
-
-
-def load_data_to_db(
-        engine: Engine,
+def load_to_processed(
         bucket_name: str,
         dataset: str,
-        schema: str,
-        backfill_date: Optional[str] = None        
+        clean_df: pd.DataFrame,
+        quarantine_df: Optional[pd.DataFrame] = None,
+        warning_df: Optional[pd.DataFrame] = None,
+        backfill_date: Optional[str] = None
 ) -> None:
     """
-    Loads data to desttination database
+    Helper function to call s3 util functions to laod process data s3 bucket
     
     Parameters:
-        engine (create_engine): Database connection engine
-        bucket (str): Name of the S3 bucket to fetch the data from
-        dataset (str): The dataset to store to database
-        schema(str): The database schema in which data is loaded.
-        backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525)        
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-procecss (e.g., 121525)
+        clean_df(pd.DataFrame): The clean dataframe
+        quarantine_df(pd.DataFrame): The dataframe with erronous data
+        warnning_df(pd.DataFrame): Dataframe with rows containing warning flangs 
     """
-    logger.info(f"Preparing to load table '{dataset}' to '{schema}' schema")
+    if backfill_date:
+        prefix = "processed/SNOW/CLEAN/"
+        s3_filename = f"CRMA_HIVE_SNOW_{dataset}_CLEAN"
+        target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET") 
+        rw_util.load_to_s3(bucket_name, clean_df, target_filename, "PARQUET", True)
+       
+        if quarantine_df is not None:
+            prefix = "processed/SNOW/QUARANTINE/"
+            s3_filename = f"CRMA_HIVE_SNOW_{dataset}_QUARANTINE"
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET")
+            rw_util.load_to_s3(bucket_name, quarantine_df, target_filename, "PARQUET", True)   
 
-    classes = ["CLEAN", "QUARANTINE", "WARNING"]
+        if warning_df is not None:
+            prefix = "processed/SNOW/WARNING/"
+            s3_filename = f"CRMA_HIVE_SNOW_{dataset}_WARNING"        
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "PARQUET")
+            rw_util.load_to_s3(bucket_name, warning_df, target_filename, "PARQUET", True)     
+    else:
+        output_file= f"processed/SNOW/CLEAN/CRMA_HIVE_SNOW_{dataset}_CLEAN"
+        rw_util.load_to_s3(bucket_name, clean_df, output_file, "PARQUET")
 
-    for cls in classes:
-        prefix = f"processed/AXONIUS/{cls}/CRMA_HIVE"
-        base_name = f"{prefix}_{dataset}_{cls}"    
-        
-        if backfill_date:
-            df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
-            if df is not None:
-                df["etl_date"] = datetime.strptime(backfill_date, "%m%d%y").strftime("%Y-%m-%d")
-        else:
-            df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
-            if df is not None:
-                df["etl_date"] = datetime.now().date() 
+        if quarantine_df is not None:
+            output_file= f"processed/SNOW/QUARANTINE/CRMA_HIVE_SNOW_{dataset}_QUARANTINE"
+            rw_util.load_to_s3(bucket_name, quarantine_df, output_file, "PARQUET")   
 
-        if cls == "CLEAN":
-            if df is None:
-                raise ValueError("Dataset not found")
-            table_name = f"crma_hive_{dataset.lower()}"
-            logger.info(f"Loading table '{table_name}' to '{schema}' schema")
-            rw_util.truncate_and_load_table(engine=engine, df=df, schema_name=schema, table_name=table_name, exist_type="append" )
-        else:
-            if df is not None:                    
-                table_name = f"crma_hive_{dataset.lower()}_{cls.lower()}"
-                logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-                rw_util.truncate_and_load_table(engine=engine, df=df, schema_name=schema, table_name=table_name, exist_type="append" )
+        if warning_df is not None:
+            output_file= f"processed/SNOW/WARNING/CRMA_HIVE_SNOW_{dataset}_WARNING"
+            rw_util.load_to_s3(bucket_name, warning_df, output_file, "PARQUET")         
 
-        logger.info(f"Perfomming post load validation on table '{table_name}' in '{schema}' schema")
-        if rw_util.post_load_validation(engine=engine, df=df, schema_name=schema, table_name=table_name):
-            logger.info(f"Post load validation check passed for table '{table_name}' in '{schema}' schema")
+## For dev testing purpose only##
+def load_to_test(
+        bucket_name: str,
+        dataset: str,
+        clean_df: pd.DataFrame,
+        quarantine_df: Optional[pd.DataFrame] = None,
+        warning_df: Optional[pd.DataFrame] = None,
+        backfill_date: Optional[str] = None
+) -> None:
+    """
+    Helper function to call s3 util functions to load process data s3 bucket
+    
+    """
+    if backfill_date:
+        prefix = "test/processed/SNOW/CLEAN/"
+        s3_filename = f"CRMA_HIVE_SNOW_{dataset}_CLEAN"
+        target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV") 
+        rw_util.load_to_s3(bucket_name, clean_df, target_filename, "CSV", True)
+       
+        if quarantine_df is not None:
+            prefix = "test/processed/SNOW/QUARANTINE/"
+            s3_filename = f"CRMA_HIVE_SNOW_{dataset}_QUARANTINE"
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV")
+            rw_util.load_to_s3(bucket_name, quarantine_df, target_filename, "CSV", True)   
 
-            ##Parallel loading##
-            logger.info("Load copy to 'crmahivedb_fqt' on 'eda-crmahive-np' ")
-            logger.info(f"Loading table '{table_name}' to '{schema}' schema")     
-            engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
-            rw_util.truncate_and_load_table(engine=engine2, df=df, schema_name=schema, table_name=table_name, exist_type="append" )
+        if warning_df is not None:
+            prefix = "test/processed/SNOW/WARNING/"
+            s3_filename = f"CRMA_HIVE_SNOW_{dataset}_WARNING"        
+            target_filename = rw_util.find_or_generate_filename(bucket_name, prefix, s3_filename, backfill_date, "CSV")
+            rw_util.load_to_s3(bucket_name, warning_df, target_filename, "CSV", True)     
+    else:
+        output_file= f"test/processed/SNOW/CLEAN/CRMA_HIVE_SNOW_{dataset}_CLEAN"
+        rw_util.load_to_s3(bucket_name, clean_df, output_file, "CSV")
 
-        else:
-            raise RuntimeError(f"Post load validation check failed for table '{table_name}' in '{schema}' schema")                      
+        if quarantine_df is not None:
+            output_file= f"test/processed/SNOW/QUARANTINE/CRMA_HIVE_SNOW_{dataset}_QUARANTINE"
+            rw_util.load_to_s3(bucket_name, quarantine_df, output_file, "CSV")   
 
-def run_backfill_mode(engine: Engine, schema: str, bucket_name: str, hist_table_name: str, backfill_date: str, datasets: list) -> None:
+        if warning_df is not None:
+            output_file= f"test/processed/SNOW/WARNING/CRMA_HIVE_SNOW_{dataset}_WARNING"
+            rw_util.load_to_s3(bucket_name, warning_df, output_file, "CSV")  
+  
+def process_poam_data(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles data cleaning and enrichement of the SNOW poam_data.
+
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_POAM_DATA"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+    target_columns = [  
+        "workflow_status", "controls", "date_due", "actual_start_date", "control_risk_severity", "sys_updated_on", "system_poam_impact", "planned_finish_date", "sys_updated_by",
+        "portfolio", "issoupdate", "weakness_type", "create_date", "number_milestones", "system_category", "delay_reason", "contractor_system", "fisma_name", "planned_start_date",
+        "days_since_creation", "scheduled_completion_date", "work_notes", "status", "sub_org", "accepted_risk", "csfcategory", "poam_id", "workflow_status_date", "closure_attention", "expiring_in_days",
+        "financial_system", "csffunction", "actual_finish_date", "days_until_auto_approved", "csam_id", "sys_id", "number_artifacts", "expired", "fisma_reportable", "poam_title",
+        "policy_waiver_expiration", "isso_status_history", "closure_path", "policy_waiver_approved", "detailed_weakness_description", "user_identified_criticality", "assigned_to", "severity", "cost", "csfsubcategory",
+        "acronym", "investment_name", "item_identified_during", "system_name", "component_poam_impact"                       
+    ]
+
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["actual_finish_date", "actual_start_date", "create_date", "date_due", "issoupdate",  "planned_finish_date", "planned_start_date", "scheduled_completion_date", "workflow_status_date"  ]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["sys_updated_on"]    
+    df = dataQualityUtils.clean_timestamp_fields(df, cols)
+
+    #compute days_in_delay_status
+    logger.info("Computing nuber of days poam stayed in delated status, if applicable")
+    today = pd.Timestamp(datetime.now().date())
+    df['scheduled_completion_date'] = pd.to_datetime(df['scheduled_completion_date'])
+    df["days_since_delayed_status"] = df.apply(
+        lambda row: (
+            (today - row["scheduled_completion_date"]).days
+            if pd.notna(row["scheduled_completion_date"]) and
+            pd.notna(row["status"]) and
+            row["status"] == "Delayed" and
+            (today - row["scheduled_completion_date"]).days > 0
+            else ''
+        ),
+        axis=1
+    )
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["poam_id", "csam_id", "days_since_creation", "days_until_auto_approved", "number_artifacts", "number_milestones", "system_poam_impact", "expiring_in_days", "days_since_delayed_status"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+    #Apply DQ9: Convert columns to float/decimal 
+    cols = ["cost"]
+    df = dataQualityUtils.clean_float_fields(df, cols)
+
+    #Apply DQ5: Remove HTML tags.  
+    cols = ["detailed_weakness_description", "isso_status_history"]
+    df = dataQualityUtils.remove_html_tags(df, cols)
+
+    #Rename id fields 
+    df = dataQualityUtils.rename_fields(df, {"fisma_name": "fisma_name_id"} )
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["acronym", "csam_id"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = ["poam_id", "status", "sys_id",  "fisma_name_id", "system_category", "system_name" ]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = ["sys_id", "poam_id"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    # #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    #Load to destination  
+    dataset = "POAM_DATA"
+
+    logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing only ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+          
+def process_poam_audit(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of the SNOW poam_audit 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_POAM_AUDIT"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+    target_columns = [  "audit_year", "audit_controls", "sys_updated_on", "csam_poam_data", "sys_id", "sys_updated_by", "domain_control_family", "rca_audit", "audit_type"  ]                                    
+
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+    
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["sys_updated_on"]    
+    df = dataQualityUtils.clean_timestamp_fields(df, cols)
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["audit_year"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+    
+    #Rename id fields referecing other tables
+    df = dataQualityUtils.rename_fields(df, {"csam_poam_data": "csam_poam_data_id"} )
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["audit_year"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    #Apply DQ1 & Q: Not nullabe
+    cols = ["sys_id", "audit_type", "csam_poam_data_id" ]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 Q: No duplicates, quarantine if any
+    cols = ["sys_id" ]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+    print(quarantine_df)
+
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    logger.info("Loading processed data to destination...")
+    dataset = "POAM_AUDIT"
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # ###....for testing ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+
+def process_fisma_details(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of SNOW FISMA Details
+
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_FISMADetails"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+    target_columns = [ 
+        "u_fisma_reportable", "u_acronym", "u_is_this_a_cloud_system", "u_sam", "sys_updated_on", "u_risk_analyst_team_lead_ratl", "u_application_type", "u_initial_ato_date",
+        "u_system_description", "u_authorization_type", "u_active", "u_operating_system", "u_fisma_id", "u_rmf_stage_gate", "u_tier1", "u_public_facing_type", "u_dhs_hva", "u_program_office",
+        "sys_id", "u_fisma_catagory", "u_iscm_waiver", "u_notes", "u_public_facing", "u_fips_199_security_categorization_overall", "u_database_type", "u_system_security_officer_isso",
+        "u_csam_id", "u_notificationsent_14days", "u_mission_essential_system_mes", "u_choice_1", "u_inventory_system", "u_cfo_designated", "u_internal_selc_status", "sys_created_on",
+        "u_current_ato_granted", "u_system_owner", "u_security_support_portfolio", "u_privacy_designated", "u_investment_name"                    
+    ]      
+
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    #Rename fields:
+    map = {
+        "u_fisma_reportable": "fisma_reportable", "u_acronym": "acronym", "u_is_this_a_cloud_system": "is_this_a_cloud_system", "u_sam": "sam", "u_risk_analyst_team_lead_ratl": "risk_analyst_team_lead_ratl", 
+        "u_application_type": "application_type",  "u_initial_ato_date": "initial_ato_date", "u_system_description": "system_description", "u_authorization_type": "authorization_type", "u_active": "active", 
+        "u_operating_system": "operating_system", "u_fisma_id": "fisma_id", "u_rmf_stage_gate": "rmf_stage_gate", "u_tier1": "dhs_tier_1_hva ", "u_public_facing_type": "public_facing_type", "u_program_office": "program_office", 
+        "u_dhs_hva": "dhs_hva","u_fisma_catagory": "fisma_category", "u_iscm_waiver": "iscm_waiver", "u_notes": "notes", "u_public_facing": "public_facing", "u_database_type": "database_type", "u_csam_id": "csam_id",
+        "u_fips_199_security_categorization_overall": "fips_199_security_categorization_overall",  "u_system_security_officer_isso": "system_security_officer_isso","u_notificationsent_14days": "notificationsent_14days", 
+        "u_mission_essential_system_mes": "mission_essential_system_mes", "u_choice_1": "fisma_inventory_selc_status", "u_inventory_system": "fisma_name", "u_cfo_designated": "cfo_designated", "u_internal_selc_status": "internal_selc_status",
+        "u_current_ato_granted": "current_ato_granted", "u_system_owner": "system_owner", "u_security_support_portfolio": "security_support_portfolio", "u_privacy_designated": "privacy_designated", "u_investment_name": "investment_name"
+    }    
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["initial_ato_date", "current_ato_granted"]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["sys_updated_on", "sys_created_on"]    
+    df = dataQualityUtils.clean_timestamp_fields(df, cols)
+
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["csam_id"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+   
+    #Rename id fields referecing other tables
+    map = {
+            "program_office": "program_office_id", "risk_analyst_team_lead_ratl": "risk_analyst_team_lead_ratl_id", 
+           "sam": "sam_id", "system_security_officer_isso": "system_security_officer_isso_id", "system_owner": "system_owner_id"
+        }
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Apply DQ3: Normalize boolean fields 
+    cols = ["active", "notificationsent_14days"]
+    df = dataQualityUtils.normalize_boolean_fields(df, cols)
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["csam_id"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = [ "sys_id", "fisma_id", "fisma_name", "acronym"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = [ "sys_id", "fisma_id", "fisma_name"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+    
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    logger.info("Loading processed data to destination...")
+    dataset = "FISMADetails"
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##    
+
+def process_program(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of the SNOW program 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_PROGRAM"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+    
+
+    target_columns = [ "u_lead_pm",	"u_name", "sys_id",	"sys_updated_by", "u_acronym", "u_agency", "sys_created_on", "u_in_use", "sys_mod_count", "sys_updated_on", "sys_tags", "sys_created_by"]
+                                      
+
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+    
+    map = {"u_lead_pm": "lead_pm", "u_name": "name", "u_acronym": "acronym", "u_agency": "agency", "u_in_use": "in_use"  }
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["sys_created_on", "sys_updated_on"]    
+    df = dataQualityUtils.clean_timestamp_fields(df, cols)
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["sys_mod_count"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+    #Apply DQ3: Normalize boolean fields 
+    cols = ["in_use"]
+    df = dataQualityUtils.normalize_boolean_fields(df, cols)
+   
+    #Rename id fields referecing other tables
+    df = dataQualityUtils.rename_fields(df, {"lead_pm": "lead_pm_id", "agency": "agency_id"} )
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["name"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    #Apply DQ1 & Q: Not nullabe
+    cols = ["sys_id"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 Q: No duplicates, quarantine if any
+    cols = ["sys_id" ]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    logger.info("Loading processed data to destination...")
+    dataset = "PROGRAM"
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+  
+def process_sys_user(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of SNOW sys_user table
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+    logger.info(f"Fetching data from landing zone...") 
+    
+    # Creating variables and the dataframe
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_SYS_USER"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    # Apply DQ10 : Validate and clean name
+    cols = ["name"]
+    df, invalid_name_quarantine = dataQualityUtils.clean_name_fields(df, cols)
+
+    # #Apply DQ11 : Validate and clean email
+    cols = ["email"]
+    df, invalid_email_warning = dataQualityUtils.clean_email_fields(df, cols) 
+ 
+    #Apply DQ1 & Q: Not nullabe
+    cols = ["sys_id", "name"]
+    df, not_null_quarantine = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 Q: No duplicates, quarantine if any
+    cols = ["sys_id" ]
+    df, dups_quarantine = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    #Merge quarantine dataframes
+    quarantine_df = pd.concat([invalid_name_quarantine, not_null_quarantine, dups_quarantine ], ignore_index=True)
+
+    #Merge warning dataframes
+    warning_df = pd.concat([invalid_email_warning ], ignore_index=True)
+
+    logger.info("Loading processed data to destination...")
+    dataset = "SYS_USER"
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+    # ##
+
+def process_request(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of SNOW SC_REQUEST 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None    
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_REQUEST"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+    #Rename fields:
+    map = {
+        "u_itsr_type": "itsr_type", "u_justification": "justification", "u_requisition_number": "requisition_number", "u_external_reference": "external_reference", "u_yn_associated_project": "yn_associated_project", 
+    }    
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["due_date"]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["sys_updated_on", "sys_created_on", "approval_set"]    
+    df = dataQualityUtils.clean_timestamp_fields(df, cols)
+
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["priority", "urgency"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+    #Apply DQ9: Convert columns to float/decimal 
+    cols = ["price"]
+    df = dataQualityUtils.clean_float_fields(df, cols)
+
+    #Rename id fields referecing other tables
+    map = {"requested_for": "requested_for_id"        }
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Apply DQ3: Normalize boolean fields 
+    cols = ["active", "yn_associated_project"]
+    df = dataQualityUtils.normalize_boolean_fields(df, cols)
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["stage"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+      #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = [ "sys_id", "number", "price" ]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = [ "sys_id", "number"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+    
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    logger.info("Loading processed data to destination...")
+    dataset = "REQUEST"
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)   
+    # ##
+
+def process_weakness_tracking(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of SNOW WEAKNESS_TRACKING 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None   
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_WEAKNESS_TRACKING"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+    target_columns = [   
+        "reason", "sys_updated_on", "concurrence_status", "ssl", "risk_accepted", "number", "sys_updated_by", 
+        "solution", "sys_created_on", "state", "weakness_type", "root_cause_analysis", "sys_created_by", "fisma_acronym", 
+        "end_first_discovered", "cpe_version", "port", "required_poam", "fisma_inventory_selc_status", "identified_date", 
+        "work_notes", "fisma_system", "poa_m_id", "total_findings", "stig_cis_benchmark", "description", "rca_description", 
+        "title", "final_capture_date", "isvms", "isvm", "sys_id", "baselined", "cve", "starting_first_discovered", "cat", 
+        "u_800_53_control", "cost_to_remediate", "kev", "severity", "cpe_product", "sys_mod_count", "cpe_type_vendor", 
+        "finding_type", "sys_tags", "additional_comments", "security_support_portfolio", "poa_m_date_reached", "skip_poam", 
+        "control_family", "plugin", "poa_m_target_date", "mitigated_findings" 
+    ]
+    logger.info("Selecting target columns...")
+    df = dataQualityUtils.select_fields(df, target_columns)
+
+    #Rename fields:
+    map = {"u_800_53_control": "800_53_control"}    
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["final_capture_date", "identified_date", "poa_m_target_date"]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["sys_updated_on", "sys_created_on"]    
+    df = dataQualityUtils.clean_timestamp_fields(df, cols)
+
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["cat", "mitigated_findings", "port", "sys_mod_count", "total_findings"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+
+    #Rename id fields referecing other tables
+    map = {"fisma_system": "fisma_system_id", "800_53_control": "nist_800_53_control"}
+    df = dataQualityUtils.rename_fields(df, map)
+
+    #Apply DQ3: Normalize boolean fields 
+    cols = ["baselined", "isvm", "kev", "poa_m_date_reached", "required_poam", "risk_accepted", "skip_poam", "ssl"]
+    df = dataQualityUtils.normalize_boolean_fields(df, cols)
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["fisma_acronym", "security_support_portfolio", "weakness_type"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+      #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = [ "sys_id", "number", "fisma_system_id", "state",  ]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = [ "sys_id", "number"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+    
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    dataset = "WEAKNESS_TRACKING"
+
+    # logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)   
+    # ##
+
+def process_isvm(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of SNOW ISVM dataset
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # Creating variables and the dataframe
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_ISVM"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone")
+
+
+    #Replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    #Apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["acknowledgement_due_date", "compliance_due_date", "release_date"]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
+
+    #Apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["sys_updated_on", "sys_created_on"]    
+    df = dataQualityUtils.clean_timestamp_fields(df, cols)
+
+
+    #Apply DQ4: Convert numeric columns to Integer 
+    cols = ["sys_mod_count"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+    #Apply DQ3: Normalize boolean fields 
+    cols = ["acknowledgement_required", "compliance_response_required"]
+    df = dataQualityUtils.normalize_boolean_fields(df, cols)
+
+    #Apply DQ5: Remove HTML tags.  
+    cols = ["patch_numbers", "products_and_versions_affected"]
+    df = dataQualityUtils.remove_html_tags(df, cols)
+
+    #Apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["vendor"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+      #Apply DQ1 & Q: Not nullabe, Quarantine
+    cols = [ "sys_id", "isvm_type", "number", "severity"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    #Apply DQ0 & Q: No duplicates & Quarantine
+    cols = [ "sys_id", "number"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    #Merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+    
+    #warning df
+    warning_df = not_nullable_warning.copy()
+
+    dataset = "ISVM"
+
+    # logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+    # #....for testing ... #
+    # load_to_test(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)   
+    # ##
+
+def process_change_request(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles  data cleaning and enrichement of SNOW CHANGE_REQUEST 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None  
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # create variables
+    prefix = "raw_data/SNOW/"
+    change_request_base_name = prefix + "CRMA_HIVE_SNOW_CHANGE_REQUEST"
+    fismadetails_assc_base_name = prefix + "CRMA_HIVE_SNOW_M2M_CHANGE_REQUEST_TO_FISMADetails_ASSC"
+    configuration_item_assc_base_name = prefix + "CRMA_HIVE_SNOW_M2M_CHANGE_REQUEST_TO_CONFIGURATION_ITEM_ASSC"
+
+    # create a dataframe for each raw file
+    if backfill_date:
+        change_request_df = rw_util.fetch_file_by_date(bucket_name, prefix, change_request_base_name, backfill_date, "PARQUET")
+        fismadetails_assc_df = rw_util.fetch_file_by_date(bucket_name, prefix, fismadetails_assc_base_name, backfill_date, "PARQUET")
+        configuration_item_assc_df = rw_util.fetch_file_by_date(bucket_name, prefix, configuration_item_assc_base_name, backfill_date, "PARQUET")
+    else:
+        change_request_df = rw_util.fetch_file_from_s3(bucket_name, prefix, change_request_base_name, "PARQUET")
+        fismadetails_assc_df = rw_util.fetch_file_from_s3(bucket_name, prefix, fismadetails_assc_base_name, "PARQUET")
+        configuration_item_assc_df = rw_util.fetch_file_from_s3(bucket_name, prefix, configuration_item_assc_base_name, "PARQUET")
+
+    # check if one or more dataframes are none
+    if change_request_df is None or fismadetails_assc_df is None or configuration_item_assc_df is None :
+        raise ValueError("No data fetched from landing zone for one or more sources.")
+    
+    # merge change_request_df to fismadetails_assc_df
+    combined_df = pd.merge(change_request_df, fismadetails_assc_df, left_on="sys_id", right_on="u_change_request", how='left')
+    
+    # merge combined_df to configuration_item_assc_df
+    combined_df = pd.merge(combined_df, configuration_item_assc_df, left_on="sys_id", right_on="task", how='left')
+
+    # drop join columns    
+    combined_df = combined_df.drop(columns=['task', 'u_change_request'])
+
+    # rename fields:
+    map = {"u_application_release": "application_release",  "u_approvap_path": "approvap_path", "u_communication_plan": "communication_plan", 
+           "u_cots_version_upgrade_info": "cots_version_upgrade_info", "u_cots_version_upgrade": "cots_version_upgrade", "u_front_end": "front_end", 
+           "u_ic_notification": "ic_notification", "u_is_this_related_to_another_cr": "is_this_related_to_another_cr", 
+           "u_isso_recommendation": "isso_recommendation", "justification": "request_reason", "u_justification": "justification", "u_outage": "outage", 
+           "u_post_implementation_test_plan": "post_implementation_test_plan", "u_staging_testing_environment_verified": "staging_testing_environment_verified", 
+           "u_submitted_date": "submitted_date"} 
+    df = dataQualityUtils.rename_fields(combined_df, map)
+
+    # replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    # apply DQ2:Standardize date columns to ISO 8601 format
+    cols = ["cab_date"]    
+    df = dataQualityUtils.clean_date_fields(df, cols)
+
+    # apply DQ6:Standardize timestamp to ISO 8601 timestamp format 
+    cols = ["start_date", "submitted_date", "sys_updated_on", "sys_created_on", "closed_at", "end_date"]    
+    df = dataQualityUtils.clean_timestamp_fields(df, cols)
+
+    # apply DQ4: Convert numeric columns to Integer 
+    cols = ["impact", "priority", "state"]
+    df = dataQualityUtils.clean_int_fields(df, cols)
+
+    # rename id fields referecing other tables
+    map = {"assigned_to":"assigned_to_id", "assignment_group": "assignment_group_id", "ci_item": "configuration_items_id", 
+           "location":"location_id", "opened_by": "opened_by_id", "requested_by": "requested_by_id", 
+           "u_fisma_inventory": "fismadetails_id"}
+    df = dataQualityUtils.rename_fields(df, map)
+
+    # apply DQ3: Normalize boolean fields 
+    cols = ["application_release","front_end", "ic_notification", "is_this_related_to_another_cr", "outage", "staging_testing_environment_verified"]
+    df = dataQualityUtils.normalize_boolean_fields(df, cols)
+
+    # apply DQ1 & W: Not nullabe, Warnning 
+    cols = ["description", "impact", "implementation_plan", "request_reason", "location_id", "requested_by_id", "risk", 
+            "risk_impact_analysis", "short_description", "test_plan", "type", "post_implementation_test_plan"]
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    # apply DQ1 & Q: Not nullabe, Quarantine
+    cols = [ "sys_id", "number", "state"]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    # apply DQ0 & Q: No duplicates & Quarantine
+    cols = [ "sys_id", "number"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    # merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+    
+    # warning df
+    warning_df = not_nullable_warning.copy()
+
+    dataset = "CHANGE_REQUEST"
+
+    logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+def process_configuration_item(bucket_name: str, backfill_date: Optional[str] = None) -> None:
+    """
+    Handles data cleaning and enrichement of SNOW CONFIGURATION_ITEM 
+    
+    In backfill mode, fetch the file whose name contains the backfill date and 
+    overwrite existing file in /processed prefix.
+    
+    Parameters:
+        bucket_name (str): Name of S3 bucket containing raw and processed integration files
+        backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
+
+    Returns:
+        None     
+    """
+    logger.info(f"Fetching data from landing zone...")
+    
+    # create variables
+    prefix = "raw_data/SNOW/"
+    base_name = prefix + "CRMA_HIVE_SNOW_CONFIGURATION_ITEM"
+
+    if backfill_date:
+        df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+    else:
+        df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+
+
+    if df is None:
+        raise ValueError("No data fetched from landing zone.")
+
+    # replace '', 'NULL', 'NA' values with null
+    df.replace(['', 'NULL', 'NA'], pd.NA, inplace=True)
+
+    # apply DQ1 & W: Not nullabe, Warnning 
+    cols = []
+    not_nullable_warning = dataQualityUtils.apply_not_nullable_w_constraint(df, cols)
+
+    # apply DQ1 & Q: Not nullabe, Quarantine
+    cols = [ "sys_id", "name" ]
+    df, quarantine_not_null = dataQualityUtils.apply_not_nullable_q_constraint(df, cols)
+
+    # apply DQ0 & Q: No duplicates & Quarantine
+    cols = [ "sys_id"]
+    df, quarantine_dups = dataQualityUtils.apply_no_duplicates_constraint(df, cols)
+
+    # merge quarantine dataframes
+    quarantine_df = pd.concat([quarantine_not_null, quarantine_dups], ignore_index=True)
+    
+    # #warning df
+    warning_df = not_nullable_warning.copy()
+
+    dataset = "CONFIGURATION_ITEM"
+
+    logger.info("Loading processed data to destination...")
+    load_to_processed(bucket_name, dataset, df, quarantine_df, warning_df, backfill_date)
+
+def run_backfill_mode(bucket_name: str, hist_table_name: str, backfill_date: str, datasets: list) -> None:
     """
     Executes backfill processing for explicilty specified datasts relevant to a specific historical table.
 
     Parameters:
-        engine (str): SQLalchemy engine
-        schema (str): The database schema in which data is loaded.
         bucket_name (str): Name of S3 bucket containing raw and processed integration files
         hist_table_name (str): Name of Historical table in database (e.g., crma_hive_poam_audit_controls_hist)
         backfill_date (str): Date string used to find which integraiton source file to re-process (e.g., 121525)
@@ -118,35 +1464,69 @@ def run_backfill_mode(engine: Engine, schema: str, bucket_name: str, hist_table_
     if not datasets:
         logger.error(F"No dataset specified for backfill for {hist_table_name}!")
         raise
-
-    # enforce valid tables in datasets list when running in backfill mode
-    valid_datasets = [t for t in datasets if t in VALID_TABLES]
-
-    if len(valid_datasets) != len(datasets):
-        invalid_tables = set(datasets) - set(valid_datasets)
-        logger.warning(f"Invalid tables ignored: {invalid_tables}. Valid tables used: {valid_datasets}")
-        datasets = valid_datasets
-    else:
-        logger.info(f"All {len(datasets)} tables in dataset are valid")
-
-    if not datasets:
-        logger.warning(F"No AXONIUS tables found!")
-
-    for dataset in datasets:
-        load_data_to_db(engine, bucket_name, dataset, schema, backfill_date)
     
+    for dataset in datasets:
+        dataset_upper = dataset.upper().strip()
+
+        # call processors with backfill_date
+        if dataset_upper == "SNOW_POAM_DATA":
+            logger.info("Processing POAM_DATA (in backfill mode)")
+            process_poam_data(bucket_name, backfill_date)
+            utility.log_memory_usage() 
+
+        if dataset_upper == "SNOW_POAM_AUDIT":
+            logger.info("Processing POAM_AUDIT (in backfill mode)")
+            process_poam_audit(bucket_name, backfill_date)
+            utility.log_memory_usage() 
+
+        if dataset_upper == "SNOW_FISMADETAILS":
+            logger.info("Processing FISMADetails (in backfill mode)")
+            process_fisma_details(bucket_name, backfill_date)
+            utility.log_memory_usage() 
+
+        if dataset_upper == "SNOW_PROGRAM":
+            logger.info("Processing PROGRAM (in backfill mode)")
+            process_program(bucket_name, backfill_date)            
+            utility.log_memory_usage() 
+
+        if dataset_upper == "SNOW_SYS_USER":
+            logger.info("Processing SYS_USER (in backfill mode)")
+            process_sys_user(bucket_name, backfill_date) 
+            utility.log_memory_usage()            
+
+        if dataset_upper == "SNOW_REQUEST":
+            logger.info("Processing REQUEST (in backfill mode)")
+            process_request(bucket_name, backfill_date)
+            utility.log_memory_usage()              
+
+        if dataset_upper == "SNOW_WEAKNESS_TRACKING":
+            logger.info("Processing WEAKNESS_TRACKING (in backfill mode)")
+            process_weakness_tracking(bucket_name, backfill_date)            
+            utility.log_memory_usage()  
+
+        if dataset_upper == "SNOW_ISVM":
+            logger.info("Processing ISVM (in backfill mode)")
+            process_isvm(bucket_name, backfill_date)            
+            utility.log_memory_usage() 
+
+        if dataset_upper == "SNOW_CHANGE_REQUEST":
+            logger.info("Processing CHANGE_REQUEST (in backfill mode)")
+            process_change_request(bucket_name, backfill_date)            
+            utility.log_memory_usage() 
+
+        if dataset_upper == "SNOW_CONFIGURATION_ITEM":
+            logger.info("Processing CONFIGURATION_ITEM (in backfill mode)")
+            process_configuration_item(bucket_name, backfill_date)            
+            utility.log_memory_usage() 
 
 def main():
     start_time = time.time()
+    utility.log_memory_usage() 
 
-    engine = connection.postgres_engine("edae-crma-hive")
-    
     bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
 
     if not bucket_name:
        raise ValueError("S3 bucket not found!")
-    
-    schema = MAIN_SCHEMA
 
     # resolve workflow run properties
     workflow_params = utility.get_workflow_props()
@@ -157,20 +1537,344 @@ def main():
     # run in backfill mode if all backfill properties are present
     backfill_mode = bool(backfill_date and hist_table_name)
 
+
     if backfill_mode:
-        schema = BACKFILL_SCHEMA
-        run_backfill_mode(engine, schema, bucket_name, hist_table_name, backfill_date, datasets)     
+        run_backfill_mode(bucket_name, hist_table_name, backfill_date, datasets)
     else:
-        logger.info(f"Running in Normal mode.")  
-        datasets = [TABLE_CRMA_HIVE_AXONIUS_DEVICES, TABLE_CRMA_HIVE_AXONIUS_SOFTWARE]
-        for dataset in datasets:
-            load_data_to_db(engine = engine, bucket_name = bucket_name, dataset=dataset, schema=schema, backfill_date=backfill_date)
-        
-    utility.log_memory_usage() 
+        logger.info(f"Running in Normal mode.")
+
+        logger.info("Processing POAM_DATA")
+        process_poam_data(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing POAM_AUDIT")
+        process_poam_audit(bucket_name)
+        utility.log_memory_usage()
+
+        logger.info("Processing FISMADetails")
+        process_fisma_details(bucket_name)
+        utility.log_memory_usage()    
+
+        logger.info("Processing PROGRAM")
+        process_program(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing SYS_USER")
+        process_sys_user(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing REQUEST")
+        process_request(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing WEAKNESS_TRACKING")
+        process_weakness_tracking(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing ISVM")
+        process_isvm(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing CHANGE_REQUEST")
+        process_change_request(bucket_name)
+        utility.log_memory_usage() 
+
+        logger.info("Processing CONFIGURATION_ITEM")
+        process_configuration_item(bucket_name)
+        utility.log_memory_usage() 
 
     elapsed_minutes = (time.time() - start_time)/60
     logger.info(f'Complete. Total elapsed time : {elapsed_minutes}')
 
+if __name__ == "__main__":
+    main()
 
+import logging
+from datetime import datetime
+from crma_hive_connections import Connection
+from crma_hive_utilities import Read_Write_Utility, Utility
+from crma_hive_snow_etl_manager import CrmaHiveSnowETLManager
+
+# Setting up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Instantiate classes
+connection = Connection()
+rw_util = Read_Write_Utility()
+utility = Utility()
+
+# Define variables
+MAIN_SCHEMA = rw_util.MAIN_SCHEMA
+BACKFILL_SCHEMA = rw_util.BACKFILL_SCHEMA
+STEP_COMPLIANT_TABLES = "create_compliant_tables"
+STEP_TRUNCATE_LOAD_TABLES = "truncate_load_tables"
+QUARANTINE_SUFFIX="_QUARANTINE"
+WARNING_SUFFIX="_WARNING"
+TABLE_CRMA_HIVE_SNOW_FISMADETAILS = "CRMA_HIVE_SNOW_FISMADetails"
+TABLE_CRMA_HIVE_SNOW_POAM_DATA = "CRMA_HIVE_SNOW_POAM_DATA"
+TABLE_CRMA_HIVE_SNOW_POAM_AUDIT = "CRMA_HIVE_SNOW_POAM_AUDIT"
+TABLE_CRMA_HIVE_SNOW_PROGRAM = "CRMA_HIVE_SNOW_PROGRAM"
+TABLE_CRMA_HIVE_SNOW_SYS_USER = "CRMA_HIVE_SNOW_SYS_USER"
+TABLE_CRMA_HIVE_SNOW_REQUEST = "CRMA_HIVE_SNOW_REQUEST"
+TABLE_CRMA_HIVE_SNOW_WEAKNESS_TRACKING = "CRMA_HIVE_SNOW_WEAKNESS_TRACKING"
+TABLE_CRMA_HIVE_SNOW_ISVM = "CRMA_HIVE_SNOW_ISVM"
+TABLE_CRMA_HIVE_SNOW_CHANGE_REQUEST = "CRMA_HIVE_SNOW_CHANGE_REQUEST"
+TABLE_CRMA_HIVE_SNOW_CONFIGURATION_ITEM = "CRMA_HIVE_SNOW_CONFIGURATION_ITEM"
+VALID_TABLES = {
+    TABLE_CRMA_HIVE_SNOW_FISMADETAILS,
+    TABLE_CRMA_HIVE_SNOW_POAM_DATA,
+    TABLE_CRMA_HIVE_SNOW_POAM_AUDIT,
+    TABLE_CRMA_HIVE_SNOW_PROGRAM,
+    TABLE_CRMA_HIVE_SNOW_SYS_USER,
+    TABLE_CRMA_HIVE_SNOW_REQUEST,
+    TABLE_CRMA_HIVE_SNOW_WEAKNESS_TRACKING,
+    TABLE_CRMA_HIVE_SNOW_ISVM,
+    TABLE_CRMA_HIVE_SNOW_CHANGE_REQUEST,
+    TABLE_CRMA_HIVE_SNOW_CONFIGURATION_ITEM,
+}
+
+FISMA_GROUP = {
+    TABLE_CRMA_HIVE_SNOW_FISMADETAILS,
+    TABLE_CRMA_HIVE_SNOW_POAM_DATA,
+    TABLE_CRMA_HIVE_SNOW_POAM_AUDIT
+}
+
+def build_load_config(schema: str, datasets: list[str], backfill_mode: bool =False) -> dict[str, dict]:
+    """
+    Dynamically generate load configuration payload based on input dataset
+    
+    The load configuration determines: tables to proccess, views to refresh, and steps or actions to execute for each group of tables
+    If step includes enforcing FK constraint then add constraint mappings and compliant step to filter out orphan records before loading records.
+
+    Parameters:
+        datasets: list of table names to process
+        backfill_mode: Boolean flag. When false, forces all sections to be returned. When True, uses condiditonal logic to generate payload for backfill workflow.
+
+    Return:
+        load_config: dictionary containing dynamically generated load configuration
+    """
+    logger.info(f"Buliding LOAD_CONFIG for dataset: {datasets}, backfill_mode: {backfill_mode}")
+
+    # add CRMA_HIVE prefix to all tables in datasets
+    if backfill_mode:
+        datasets = [f"CRMA_HIVE_{table}" for table in datasets]
+
+    # enforce valid tables in datasets list
+    valid_datasets = [t for t in datasets if t in VALID_TABLES]
+
+    if len(valid_datasets) != len(datasets):
+        invalid_tables = set(datasets) - set(valid_datasets)
+        logger.warning(f"Invalid tables ignored: {invalid_tables}. Valid tables used: {valid_datasets}")
+        datasets = valid_datasets
+    else:
+        logger.info(f"All {len(datasets)} tables in dataset are valid")
+
+    if not datasets:
+        logger.warning("No SNOW tables found!")
+        return {}
+
+    dataset_set = set(datasets)
+
+    # check if fisma group should be completed
+    has_fisma_tables = bool(dataset_set & FISMA_GROUP)
+    if has_fisma_tables:
+        logger.info("FISMA tables detected. Adding all FISMA group tables to QUARANTINE/WARNING")
+        quarantine_warning_tables = list(dataset_set | FISMA_GROUP)
+    
+    # dynamically build load_config 
+    load_config = {}
+
+    # CLEAN_1 group: add group if dataset contains any of the three tables in FISMA group. Always add group if not running in backfill mode.
+    if not backfill_mode or has_fisma_tables:
+        if backfill_mode:
+            logger.info(f"Include CLEAN_1 section (FISMA group detected)")
+        load_config["CLEAN_1"] = {
+            "prefix": "processed/SNOW/CLEAN/",
+            "schema": schema,
+            "tables": list(FISMA_GROUP),
+            "steps": [STEP_COMPLIANT_TABLES, STEP_TRUNCATE_LOAD_TABLES],
+            "refresh_mvs": [],
+            "constraints": {
+                TABLE_CRMA_HIVE_SNOW_POAM_DATA: {
+                    "child_table": TABLE_CRMA_HIVE_SNOW_POAM_DATA,
+                    "parent_table": TABLE_CRMA_HIVE_SNOW_FISMADETAILS,
+                    "child_fk_column": "fisma_name_id",
+                    "parent_pk_column": "sys_id"
+
+                },
+                TABLE_CRMA_HIVE_SNOW_POAM_AUDIT: {
+                    "child_table": TABLE_CRMA_HIVE_SNOW_POAM_AUDIT,
+                    "parent_table": TABLE_CRMA_HIVE_SNOW_POAM_DATA,
+                    "child_fk_column": "csam_poam_data_id",
+                    "parent_pk_column": "sys_id"
+                }
+            },
+        }
+    else:
+        logger.info("CLEAN_1 section excluded (no FISMA tables detected)")
+
+    # CLEAN_2 group: add group if dataset contains table not in FISMA group. Always add group if not running in backfill mode.
+    has_other_tables = bool(dataset_set - FISMA_GROUP)
+    if not backfill_mode or has_other_tables:
+        other_tables = list(dataset_set - FISMA_GROUP)
+        if backfill_mode:
+            logger.info(f"Include CLEAN_2 section with {len(other_tables)} tables: {list(other_tables)}")
+        load_config["CLEAN_2"] = {
+                "prefix": "processed/SNOW/CLEAN/",
+                "schema": schema,
+                "tables": other_tables,
+                "steps": [STEP_TRUNCATE_LOAD_TABLES],
+                "refresh_mvs": []
+        }
+    else:
+        logger.info("Exclude CLEAN_2 section (no other tables detected)")    
+
+    # QUARANTINE group: add all tables in datasets with quarantine suffix
+    logger.info(f"Include QUARANTINE section with {len(datasets)} tables")
+    quarantine_tables = [f"{t}{QUARANTINE_SUFFIX}" for t in quarantine_warning_tables]
+    load_config["QUARANTINE"] = {
+        "prefix": "processed/SNOW/QUARANTINE/",
+        "schema": schema,
+        "tables": quarantine_tables,
+        "steps": [STEP_TRUNCATE_LOAD_TABLES]
+    }
+
+    # WARNING group: add all tables in datasets with warning suffix
+    logger.info(f"Include WARNING section with {len(datasets)} tables")
+    warning_tables = [f"{t}{WARNING_SUFFIX}" for t in quarantine_warning_tables]
+    load_config["WARNING"] = {
+        "prefix": "processed/SNOW/WARNING/",
+        "schema": schema,
+        "tables": warning_tables,
+        "steps": [STEP_TRUNCATE_LOAD_TABLES]
+    }    
+
+    logger.info(f"LOAD_CONFIG generated with {len(load_config)} sections")
+
+    return load_config
+
+def main():
+
+    schema = MAIN_SCHEMA
+    # set bucket and db client
+    bucket_name = connection.get_secret("edae-crma-hive")["lz_bucket_name"]
+    if not bucket_name:
+        ValueError("S3 bucket not found!")
+    engine = connection.postgres_engine("edae-crma-hive")
+    if not engine:
+        ValueError("SQLAlchemy database connection manager not found!")    
+    db_client = CrmaHiveSnowETLManager(engine)
+
+    ##Parallel loading##
+    engine2 = connection.postgres_engine("edae-crma-hive", "crmahivedb_fqt")
+    if not engine2:
+        ValueError("SQLAlchemy database connection manager not found!")    
+    db_client2 = CrmaHiveSnowETLManager(engine2)
+
+    # resolve workflow run properties
+    workflow_params = utility.get_workflow_props()
+    backfill_date = workflow_params.get("--backfill_date")
+    hist_table_name = workflow_params.get("--hist_table_name")
+    datasets = utility.parse_datasets_list( workflow_params.get("--datasets",""))
+
+    # run in backfill mode if all backfill properties are present
+    backfill_mode = bool(backfill_date and hist_table_name)
+    
+    if backfill_mode:
+        schema = BACKFILL_SCHEMA
+        logger.info(f"Running in BACKFILL mode.")
+        logger.info(f"Workflow Properties: hist_table={hist_table_name}, date={backfill_date}, datasets={datasets}")
+        # check valid backfill date format
+        if not utility.is_valid_backfill_date(backfill_date):
+            logger.error(f"Invalid backfill date! Expected date format is MMDDYY. Date provided is '{backfill_date}'.")
+            raise
+    else:
+        logger.info(f"Running in Normal mode.")
+        datasets = [ TABLE_CRMA_HIVE_SNOW_FISMADETAILS,
+        TABLE_CRMA_HIVE_SNOW_POAM_DATA,
+        TABLE_CRMA_HIVE_SNOW_POAM_AUDIT,
+        TABLE_CRMA_HIVE_SNOW_PROGRAM,
+        TABLE_CRMA_HIVE_SNOW_SYS_USER,
+        TABLE_CRMA_HIVE_SNOW_REQUEST,
+        TABLE_CRMA_HIVE_SNOW_WEAKNESS_TRACKING,
+        TABLE_CRMA_HIVE_SNOW_ISVM,
+        TABLE_CRMA_HIVE_SNOW_CHANGE_REQUEST,
+        TABLE_CRMA_HIVE_SNOW_CONFIGURATION_ITEM]
+
+    # dynamically generate db load configuration
+    LOAD_CONFIG = build_load_config(schema, datasets, backfill_mode)
+
+    # Iterate through each group in LOAD_CONFIG and run etl steps: CLEAN -> QUARANTINE -> WARNING
+    try:
+        for group_name, group_info in LOAD_CONFIG.items():
+            prefix = group_info["prefix"]
+            schema = group_info["schema"]
+            tables = group_info["tables"]
+            steps = group_info["steps"]
+            constraints = group_info.get("constraints",{})
+            refresh_mvs = group_info.get("refresh_mvs",[])
+            
+            logger.info(f"Started processsing {group_name} files.")
+
+            # fetch files from S3 for each table in group and capture record count metric
+            dataframes = {}
+            for table in tables:
+                base_name = f"{prefix}{table}"
+                if backfill_mode:
+                    df = rw_util.fetch_file_by_date(bucket_name, prefix, base_name, backfill_date, "PARQUET")
+                    df["etl_date"] = datetime.strptime(backfill_date, "%m%d%y").strftime("%Y-%m-%d")
+                else:
+                    df = rw_util.fetch_file_from_s3(bucket_name, prefix, base_name, "PARQUET")
+                    df["etl_date"] = datetime.now().strftime("%Y-%m-%d")
+                record_count = len(df)
+                logger.info(f"Fetched {record_count} rows for {group_name} {table} from S3.")
+                table = table.upper()
+                dataframes[table] = df
+                db_client.add_file_metrics(table, record_count)
+
+                ##Parallel loading##
+                db_client2.add_file_metrics(table, record_count) 
+
+            # Run ETL steps to process and load the tables
+            if tables:
+                db_client.run_steps(dataframes,schema,tables,steps,constraints,refresh_mvs, group_name)
+                logger.info(db_client.get_metrics())
+
+                ##Parallel loading##
+                db_client2.run_steps(dataframes,schema,tables,steps,constraints,refresh_mvs, group_name)
+
+
+            else:
+                logger.warning(f"No tables found in group: {group_name}")
+
+    finally:
+        db_client.close() 
+        #Parallel loading##
+        db_client2.close()
+
+    metrics = db_client.get_metrics()
+
+    # run load validaiton checks - if we have orhphan records then we will want to adjust the count for the table being validated 
+    for table, file_count in metrics["files"].items():
+        base_table_count = metrics["main"].get(table) if metrics["main"].get(table) else 0
+        if "QUARANTINE" in table:
+            # if validation run on quarantine table then subtract orphan records from quarantine table
+            constraint_violation_count =  metrics["constraint_violations"].get(f"{table}") if metrics["constraint_violations"].get(f"{table}") else 0
+            adjusted_base_table_count = base_table_count - constraint_violation_count
+        else:
+            # if validation run on non-quarantine table then add orphan records to table
+            constraint_violation_count =  metrics["constraint_violations"].get(f"{table}{QUARANTINE_SUFFIX}") if metrics["constraint_violations"].get(f"{table}{QUARANTINE_SUFFIX}") else 0
+            adjusted_base_table_count = base_table_count + constraint_violation_count
+        if adjusted_base_table_count == file_count:
+            logger.info(f"Post load validation check passed for {table}.")
+        else:
+            logger.error(f"Post load validation check failed for {table}! File contains {file_count} records but {adjusted_base_table_count} records loaded into base tables!")
+            metrics["hasETLError"] = True
+    
+    if metrics["hasETLError"]:
+        raise RuntimeError("Load script failed one or more processing steps! Check logs for details!")
+
+    logger.info(f"Succesfully loaded all files!")
 if __name__ == "__main__":
     main()

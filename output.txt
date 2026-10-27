@@ -1,50 +1,56 @@
-- name: add env var SNOW_PASS
-  ansible.builtin.lineinfile:
-    path: /home/zzadmin/.bashrc
-    line: export SNOW_PASS={{ SNOW_PASS }}
-    insertafter: EOF
-    create: yes
-  become: true
-  become_user: zzadmin
+# use ansbile to copy the files/scripts into /home/zzadmin/scripts
 
-- name: add env var SNOW_USER
-  ansible.builtin.lineinfile:
-    path: /home/zzadmin/.bashrc
-    line: export SNOW_USER={{ SNOW_USER }}
-    insertafter: EOF
-    create: yes
+- name: Install python3.12
+  ansible.builtin.package:
+    name: python3.12
+    state: present
   become: true
-  become_user: zzadmin
 
-- name: add env var CSAM_BETA_API_TOKEN
-  ansible.builtin.lineinfile:
-    path: /home/zzadmin/.bashrc
-    line: export CSAM_BETA_API_TOKEN={{ CSAM_BETA_API_TOKEN }}
-    insertafter: EOF
-    create: yes
+- name: register python3.12 in alternatvies
+  community.general.alternatives:
+    name: python
+    path: /usr/bin/python3.12
+    link: /usr/bin/python
   become: true
-  become_user: zzadmin
 
-- name: add env var CSAM_PROD_API_TOKEN
-  ansible.builtin.lineinfile:
-    path: /home/zzadmin/.bashrc
-    line: export CSAM_PROD_API_TOKEN={{ CSAM_PROD_API_TOKEN }}
-    insertafter: EOF
-    create: yes
+- name: set python3.12
+  ansible.builtin.command: alternatives --set python /usr/bin/python3.12
   become: true
-  become_user: zzadmin
 
-- name: add env var BRANCH_NAME
-  ansible.builtin.lineinfile:
-    path: /home/zzadmin/.bashrc
-    line: export BRANCH_NAME={{ branch_name }}
-    insertafter: EOF
-    create: yes
+- name: print python version
+  ansible.builtin.command: python -V
+  register: output
+
+- name: print python version
+  debug:
+    var: output.stdout
+
+- name: ensure pip
+  ansible.builtin.command: python -m ensurepip --upgrade
+
+- name: upgrade pip
+  ansible.builtin.command: python -m pip install -U pip
+
+- name: Install botocore and boto3 so we can use ansible s3 module
+  ansible.builtin.command: python -m pip install botocore boto3
+
+- name: create /opt/local
+  file:
+    path: /opt/local
+    state: directory
+    owner: zzadmin
+    group: zzadmin
+    mode: '0755'
   become: true
-  become_user: zzadmin
 
-- name: Copy deploy key
+- name: Copy scripts
   ansible.builtin.copy:
-    src: csam_python_sdk_deploy
-    dest: /home/zzadmin/.ssh/csam_python_sdk_deploy
-    mode: '0600'
+    src: files/scripts/
+    dest: /opt/local/scripts/
+    mode: '0755'
+
+- name: Create .venv in /opt/local
+  ansible.builtin.command: python -m venv /opt/local/.venv
+
+- name: Install requirements
+  ansible.builtin.command: /opt/local/.venv/bin/python -m pip install -r /opt/local/scripts/requirements.txt

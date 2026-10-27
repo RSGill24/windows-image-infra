@@ -1,18 +1,34 @@
-roles:
-- src: git+https://github.ice.dhs.gov/M-A/register_agents_rhel8.git
-  name: register_agents
-  version: main
-  scm: git
-- src: git+https://github.ice.dhs.gov/M-A/aide-update.git
-  name: aide_update
-  version: main
-- src: git+https://github.ice.dhs.gov/M-A/install_syft.git
-  version: main
-  scm: git
-- src: git+https://github.ice.dhs.gov/M-A/generate_sbom.git
-  version: main
-  scm: git
-- src: git+https://github.ice.dhs.gov/M-A/AddNessusScanUser.git
-  name: AddNessusScanUser
-  version: main
 
+$TPA {{type}}_{{trim_date}}_Plgn_{{plugins[0] if plugins|length == 1 else plugins[0]+"+"}}: {{plugin_name}} 
+
+
+
+<a href="{{link}}" target="_blank">{{link_text}}</a>
+
+
+
+<strong>What:</strong> {{methods_and_objects}}<br>
+<br><strong>RCA:</strong> {{root_cause_analysis}}<br>
+<br><strong>Where:</strong> {{source}}<br>
+<br><strong>Date Discovered:</strong> {{date_discovered}}<br>
+
+
+
+<strong>What:</strong> {{what}}<br><br>
+<strong>RCA:</strong> {{root_cause_analysis}}<br><br>
+<strong>Where:</strong> {{source}}<br><br>
+<strong>Plugin:</strong> {{plugins|join(", ") if plugins else "N/A"}}<br><br>
+<strong>Port:</strong> {{ports|join(", ") if ports else "N/A"}}<br><br>
+<strong>Date Discovered:</strong> {{date_discovered}}<br><br>
+<strong>Recommended Fix Action:</strong> {{solutions|join("<br>")}}<br><br>
+<strong>Assests being Affected:</strong> See Attached Asset Spreadsheet. Number of assets affected: {{asset_count}}<br>
+
+
+
+<strong>What:</strong> {{what}}<br>
+<br><strong>RCA:</strong> {{root_cause_analysis}}<br>
+<br><strong>Where:</strong> {{source}}<br>
+<br><strong>Plugin:</strong> {{plugins|join(", ") if plugins else "N/A"}}<br>
+<br><strong>Date Discovered:</strong> {{date_discovered}}<br>
+<br><strong>Recommended Fix Action:</strong> {{solution}}<br>
+<br><strong>Assests being Affected:</strong> {{assets|join(", ")}}

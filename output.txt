@@ -1,101 +1,311 @@
-- name: Ensure /tmp/logs exists
-  ansible.builtin.file:
-    path: /tmp/logs
-    state: directory
-    mode: '0755'
+@Library('maa-shared-lib@develop') _
 
-- name: Run Free to track memory usage with timestamp
-  ansible.builtin.shell: |
-    nohup bash -c 'free -m -s 10 | while IFS= read -r line; do
-    printf "%s %s\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$line"
-    done >> /tmp/logs/free.log 2>&1 &'
-  args:
-    executable: /bin/bash
-  become: true
+import java.time.*
+import java.time.format.DateTimeFormatter
 
-- name: Script block
-  block:
-  - name: Run Poam Creation Automation
-    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_create.py
-    register: output_create
+def now = LocalDateTime.now()
+def VaultCredentialID = 'sara_vault_approle'
+def VaultOrganization = 'sara'
+def VaultURL = 'https://vault.aws.ice.dhs.gov'
+def vaultConfig = [
+        $class           : 'VaultConfiguration',
+        vaultUrl         : "${VaultURL}",
+        vaultCredentialId: "${VaultCredentialID}",
+        engineVersion    : 2
+]
 
-  - name: Run Poam Closure Automation
-    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_closure.py
-    register: output_close
+def secrets = [
+            [
+                $class: 'VaultSecret', path: "secret/${VaultOrganization}/service_accts", secretValues: [
+                [$class: 'VaultSecretValue', envVar: 'SNOW_USER', vaultKey: 'snow_user'],
+                [$class: 'VaultSecretValue', envVar: 'SNOW_PASS', vaultKey: 'snow_passwd'],
+                [$class: 'VaultSecretValue', envVar: 'CSAM_BETA_API_TOKEN', vaultKey: 'csam_beta_api_token'],
+                [$class: 'VaultSecretValue', envVar: 'CSAM_PROD_API_TOKEN', vaultKey: 'csam_prod_api_token'],
+                [$class: 'VaultSecretValue', envVar: 'gitToken', vaultKey: 'ro_jenkins_git_token'],
+                [$class: 'VaultSecretValue', envVar: 'nessus_scan_user', vaultKey: 'sara_compliance_scan_user'],
+                [$class: 'VaultSecretValue', envVar: 'nessus_scan_password', vaultKey: 'sara_compliance_scan_password'],
+            ]
+        ],
+        [
+                $class: 'VaultSecret', path: "secret/${VaultOrganization}/ad_info", secretValues: [
+                [$class: 'VaultSecretValue', envVar: 'ansible_zsuser', vaultKey: 'ansible_account'],
+                [$class: 'VaultSecretValue', envVar: 'ansible_zspassword', vaultKey: 'ansible_pw'],
+                [$class: 'VaultSecretValue', envVar: 'zs_account', vaultKey: 'ldapbind_account'],
+                [$class: 'VaultSecretValue', envVar: 'bind_password', vaultKey: 'ldapbind_pw'],
+                [$class: 'VaultSecretValue', envVar: 'ou_path', vaultKey: 'non_prod_ou'],
+                [$class: 'VaultSecretValue', envVar: 'group_list', vaultKey: 'admin_group'],
+                [$class: 'VaultSecretValue', envVar: 'nexus_account', vaultKey: 'nexus_account'],
+                [$class: 'VaultSecretValue', envVar: 'nexus_pw', vaultKey: 'nexus_pw']
+        ]
+        ],
+        [
+                $class: 'VaultSecret', path: "secret/${VaultOrganization}/ed25519", secretValues: [
+                [$class: 'VaultSecretValue', envVar: 'aws_certificate', vaultKey: 'sara_np_ed25519'],
+                [$class: 'VaultSecretValue', envVar: 'csam_python_sdk_deploy', vaultKey: 'csam_python_sdk_deploy']
+        ]
+        ],
+        [
+                $class: 'VaultSecret', path: "secret/managed/global/agent_install_playbook", secretValues: [
+                [$class: 'VaultSecretValue', envVar: 'vault_pass', vaultKey: 'password']
+        ]
+        ]
+]
 
-  - name: Run SNOW/CSAM RCA Poam Milestone Sync
-    ansible.builtin.shell: /opt/local/.venv/bin/python -u /opt/local/scripts/weakness_tracking_poams_update.py
-    register: output_sync
+def branch = env.BRANCH_NAME.replaceAll("/", "-")
+def IP_ADDR
+def INSTANCE_ID
+def scanresultid
+def instanceName = now.format(DateTimeFormatter.ofPattern("yyyy.MM.dd")) + "-" + env.BUILD_NUMBER
+currentBuild.displayName = instanceName
+def fullscap = false
+def IS_MAIN = (env.BRANCH_NAME == 'master' || env.BRANCH_NAME == 'main' || env.BRANCH_NAME.startsWith('PR-'))
+def build_number = (env.BRANCH_NAME == 'master' || env.BRANCH_NAME == 'main' ? env.BUILD_NUMBER.padLeft(3, '0') : env.BUILD_NUMBER.padLeft(3, '0') + UUID.randomUUID().toString()[-3..-1])
+def INSTANCE_ENVIRONMENT_TAG
+def branch_name = env.CHANGE_ID ? "${env.BRANCH_NAME}-${env.CHANGE_BRANCH}" : env.BRANCH_NAME
+def INSTANCE_IC_PLATFORM_TAG
+def BASE_AMI
+def reportName
+def liteReportName
+String permissionURL = "https://nexus2.ice.dhs.gov/repository/SDO_3RD_PARTY/gold/userperms.txt"
+def pedigreefile = "determinedlater"
+def pedigreeURL = "determinedlater"
+def artifacts
 
-  always:
-  - debug:
-      var: output_create
-  - debug:
-      var: output_close
-  - debug:
-      var: output_sync
+def dev_email  = 'jonathan.headley@associates.ice.dhs.gov'
+def rise_email = 'icecrmavaft@icegov.mail.onmicrosoft.com'
 
-  - name: Dump kernel ring buffer (dmesg)
-    shell: dmesg > /tmp/logs/dmesg.log
-    become: true
+// Subject builder
+def poamSubject(String status) {
+    return "Weakness Tracking Automated POAM Cloudbees Job ${status}"
+}
 
-  - name: Dump full journalctl
-    shell: journalctl --no-pager > /tmp/logs/journalctl.log
-    become: true
+// Email body builder
+def poamEmailBody(String status, String branchName) {
+    return """
+        <h2>Build ${status} Notification</h2>
+        <p>Check Cloudbees console output for details.<br><br>
+        Note: If error occurred within script, additional logs are available in AWS MAA-non prod account<br>
+        under S3 Bucket "sara-weakness-tracking/weakness_tracking_poam" with file name: logs_&ltdate&gt_${branchName}.zip</p>
+        <p><b>Job:</b> <a href=${env.BUILD_URL}>${env.JOB_NAME}/${env.BUILD_NUMBER}</a></p>
+        <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
+        <p><b>Status:</b> <span style='color:red;'>${status}</span></p>
+    """
+}
 
-  - name: Copy /var/log/messages
-    copy:
-      src: /var/log/messages
-      dest: /tmp/logs/messages.log
-      remote_src: yes
-    become: true
+def sendEmail(String status, String email, String branchName) {
+    def local_mime_type  = 'text/html'
+    def logFiles = findFiles(glob: "logs_*.zip")
+    
+    // 1. Log the recipient
+    echo "Preparing to send email to: ${email}"
+    
+    // 2. Log the list of attachments found
+    if (logFiles.length > 0) {
+        echo "Found the following attachments:"
+        logFiles.each { file ->
+            echo " - ${file.name} (${file.length} bytes)"
+        }
+    } else {
+        echo "No log files found, sending email without attachments."
+    }
 
-  - name: set timestamp
-    set_fact:
-      date: "{{ lookup('pipe', 'date +%Y%m%d-%H%M') }}"
+    // 3. Trigger the email
+    emailext(
+            subject: poamSubject(status),
+            body: poamEmailBody(status, branchName),
+            mimeType: local_mime_type,
+            to: email,
+            attachmentsPattern: logFiles.length > 0 ? "logs_*.zip" : ""
+        )
+}
 
-  - name: set log filename
-    set_fact:
-      logs_fn: logs_{{ date }}_{{ branch_name }}.zip
+pipeline {
+    agent {
+        node {
+            label 'sdo-jenkins'
+        }
+    }
+    triggers {
+        cron((env.BRANCH_NAME == 'main') ? '0 2 * * *' : '')
+    }
+    environment {
+        DEBUG = true
 
-  - name: Create a zip archive of /tmp/logs
-    community.general.archive:
-      path: /tmp/logs/
-      format: zip
-      dest: /tmp/{{ logs_fn }}
-    become: true
+        playbook = "sara_wt_automated_poam.yaml"
+        unregister_url = 'https://github.ice.dhs.gov/M-A/Unregister_RHEL8'
+        unregister_branch = 'main'
+        unregister_playbook = "sdo_unregister.yaml"
+        BUILD_ENV = 'dv'
+        GIT_REPO_NAME = env.GIT_URL.replaceFirst(/^.*\/([^\/]+?).git$/, '$1').replaceAll("/", "-")
+        NESSUS_SCAN = 'RHEL8'  //options are 'Full' or 'Quick'
+        //Full is a complete scan including STIG compliance check
+        //Quick is a complete scan without compliance check
+    }
 
-  - name: change ownership
-    ansible.builtin.file:
-      path: /tmp/{{ logs_fn }}
-      owner: zzadmin
-      group: zzadmin
-    become: true
+    stages {
+        stage('Checkov') {
+            steps {
+                ansiColor('xterm') {
+                    script {
+                        sh "docker pull bridgecrew/checkov"
+                        sh "docker run --rm -t -v ${WORKSPACE}:/tf:z bridgecrew/checkov --directory /tf -o cli || true"
+                        def jsonCheckov = sh(
+                                script: 'docker run --rm -v ${WORKSPACE}:/tf:z bridgecrew/checkov --directory /tf --output json || true',
+                                returnStdout: true, encoding: 'UTF-8').trim()
+                        writeFile file: 'checkov.json', text: jsonCheckov, encoding: 'UTF-8'
 
-  - name: Fetch the log zip file to Jenkins workspace
-    ansible.builtin.fetch:
-      src: /tmp/{{ logs_fn }}
-      dest: "{{ lookup('env', 'WORKSPACE') }}/{{ logs_fn }}"
-      flat: yes
+                        def jsonCheckovAnsible = sh(
+                                script: 'docker run --rm --privileged -t -v \$(pwd):/tf:z bridgecrew/checkov --directory /tf -o json || true',
+                                returnStdout: true, encoding: 'UTF-8').trim()
+                        writeFile file: 'checkov_ansible.json', text: jsonCheckovAnsible, encoding: 'UTF-8'
 
-  - name: move logs.zip to s3
-    amazon.aws.s3_object:
-      bucket: sara-weakness-tracking
-      object: weakness_tracking_poams/{{ logs_fn }}
-      src: /tmp/{{ logs_fn }}
-      mode: put
-      region: us-gov-west-1
+                        archiveArtifacts artifacts: 'checkov*.json'
+                    }
+                }
+            }
+        }
 
-  - name: See if /tmp/logs/unstable_notify exists
-    ansible.builtin.stat:
-      path: /tmp/logs/unstable_notify
-    register: unstable
+        stage('Weakness Tracking Automate POAM Deploy VM') {
+            steps {
+                withCredentials([[$class: 'VaultTokenCredentialBinding', credentialsId: "${VaultCredentialID}", vaultAddr: "${VaultURL}"]]) {
+                    withVault(configuration: vaultConfig, vaultSecrets: secrets) {
+                        ansiColor('xterm') {
+                            script {
+                                echo "Build the Environment"
+                                IMAGE_NUM = 802  // arbitrary
+                                // sed the roles/requirements with our current branch name
+                                // could be difficult due to the possibility of multiple repos
 
-  - name: write soft fail sentinel
-    ansible.builtin.file:
-      path: "{{ lookup('env', 'WORKSPACE') }}/.soft_fail"
-      state: touch
-      mode: '0644'
-    when: unstable.stat.exists
-    delegate_to: localhost
-    run_once: true
+                                def varMap = [:]
+                                varMap["build_number"] = build_number
+                                echo "test ${build_number}"
+                                varMap["number"] = IMAGE_NUM
+                                utilities.makePem(csam_python_sdk_deploy, "csam_python_sdk_deploy")
+                                
+                                echo "test ${IMAGE_NUM}"
+
+                                tfvarsfile = "${BUILD_ENV}.tfvars"
+
+                                terraform.provisionEnvironment("ec2", 'Terraform 1.7', branch, varMap, tfvarsfile, aws_certificate)
+
+                                IP_ADDR = terraform.getOutput("ec2", "ip | sed s/\\\"//g")
+                                // sh "rm /home/$(whoami)/.ssh/known_hosts"
+                                sh "ssh-keygen -R ${IP_ADDR} || true"
+                                echo "test IP_ADDR: ${IP_ADDR}"
+                                INSTANCE_ID = terraform.getOutput("ec2", "id")
+                                INSTANCE_ENVIRONMENT_TAG = terraform.getOutput("ec2", "Environment_tag")
+                                INSTANCE_IC_PLATFORM_TAG = terraform.getOutput("ec2", "IC_PLATFORM_tag")
+                                BASE_AMI = terraform.getOutput("ec2", "base_ami")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Provision with Ansible') {
+            when {
+                expression { 'true' == 'true' }
+            }
+            steps {
+                withCredentials([[$class: 'VaultTokenCredentialBinding', credentialsId: "${VaultCredentialID}", vaultAddr: "${VaultURL}"]]) {
+                    withVault(configuration: vaultConfig, vaultSecrets: secrets) {
+                        script {
+                            echo "test: ${branch_name}"
+                            sh "sed -i 's|{{ branch }}|${branch_name}|g' roles/requirements.yml"
+
+                            echo "defining varMap"
+                            def varMap = [:]
+                            varMap["zs_account"] = zs_account
+                            varMap["bind_password"] = bind_password
+                            varMap["ou_path"] = ou_path
+                            varMap["ad_domain"] = 'irmnet.ds2.dhs.gov'
+                            // varMap["group_list"] = group_list
+                            varMap["activationkey"] = "non-prod-rhel8"
+                            varMap["activationKeyEnv"] = "non-prod"
+                            varMap["splunk_username"] = 'admin'
+                            varMap["vault_pass"] = vault_pass
+                            varMap["location"] = "AUTONOMOUS"
+                            varMap["nessus_scan_user"] = nessus_scan_user
+                            varMap["nessus_scan_password"] = nessus_scan_password
+                            varMap["SNOW_USER"] = SNOW_USER
+                            varMap["SNOW_PASS"] = SNOW_PASS
+                            varMap["CSAM_BETA_API_TOKEN"] = CSAM_BETA_API_TOKEN
+                            varMap["CSAM_PROD_API_TOKEN"] = CSAM_PROD_API_TOKEN
+                            varMap["branch_name"] = branch_name
+
+                            echo "Getting pemJSON"
+                            def pemJSON = utilities.getPEMjson(aws_certificate, "aws_certificate", "pem.json")
+                            sh "ansible-galaxy collection install ansible.posix amazon.aws"
+
+                            echo "tower.localDeploy"
+                            tower.localDeploy(gitToken, aws_certificate, playbook, varMap, "@${pemJSON}", IP_ADDR, INSTANCE_ENVIRONMENT_TAG)
+
+                            echo "rm penJSON and archiveArtifacts"
+                            sh "rm ${pemJSON}"
+                            archiveArtifacts artifacts: "**/bom.json*", allowEmptyArchive: true
+
+                            if (fileExists("${WORKSPACE}/.soft_fail")) {
+                                unstable('Scripts soft failed. check logs')
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Unregister with Ansible Tower') {
+            when {
+                expression { 'true' == 'true' }
+            }
+            steps {
+                withCredentials([[$class: 'VaultTokenCredentialBinding', credentialsId: "${VaultCredentialID}", vaultAddr: "${VaultURL}"]]) {
+                    withVault(configuration: vaultConfig, vaultSecrets: secrets) {
+                        script {
+                            def varMap = [:]
+                            varMap["zs_account"] = zs_account
+                            varMap["bind_password"] = bind_password
+
+                            def pemJSON = utilities.getPEMjson(aws_certificate, "aws_certificate", "pem.json")
+
+                            tower.localDeploy(gitToken, aws_certificate, unregister_playbook, varMap, pemJSON, unregister_url, unregister_branch, IP_ADDR, INSTANCE_ENVIRONMENT_TAG)
+
+                            sh "rm ${pemJSON}"
+                        }
+                    }
+                }
+            }
+        }
+
+    }
+
+    post {
+        always {
+            script {
+
+                // Logic for Emailing
+                // We check if the build actually resulted in a status we care about
+                // Note: currentBuild.result can be null if the build is still running 
+                // (though inside 'always' it is usually populated)
+                def result = currentBuild.result ?: "UNKNOWN"
+                echo "result: ${result}"
+
+                if (result == "ABORTED" || result == "UNSTABLE" || result == "FAILURE") {
+                    
+                    // Specific Logic:
+                    // Only send to 'rise_email' IF it is main AND failed.
+                    // Otherwise, send to 'dev_email'.
+                    if (result == "FAILED" && env.BRANCH_NAME == 'main') {
+                        sendEmail(result, rise_email, branch_name)
+                    } else {
+                        // All other cases (Unstable/Aborted/Fail on non-main) go to dev
+                        sendEmail(result, dev_email, branch_name)
+                    }
+                }
+
+                // 3. Cleanup logic (regardless of status)
+                terraform.terminateInstance(INSTANCE_ID)
+            }
+        }
+    }
+}

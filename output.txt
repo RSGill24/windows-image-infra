@@ -1,15 +1,18 @@
-
-[build-system]
-requires = [
-    "setuptools>=61.0",
-    "wheel"
-]
-build-backend = "setuptools.build_meta"
-
-[tool.pytest.ini_options]
-log_cli = true
-log_cli_level = "DEBUG"
-log_cli_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-log_cli_date_format = "%Y-%m-%d %H:%M:%S"
-
+roles:
+- src: git+https://github.ice.dhs.gov/M-A/register_agents_rhel8.git
+  name: register_agents
+  version: main
+  scm: git
+- src: git+https://github.ice.dhs.gov/M-A/aide-update.git
+  name: aide_update
+  version: main
+- src: git+https://github.ice.dhs.gov/M-A/install_syft.git
+  version: main
+  scm: git
+- src: git+https://github.ice.dhs.gov/M-A/generate_sbom.git
+  version: main
+  scm: git
+- src: git+https://github.ice.dhs.gov/M-A/AddNessusScanUser.git
+  name: AddNessusScanUser
+  version: main
 

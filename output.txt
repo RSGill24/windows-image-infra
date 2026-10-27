@@ -1,21 +1,50 @@
-- name: Configure SARA Node
-  hosts: all
-  vars:
-    ansible_python_interpreter: /usr/bin/python3.12
-  gather_facts: true
-  collections:
-  - community.general
+- name: add env var SNOW_PASS
+  ansible.builtin.lineinfile:
+    path: /home/zzadmin/.bashrc
+    line: export SNOW_PASS={{ SNOW_PASS }}
+    insertafter: EOF
+    create: yes
+  become: true
+  become_user: zzadmin
 
-  vars_files:
-  - vars/roles.yml
+- name: add env var SNOW_USER
+  ansible.builtin.lineinfile:
+    path: /home/zzadmin/.bashrc
+    line: export SNOW_USER={{ SNOW_USER }}
+    insertafter: EOF
+    create: yes
+  become: true
+  become_user: zzadmin
 
-  roles:
-  - register_agents
-  - install_syft
-  - AddNessusScanUser
-  - resize_n_ssh
-  - build_env
-  - install_packages
-  - generate_sbom
-  - aide_update
-  - automated_poam
+- name: add env var CSAM_BETA_API_TOKEN
+  ansible.builtin.lineinfile:
+    path: /home/zzadmin/.bashrc
+    line: export CSAM_BETA_API_TOKEN={{ CSAM_BETA_API_TOKEN }}
+    insertafter: EOF
+    create: yes
+  become: true
+  become_user: zzadmin
+
+- name: add env var CSAM_PROD_API_TOKEN
+  ansible.builtin.lineinfile:
+    path: /home/zzadmin/.bashrc
+    line: export CSAM_PROD_API_TOKEN={{ CSAM_PROD_API_TOKEN }}
+    insertafter: EOF
+    create: yes
+  become: true
+  become_user: zzadmin
+
+- name: add env var BRANCH_NAME
+  ansible.builtin.lineinfile:
+    path: /home/zzadmin/.bashrc
+    line: export BRANCH_NAME={{ branch_name }}
+    insertafter: EOF
+    create: yes
+  become: true
+  become_user: zzadmin
+
+- name: Copy deploy key
+  ansible.builtin.copy:
+    src: csam_python_sdk_deploy
+    dest: /home/zzadmin/.ssh/csam_python_sdk_deploy
+    mode: '0600'

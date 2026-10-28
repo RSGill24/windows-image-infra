@@ -1,34 +1,169 @@
+Created by 
 
-$TPA {{type}}_{{trim_date}}_Plgn_{{plugins[0] if plugins|length == 1 else plugins[0]+"+"}}: {{plugin_name}} 
+ Amlakawit, last updated on Oct 27, 2026  2 minute read
+Migration Roadmap
+Phase	Key Tasks	Deliverable/Exit Criteria	Estimated Completion	Status
+Phase	Key Tasks	Deliverable/Exit Criteria	Estimated Completion	Status
+1. Target Architecture and planning
 
+ Target architecture design; dev/prod env model;
 
+Object classification(Bronze/Silver/Gold/quarantine)
 
-<a href="{{link}}" target="_blank">{{link_text}}</a>
+SAB-275387
+SAB-278008
 
+Target architecture baseline is complete and approved by team
 
+See: 
 
-<strong>What:</strong> {{methods_and_objects}}<br>
-<br><strong>RCA:</strong> {{root_cause_analysis}}<br>
-<br><strong>Where:</strong> {{source}}<br>
-<br><strong>Date Discovered:</strong> {{date_discovered}}<br>
+ Security HIVE AWS to Databricks Migration Baseline Architecture.docx 
 
-
-
-<strong>What:</strong> {{what}}<br><br>
-<strong>RCA:</strong> {{root_cause_analysis}}<br><br>
-<strong>Where:</strong> {{source}}<br><br>
-<strong>Plugin:</strong> {{plugins|join(", ") if plugins else "N/A"}}<br><br>
-<strong>Port:</strong> {{ports|join(", ") if ports else "N/A"}}<br><br>
-<strong>Date Discovered:</strong> {{date_discovered}}<br><br>
-<strong>Recommended Fix Action:</strong> {{solutions|join("<br>")}}<br><br>
-<strong>Assests being Affected:</strong> See Attached Asset Spreadsheet. Number of assets affected: {{asset_count}}<br>
+HIVE Databricks Migration ADRs.docx
 
 
+30 Oct 2026 
 
-<strong>What:</strong> {{what}}<br>
-<br><strong>RCA:</strong> {{root_cause_analysis}}<br>
-<br><strong>Where:</strong> {{source}}<br>
-<br><strong>Plugin:</strong> {{plugins|join(", ") if plugins else "N/A"}}<br>
-<br><strong>Date Discovered:</strong> {{date_discovered}}<br>
-<br><strong>Recommended Fix Action:</strong> {{solution}}<br>
-<br><strong>Assests being Affected:</strong> {{assets|join(", ")}}
+Complete
+2. Dev workspace Infrastructure foundation
+
+Workspaces, UC,s, computes, groups, SPs and foundational 
+
+permissions setup and testing    
+
+SAB-275319
+
+Required Databricks infrastructure available	
+30 Oct 2026 
+
+Complete
+3.  DEV Environment setup 	
+Create HIVE Databricks schemas, volumes, and secret scopes with approved permissions and validate access for team members   
+
+ SAB-275317
+
+DEV structure ready	
+16 Oct 2026 
+
+Complete
+
+4. CI/CD foundation setup	Setup ci/cd process, test  - SAB-274796	CI/CD process established and tested 	
+16 Oct 2026 
+
+Complete
+5. POC: Implement CSAM data onboarding end-to-end workflow in Dev environment 	
+Ingestion - pull source data via api connection and tore raw data in bronze Delta tables  - SAB-277910
+
+Source: CSAM Beta:  https://csam.beta.dhs.gov/csam/api/docs/index.html  poam_details_report
+datasets: 
+systems_genral_details_query
+poam_details_report
+Destinaition:
+ Catalog: ice_elaine_crma_hive_dv
+Schema: bronze
+tables:
+crma_hive_csam_poam_details_report
+crma_hive_csam_systems_general_details_query
+Transformation - apply desired cleaning/enrichment/transformations/etc.  store clean data to Silver Delta tables and Quarantine records with issues  -  SAB-277911
+
+completed building HIVE data DQ/business rulles framework, and applied it to above two CSAM datasets
+output:
+cleaned/transformated/enriched/validated datasets in silver schema
+records with issues in quarantine schema
+
+
+Curation - apply business transformations and publish consumer-ready data to Gold delta tables  - SAB-279693
+
+setup curation CSAM curation job and added sample  per system POAM remediation aggregation 
+gold.crma_hive_csam_poam_risk_remediation_rollup
+Workflow orchestration -  Use Lakeflow jobs to for workflow orchestration - SAB-279700
+
+End-to-End Databricks workflow demonstrated	
+30 Oct 2026 
+
+Complete
+6. POC: Monitoring & Alerting
+
+Job status, failures, logging, operational visibility - SAB-279700
+
+Operational visibility	
+Nov 13
+
+Complete
+7.POC:  Unit test integration 	
+Explore and document unit test integration tools HIVE DBx -  SAB-279603
+
+Tools/blockers identified	
+Nov 13
+
+In progress 
+8.  POC: Production readiness	
+Test SP account in dev workspace - SAB-279740
+
+Blockers: SP does not have permission to access existing dev workspace compute
+
+Validated/issues identified and addressed	
+Nov 13
+
+In progress
+ Identify and request provisioning per environment compute models for HIVE - SAB-279965
+
+See proposal: Compute models for HIVE.docx
+
+Approved and provisioned computes are documented	
+Nov 13
+
+In progress 
+Staging and prod env setup(compute, schemas, volumes, secrete scopes, team access, etc)
+
+Required Databricks infrastructure available in staging and production worksapces 	
+TBD
+
+Backlog
+Deploy CSAM workflow POC implementation to Staging 	Production ready pipeline successfully runs in staging 	
+TBD
+
+Backlog
+Deploy CSAM workflow POC implementation to Prod
+
+
+TBD
+
+Backlog 
+POC business validation: Validate Databricks results against the existing AWS implementation 
+
+Validate data quality, counts, etc
+
+POC results are validated	
+TBD
+
+Backlog
+9. Common Data Pipeline Framework	
+Build reusable ingestion/transformation/DQ/error handling/etc capabilities  
+
+Reusable pipeline framework established	
+TBD
+
+Backlog
+10. Scale out migration 	
+Migrate remaining external source data onboarding workflows in batches utilizing
+
+the Common Data Pipeline framework and validated pattern
+
+Current systems data onboarding functionality and datasets are
+
+replicated in Databricks 
+
+TBD
+
+Backlog
+11.  Migrate computed data products	
+Migrate FISMA Scorecard computation workflows and other aggregations, reporting objects and 
+
+curated data produces 
+
+
+
+
+
+
